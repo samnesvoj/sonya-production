@@ -1,0 +1,13 @@
+-r requirements-base.txt
+boto3
+botocore
+opencv-python
+numpy
+pillow
+ultralytics
+faster-whisper
+elevenlabs
+openai
+google-genai
+scenedetect[opencv]
+mediapipe
