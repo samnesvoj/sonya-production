@@ -1,5 +1,31 @@
 # Production Queue + Ephemeral GPU — Operations Commands
 
+## Orchestration Modes
+
+`GPU_ORCHESTRATOR_MODE` controls how a GPU instance is provisioned:
+
+| Mode | When to use |
+|---|---|
+| `timeweb` | **Recommended — no n8n required.** VPS calls Timeweb Cloud API directly. |
+| `webhook` | Optional — use if you run n8n and want a visual workflow editor. |
+| `disabled` | Safe default — no GPU is ever created. |
+
+---
+
+## Quick sanity check (dry-run, no server created)
+
+```bash
+GPU_ORCHESTRATOR_MODE=timeweb \
+TIMEWEB_DRY_RUN=true \
+TIMEWEB_API_TOKEN=test \
+TIMEWEB_GPU_PRESET_ID=1 \
+TIMEWEB_GPU_IMAGE_ID=1 \
+AUTO_GPU_TRIGGER_ENABLED=true \
+  python scripts/gpu_dispatcher.py --once
+```
+
+---
+
 ## VPS — Dispatcher Service
 
 ```bash
@@ -16,7 +42,7 @@ sudo journalctl -u sonya-dispatcher -f
 # Restart after config change
 sudo systemctl restart sonya-dispatcher
 
-# One-shot dispatch (dry-run or cron)
+# One-shot dispatch (dry-run — no GPU triggered)
 AUTO_GPU_TRIGGER_ENABLED=false python scripts/gpu_dispatcher.py --once
 
 # One-shot dispatch (live)
@@ -136,7 +162,45 @@ psql "$DATABASE_URL" -c "
 
 ---
 
-## Dispatcher Env Vars (VPS .env.local)
+## Dispatcher Env Vars — timeweb mode (VPS .env.local)
+
+```
+AUTO_GPU_TRIGGER_ENABLED=true
+GPU_ORCHESTRATOR_MODE=timeweb
+TIMEWEB_API_TOKEN=<your-timeweb-api-token>
+TIMEWEB_GPU_PRESET_ID=<preset-id>
+TIMEWEB_GPU_IMAGE_ID=<image-id>
+TIMEWEB_GPU_REGION=<region-slug>
+TIMEWEB_GPU_NAME_PREFIX=sonya-gpu
+TIMEWEB_DELETE_AFTER_JOB=true
+TIMEWEB_DRY_RUN=false
+TIMEWEB_SSH_KEY_ID=<optional>
+TIMEWEB_NETWORK_ID=<optional>
+TIMEWEB_PROJECT_ID=<optional>
+GPU_BOOTSTRAP_SCRIPT_PATH=deploy/gpu/bootstrap_worker_once.sh
+SHUTDOWN_AFTER_JOB=true
+GPU_DISPATCH_INTERVAL_SECONDS=20
+MAX_ACTIVE_GPU_JOBS=1
+BACKEND_API_URL=https://sonya-e.com
+DATABASE_URL=postgresql://...
+
+# Forwarded to the GPU instance (keep secure):
+S3_ENDPOINT_URL=...
+S3_ACCESS_KEY_ID=...
+S3_SECRET_ACCESS_KEY=...
+S3_BUCKET_NAME=sonya-prod
+S3_REGION=...
+MODELS_S3_BUCKET=...
+WORKER_SECRET=<hmac-secret>
+GEMINI_API_KEY=...
+OPENROUTER_API_KEY=...
+ELEVENLABS_API_KEY=...
+ELEVENLABS_VOICE_ID=...
+```
+
+---
+
+## Dispatcher Env Vars — webhook mode (optional, requires n8n)
 
 ```
 AUTO_GPU_TRIGGER_ENABLED=true

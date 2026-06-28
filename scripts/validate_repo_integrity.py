@@ -335,13 +335,32 @@ _disp = ROOT / "scripts" / "gpu_dispatcher.py"
 if _disp.exists(): ok("gpu_dispatcher.py exists")
 else: err("gpu_dispatcher.py missing")
 
-# 24c — gpu_orchestrator.py exists and uses webhook mode
+# 24c — gpu_orchestrator.py: webhook mode still present + timeweb mode added
 _orch = ROOT / "scripts" / "gpu_orchestrator.py"
 if _orch.exists():
     _orch_txt = _orch.read_text(encoding="utf-8", errors="ignore")
-    if "webhook" in _orch_txt: ok("gpu_orchestrator.py — webhook mode present")
-    else: err("gpu_orchestrator.py — 'webhook' not found")
-else: err("gpu_orchestrator.py missing")
+    if "webhook" in _orch_txt:
+        ok("gpu_orchestrator.py — webhook mode present")
+    else:
+        err("gpu_orchestrator.py — 'webhook' not found (must remain for backward compat)")
+    if "timeweb" in _orch_txt:
+        ok("gpu_orchestrator.py — timeweb mode present")
+    else:
+        err("gpu_orchestrator.py — timeweb mode missing (GPU_ORCHESTRATOR_MODE=timeweb)")
+    if "TIMEWEB_DRY_RUN" in _orch_txt:
+        ok("gpu_orchestrator.py — dry-run support present")
+    else:
+        err("gpu_orchestrator.py — TIMEWEB_DRY_RUN not implemented")
+    if "_SECRET_ENV_VARS" in _orch_txt or "_sanitize" in _orch_txt:
+        ok("gpu_orchestrator.py — secret masking present")
+    else:
+        err("gpu_orchestrator.py — secret masking missing (secrets must not be logged)")
+    if "timeweb" in _orch_txt and "disabled" in _orch_txt and "webhook" in _orch_txt:
+        ok("gpu_orchestrator.py — all three modes: disabled / webhook / timeweb")
+    else:
+        err("gpu_orchestrator.py — one or more modes missing (disabled|webhook|timeweb)")
+else:
+    err("gpu_orchestrator.py missing")
 
 # 24d — bootstrap_worker_once.sh exists and contains required commands
 _bs = ROOT / "deploy" / "gpu" / "bootstrap_worker_once.sh"
@@ -361,17 +380,42 @@ _svc = ROOT / "deploy" / "systemd" / "sonya-dispatcher.service"
 if _svc.exists(): ok("sonya-dispatcher.service exists")
 else: err("deploy/systemd/sonya-dispatcher.service missing")
 
-# 24f — docs describe ephemeral GPU
+# 24f — docs describe ephemeral GPU + direct timeweb mode
 _n8n_doc = ROOT / "deploy" / "n8n_gpu_orchestration.md"
+if not _n8n_doc.exists():
+    # try uppercase variant (original filename)
+    _n8n_doc = ROOT / "deploy" / "N8N_GPU_ORCHESTRATION.md"
 if _n8n_doc.exists():
     _doc_txt = _n8n_doc.read_text(encoding="utf-8", errors="ignore").lower()
-    if "ephemeral" in _doc_txt: ok("n8n_gpu_orchestration.md describes ephemeral GPU")
-    else: err("n8n_gpu_orchestration.md missing 'ephemeral'")
-else: err("deploy/n8n_gpu_orchestration.md missing")
+    if "ephemeral" in _doc_txt:
+        ok(f"{_n8n_doc.name} — describes ephemeral GPU")
+    else:
+        err(f"{_n8n_doc.name} — missing 'ephemeral'")
+    if "timeweb" in _doc_txt:
+        ok(f"{_n8n_doc.name} — mentions direct timeweb mode")
+    else:
+        err(f"{_n8n_doc.name} — missing direct timeweb mode documentation")
+    if "n8n" in _doc_txt and ("optional" in _doc_txt or "not required" in _doc_txt):
+        ok(f"{_n8n_doc.name} — n8n marked as optional")
+    else:
+        err(f"{_n8n_doc.name} — n8n must be documented as optional")
+else:
+    err("deploy/n8n_gpu_orchestration.md (or N8N_GPU_ORCHESTRATION.md) missing")
 
 _cmd_doc = ROOT / "deploy" / "commands_production_queue_gpu.md"
-if _cmd_doc.exists(): ok("commands_production_queue_gpu.md exists")
-else: err("deploy/commands_production_queue_gpu.md missing")
+if _cmd_doc.exists():
+    _cmd_txt = _cmd_doc.read_text(encoding="utf-8", errors="ignore").lower()
+    ok("commands_production_queue_gpu.md exists")
+    if "timeweb" in _cmd_txt:
+        ok("commands_production_queue_gpu.md — timeweb mode commands present")
+    else:
+        err("commands_production_queue_gpu.md — missing timeweb mode commands")
+    if "dry_run" in _cmd_txt or "dry-run" in _cmd_txt or "timeweb_dry_run" in _cmd_txt:
+        ok("commands_production_queue_gpu.md — dry-run command present")
+    else:
+        err("commands_production_queue_gpu.md — missing dry-run check command")
+else:
+    err("deploy/commands_production_queue_gpu.md missing")
 
 # 24g — gpu_worker supports --once
 _gw = ROOT / "scripts" / "gpu_worker.py"

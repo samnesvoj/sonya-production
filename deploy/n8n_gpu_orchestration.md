@@ -1,10 +1,27 @@
-# n8n GPU Orchestration — SONYA Ephemeral GPU Flow
+# GPU Orchestration — SONYA Ephemeral GPU Flow
 
 ## Overview
 
 SONYA uses an **ephemeral GPU model**: a GPU instance is created for exactly
 one job, processes it, uploads the result to S3, and then shuts itself down.
 No persistent GPU workers exist on any server.
+
+### Orchestration modes
+
+| Mode | Description |
+|---|---|
+| `timeweb` | **Preferred / direct.** VPS calls Timeweb Cloud API directly — no n8n, no extra VPS. Budget-friendly. |
+| `webhook` | Optional. VPS sends a signed HMAC webhook to n8n; n8n creates the GPU instance. Use only if you need a visual workflow editor and already run n8n. |
+| `disabled` | Safe default — no GPU is ever created. |
+
+> **n8n is optional.** If you do not have budget for a separate n8n VPS or
+> cloud subscription, set `GPU_ORCHESTRATOR_MODE=timeweb` and the VPS will
+> call Timeweb Cloud API directly. The `webhook` mode is kept for projects
+> that already run n8n.
+
+---
+
+## Architecture — direct timeweb mode (recommended)
 
 ```
 Client ──POST /api/generation/jobs──▶  VPS API (FastAPI)
@@ -14,15 +31,12 @@ VPS Dispatcher (systemd) ◀─poll─────────────┘
     │  every GPU_DISPATCH_INTERVAL_SECONDS (default 20 s)
     │  locks job, increments attempts
     ▼
-gpu_orchestrator.trigger_gpu_for_job()
-    │  POST signed webhook → n8n
+gpu_orchestrator.trigger_gpu_for_job()  [GPU_ORCHESTRATOR_MODE=timeweb]
+    │  POST https://api.timeweb.cloud/api/v1/servers
+    │  Authorization: Bearer TIMEWEB_API_TOKEN
+    │  user-data: cloud-init script with JOB_ID, MODE, env vars
     ▼
-n8n Workflow
-    │  verifies HMAC signature
-    │  creates GPU instance via provider API (Hetzner, RunPod, Lambda…)
-    │  passes JOB_ID, MODE, env vars via cloud-init / user-data
-    ▼
-GPU Instance (ephemeral)
+GPU Instance (ephemeral, Timeweb Cloud)
     │  runs deploy/gpu/bootstrap_worker_once.sh
     │  apt-get git python3-venv ffmpeg …
     │  git clone repo → /opt/sonya
@@ -37,19 +51,64 @@ GPU Instance (ephemeral)
 
 ---
 
+## Architecture — webhook mode (optional, requires n8n)
+
+```
+VPS Dispatcher
+    │
+    ▼
+gpu_orchestrator.trigger_gpu_for_job()  [GPU_ORCHESTRATOR_MODE=webhook]
+    │  POST signed webhook → n8n
+    ▼
+n8n Workflow
+    │  verifies HMAC signature
+    │  creates GPU instance via provider API (Hetzner, RunPod, Timeweb…)
+    │  passes JOB_ID, MODE, env vars via cloud-init / user-data
+    ▼
+GPU Instance (ephemeral)
+    │  … same bootstrap as above …
+```
+
+---
+
 ## Components
 
 | Component | Location | Role |
 |---|---|---|
 | `prod_generation_api.py` | VPS | Accepts uploads, creates queued jobs |
 | `gpu_dispatcher.py` | VPS (systemd) | Polls DB, calls orchestrator per job |
-| `gpu_orchestrator.py` | VPS (library) | Sends signed webhook to n8n |
+| `gpu_orchestrator.py` | VPS (library) | Creates GPU via Timeweb API or webhook |
 | `bootstrap_worker_once.sh` | GPU instance | Bootstraps environment, runs worker |
 | `gpu_worker.py --once` | GPU instance | Processes one job, uploads, exits |
 
 ---
 
-## Webhook Payload (VPS → n8n)
+## Timeweb Mode — Env Vars (VPS .env.local)
+
+```
+AUTO_GPU_TRIGGER_ENABLED=true
+GPU_ORCHESTRATOR_MODE=timeweb
+TIMEWEB_API_TOKEN=<bearer-token>          # never logged
+TIMEWEB_GPU_PRESET_ID=<preset-id>
+TIMEWEB_GPU_IMAGE_ID=<image-id>
+TIMEWEB_GPU_REGION=<region-slug>
+TIMEWEB_GPU_NAME_PREFIX=sonya-gpu
+TIMEWEB_DELETE_AFTER_JOB=true
+TIMEWEB_DRY_RUN=false                     # set true to test without creating server
+TIMEWEB_SSH_KEY_ID=<optional>
+TIMEWEB_NETWORK_ID=<optional>
+TIMEWEB_PROJECT_ID=<optional>
+GPU_BOOTSTRAP_SCRIPT_PATH=deploy/gpu/bootstrap_worker_once.sh
+SHUTDOWN_AFTER_JOB=true
+GPU_DISPATCH_INTERVAL_SECONDS=20
+MAX_ACTIVE_GPU_JOBS=1
+BACKEND_API_URL=https://sonya-e.com
+DATABASE_URL=postgresql://...
+```
+
+---
+
+## Webhook Mode — Payload (VPS → n8n)
 
 ```json
 {
@@ -69,7 +128,7 @@ Signed with `X-Orchestrator-Signature: HMAC-SHA256(body, GPU_ORCHESTRATOR_WEBHOO
 
 ---
 
-## Signature Verification in n8n
+## Webhook Mode — Signature Verification in n8n
 
 ```javascript
 const crypto = require('crypto');
@@ -87,38 +146,7 @@ if (!received || received !== expected) {
 
 ---
 
-## n8n Workflow Steps
-
-1. **Webhook Trigger** — POST `/webhook/gpu-trigger`
-2. **Verify Signature** — Function node (above)
-3. **Create GPU Instance** — HTTP Request → provider API
-   - Inject `JOB_ID`, `MODE`, all env vars via cloud-init user-data
-   - Reference `bootstrap_worker_once.sh` from the repo
-4. **Update Status** (optional) — POST `{backend_api_url}/api/worker/jobs/{job_id}/status`
-   body `{"status": "gpu_booting"}`
-
----
-
-## Environment Variables (VPS .env.local)
-
-```
-AUTO_GPU_TRIGGER_ENABLED=true
-GPU_ORCHESTRATOR_MODE=webhook
-GPU_ORCHESTRATOR_WEBHOOK_URL=https://n8n.sonya-e.com/webhook/gpu-trigger
-GPU_ORCHESTRATOR_WEBHOOK_SECRET=<long-random>
-GPU_INSTANCE_TYPE=A100
-GPU_IMAGE=ubuntu-22.04-cuda-12-2
-GPU_REGION=eu-central-1
-SHUTDOWN_AFTER_JOB=true
-GPU_DISPATCH_INTERVAL_SECONDS=20
-MAX_ACTIVE_GPU_JOBS=1
-BACKEND_API_URL=https://sonya-e.com
-DATABASE_URL=postgresql://...
-```
-
----
-
-## Environment Variables (GPU Instance via bootstrap)
+## Environment Variables (GPU Instance via cloud-init / bootstrap)
 
 ```
 JOB_ID=<uuid>
@@ -130,9 +158,17 @@ S3_ACCESS_KEY_ID=...
 S3_SECRET_ACCESS_KEY=...
 S3_BUCKET_NAME=sonya-prod
 S3_REGION=...
+MODELS_S3_BUCKET=...
 BACKEND_API_URL=https://sonya-e.com
 WORKER_SECRET=<hmac-secret>
+GEMINI_API_KEY=...
+OPENROUTER_API_KEY=...
+ELEVENLABS_API_KEY=...
+ELEVENLABS_VOICE_ID=...
 ```
+
+In `timeweb` mode these are embedded in the cloud-init `user_data` script
+sent to the Timeweb API.  They are **never written to logs**.
 
 ---
 
@@ -145,7 +181,7 @@ queued
        └─ failure → queued (retry) or failed (attempts >= max_attempts)
 
 gpu_requested
-  └─ n8n creates instance → gpu_booting
+  └─ GPU instance booting → gpu_booting
        └─ worker starts → worker_started
             └─ downloading → model_downloading → mode_running
                  → analyzing → yolo → scripting → tts → subtitles
@@ -180,7 +216,9 @@ Priority is **always server-assigned**. Clients cannot override it.
 
 ## Security Notes
 
-- `GPU_ORCHESTRATOR_WEBHOOK_SECRET` is **never logged**
-- `.env.local` on GPU instance is written with `chmod 600`
+- `TIMEWEB_API_TOKEN` and `GPU_ORCHESTRATOR_WEBHOOK_SECRET` are **never logged**
+- All secrets forwarded to the GPU instance are embedded in cloud-init `user_data` —
+  they are not written to any log file by the orchestrator
+- `.env.local` on the GPU instance is written with `chmod 600`
 - Worker API uses HMAC-signed requests (`WORKER_SECRET`)
 - Dispatcher enforces `MAX_ACTIVE_GPU_JOBS` concurrency cap
