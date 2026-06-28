@@ -41,7 +41,7 @@ RUN pip install --no-cache-dir --upgrade pip \
 # by .dockerignore — never baked into the image.
 COPY scripts/ ./scripts/
 COPY modes/    ./modes/
-COPY configs/  ./configs/
+RUN mkdir -p ./configs
 COPY README.md ./
 
 # ── Runtime defaults ───────────────────────────────────────────────────────────
