@@ -6,46 +6,69 @@ SONYA uses an **ephemeral GPU model**: a GPU instance is created for exactly
 one job, processes it, uploads the result to S3, and then shuts itself down.
 No persistent GPU workers exist on any server.
 
+### Production GPU provider: vast.ai
+
+**vast.ai is the recommended production GPU provider.**
+
+Vast.ai GPU instances are external to the Timeweb VPS and cannot reach the
+private PostgreSQL server (`192.168.0.4`).  The GPU worker therefore uses
+`WORKER_BACKEND_MODE=api` — it never connects to the database directly.
+All job operations (claim, status update, complete, fail, file registration)
+go through `BACKEND_API_URL` worker HTTP endpoints authenticated with
+`WORKER_SECRET`.  S3 operations remain direct.
+
+### Timeweb Cloud
+
+Timeweb is used for: **VPS, PostgreSQL, S3 storage, domain**.
+Timeweb GPU (`GPU_ORCHESTRATOR_MODE=timeweb`) is **optional/legacy** — it is
+not the primary GPU path and should only be used if vast.ai is unavailable.
+
+### n8n
+
+n8n is **optional**.  It is not required for production.  If you need a visual
+workflow editor and already run n8n, you can use `GPU_ORCHESTRATOR_MODE=webhook`.
+Otherwise use `GPU_ORCHESTRATOR_MODE=vast` and the VPS calls vast.ai directly.
+
 ### Orchestration modes
 
-| Mode | Description |
-|---|---|
-| `timeweb` | **Preferred / direct.** VPS calls Timeweb Cloud API directly — no n8n, no extra VPS. Budget-friendly. |
-| `webhook` | Optional. VPS sends a signed HMAC webhook to n8n; n8n creates the GPU instance. Use only if you need a visual workflow editor and already run n8n. |
-| `disabled` | Safe default — no GPU is ever created. |
-
-> **n8n is optional.** If you do not have budget for a separate n8n VPS or
-> cloud subscription, set `GPU_ORCHESTRATOR_MODE=timeweb` and the VPS will
-> call Timeweb Cloud API directly. The `webhook` mode is kept for projects
-> that already run n8n.
+| Mode | GPU provider | DB access on GPU | Notes |
+|---|---|---|---|
+| `vast` | **vast.ai** — recommended | API only (no DATABASE_URL) | Production path |
+| `timeweb` | Timeweb Cloud GPU | Direct PostgreSQL possible | Optional/legacy |
+| `webhook` | External (n8n → any) | Depends on n8n workflow | Optional, needs n8n |
+| `disabled` | None | — | Safe default |
 
 ---
 
-## Architecture — direct timeweb mode (recommended)
+## Architecture — vast.ai mode (production / recommended)
 
 ```
-Client ──POST /api/generation/jobs──▶  VPS API (FastAPI)
-                                            │  job created: status=queued, priority=N
+Client ──POST /api/generation/jobs──▶  VPS API (FastAPI, Timeweb VPS)
+                                            │  job created: status=queued
                                             │  returns job_id immediately
 VPS Dispatcher (systemd) ◀─poll─────────────┘
-    │  every GPU_DISPATCH_INTERVAL_SECONDS (default 20 s)
+    │  every GPU_DISPATCH_INTERVAL_SECONDS
     │  locks job, increments attempts
     ▼
-gpu_orchestrator.trigger_gpu_for_job()  [GPU_ORCHESTRATOR_MODE=timeweb]
-    │  POST https://api.timeweb.cloud/api/v1/servers
-    │  Authorization: Bearer TIMEWEB_API_TOKEN
-    │  user-data: cloud-init script with JOB_ID, MODE, env vars
+gpu_orchestrator.trigger_gpu_for_job()  [GPU_ORCHESTRATOR_MODE=vast]
+    │  GET  https://console.vast.ai/api/v0/bundles/ — find cheapest GPU offer
+    │  PUT  https://console.vast.ai/api/v0/asks/{id}/ — create instance
+    │  startup script (onstart): env vars + git clone + bootstrap
+    │  WORKER_BACKEND_MODE=api injected — no DATABASE_URL passed
     ▼
-GPU Instance (ephemeral, Timeweb Cloud)
+GPU Instance (ephemeral, vast.ai)
     │  runs deploy/gpu/bootstrap_worker_once.sh
     │  apt-get git python3-venv ffmpeg …
     │  git clone repo → /opt/sonya
     │  pip install requirements-worker.txt
-    │  python scripts/prod_preflight_check.py --role worker
     │  python scripts/model_downloader.py --mode $MODE
     │  python scripts/gpu_worker.py --once --job-id $JOB_ID
-    │  uploads result to S3
-    │  calls /api/worker/jobs/{job_id}/complete
+    │       └─ uses WORKER_BACKEND_MODE=api:
+    │           POST /api/worker/claim          (claim job)
+    │           POST /api/worker/jobs/{id}/status  (status updates)
+    │           POST /api/worker/jobs/{id}/files   (register output files)
+    │           POST /api/worker/jobs/{id}/complete (mark done)
+    │  uploads results directly to S3
     │  shutdown -h now
 ```
 
@@ -58,11 +81,11 @@ VPS Dispatcher
     │
     ▼
 gpu_orchestrator.trigger_gpu_for_job()  [GPU_ORCHESTRATOR_MODE=webhook]
-    │  POST signed webhook → n8n
+    │  POST signed HMAC webhook → n8n
     ▼
 n8n Workflow
     │  verifies HMAC signature
-    │  creates GPU instance via provider API (Hetzner, RunPod, Timeweb…)
+    │  creates GPU instance via provider API (Hetzner, RunPod, vast.ai…)
     │  passes JOB_ID, MODE, env vars via cloud-init / user-data
     ▼
 GPU Instance (ephemeral)
@@ -77,33 +100,42 @@ GPU Instance (ephemeral)
 |---|---|---|
 | `prod_generation_api.py` | VPS | Accepts uploads, creates queued jobs |
 | `gpu_dispatcher.py` | VPS (systemd) | Polls DB, calls orchestrator per job |
-| `gpu_orchestrator.py` | VPS (library) | Creates GPU via Timeweb API or webhook |
+| `gpu_orchestrator.py` | VPS (library) | Creates GPU via vast.ai / Timeweb / webhook |
 | `bootstrap_worker_once.sh` | GPU instance | Bootstraps environment, runs worker |
 | `gpu_worker.py --once` | GPU instance | Processes one job, uploads, exits |
 
 ---
 
-## Timeweb Mode — Env Vars (VPS .env.local)
+## vast.ai Mode — Env Vars (VPS .env.local)
 
 ```
 AUTO_GPU_TRIGGER_ENABLED=true
-GPU_ORCHESTRATOR_MODE=timeweb
-TIMEWEB_API_TOKEN=<bearer-token>          # never logged
-TIMEWEB_GPU_PRESET_ID=<preset-id>
-TIMEWEB_GPU_IMAGE_ID=<image-id>
-TIMEWEB_GPU_REGION=<region-slug>
-TIMEWEB_GPU_NAME_PREFIX=sonya-gpu
-TIMEWEB_DELETE_AFTER_JOB=true
-TIMEWEB_DRY_RUN=false                     # set true to test without creating server
-TIMEWEB_SSH_KEY_ID=<optional>
-TIMEWEB_NETWORK_ID=<optional>
-TIMEWEB_PROJECT_ID=<optional>
-GPU_BOOTSTRAP_SCRIPT_PATH=deploy/gpu/bootstrap_worker_once.sh
+GPU_ORCHESTRATOR_MODE=vast
+VAST_API_KEY=<bearer-token>               # never logged
+VAST_IMAGE=nvidia/cuda:12.2.0-devel-ubuntu22.04
+VAST_GPU_MIN_VRAM=24
+VAST_DISK_GB=50
+VAST_INSTANCE_LABEL_PREFIX=sonya-gpu
+VAST_DRY_RUN=false                        # set true for testing without creating instance
+VAST_GPU_NAME=                            # optional, e.g. RTX4090
 SHUTDOWN_AFTER_JOB=true
 GPU_DISPATCH_INTERVAL_SECONDS=20
 MAX_ACTIVE_GPU_JOBS=1
 BACKEND_API_URL=https://sonya-e.com
-DATABASE_URL=postgresql://...
+DATABASE_URL=postgresql://...             # VPS-only — NOT forwarded to GPU instance
+
+# Forwarded to GPU instance via startup script (no DATABASE_URL):
+WORKER_SECRET=<hmac-secret>
+S3_ENDPOINT_URL=...
+S3_ACCESS_KEY_ID=...
+S3_SECRET_ACCESS_KEY=...
+S3_BUCKET_NAME=sonya-prod
+S3_REGION=...
+MODELS_S3_BUCKET=...
+GEMINI_API_KEY=...
+OPENROUTER_API_KEY=...
+ELEVENLABS_API_KEY=...
+ELEVENLABS_VOICE_ID=...
 ```
 
 ---
@@ -143,32 +175,6 @@ if (!received || received !== expected) {
   throw new Error('Invalid webhook signature');
 }
 ```
-
----
-
-## Environment Variables (GPU Instance via cloud-init / bootstrap)
-
-```
-JOB_ID=<uuid>
-MODE=trailer_film_breaker
-SHUTDOWN_AFTER_JOB=true
-DATABASE_URL=postgresql://...
-S3_ENDPOINT_URL=...
-S3_ACCESS_KEY_ID=...
-S3_SECRET_ACCESS_KEY=...
-S3_BUCKET_NAME=sonya-prod
-S3_REGION=...
-MODELS_S3_BUCKET=...
-BACKEND_API_URL=https://sonya-e.com
-WORKER_SECRET=<hmac-secret>
-GEMINI_API_KEY=...
-OPENROUTER_API_KEY=...
-ELEVENLABS_API_KEY=...
-ELEVENLABS_VOICE_ID=...
-```
-
-In `timeweb` mode these are embedded in the cloud-init `user_data` script
-sent to the Timeweb API.  They are **never written to logs**.
 
 ---
 
@@ -216,9 +222,10 @@ Priority is **always server-assigned**. Clients cannot override it.
 
 ## Security Notes
 
-- `TIMEWEB_API_TOKEN` and `GPU_ORCHESTRATOR_WEBHOOK_SECRET` are **never logged**
-- All secrets forwarded to the GPU instance are embedded in cloud-init `user_data` —
-  they are not written to any log file by the orchestrator
-- `.env.local` on the GPU instance is written with `chmod 600`
+- `VAST_API_KEY`, `TIMEWEB_API_TOKEN`, `GPU_ORCHESTRATOR_WEBHOOK_SECRET` **never logged**
+- Secrets forwarded to GPU instance are embedded in the startup script —
+  not written to any log file by the orchestrator
+- `DATABASE_URL` is **not forwarded** to vast.ai GPU instances
+- `.env.local` on GPU instance is written with `chmod 600`
 - Worker API uses HMAC-signed requests (`WORKER_SECRET`)
 - Dispatcher enforces `MAX_ACTIVE_GPU_JOBS` concurrency cap

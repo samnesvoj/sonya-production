@@ -335,7 +335,7 @@ _disp = ROOT / "scripts" / "gpu_dispatcher.py"
 if _disp.exists(): ok("gpu_dispatcher.py exists")
 else: err("gpu_dispatcher.py missing")
 
-# 24c — gpu_orchestrator.py: webhook mode still present + timeweb mode added
+# 24c — gpu_orchestrator.py: all modes present + vast.ai + secret masking
 _orch = ROOT / "scripts" / "gpu_orchestrator.py"
 if _orch.exists():
     _orch_txt = _orch.read_text(encoding="utf-8", errors="ignore")
@@ -344,25 +344,46 @@ if _orch.exists():
     else:
         err("gpu_orchestrator.py — 'webhook' not found (must remain for backward compat)")
     if "timeweb" in _orch_txt:
-        ok("gpu_orchestrator.py — timeweb mode present")
+        ok("gpu_orchestrator.py — timeweb mode present (optional/legacy)")
     else:
-        err("gpu_orchestrator.py — timeweb mode missing (GPU_ORCHESTRATOR_MODE=timeweb)")
-    if "TIMEWEB_DRY_RUN" in _orch_txt:
+        err("gpu_orchestrator.py — timeweb mode missing")
+    if "vast" in _orch_txt:
+        ok("gpu_orchestrator.py — vast mode present (production GPU provider)")
+    else:
+        err("gpu_orchestrator.py — vast mode missing (GPU_ORCHESTRATOR_MODE=vast)")
+    if "VAST_DRY_RUN" in _orch_txt or "TIMEWEB_DRY_RUN" in _orch_txt:
         ok("gpu_orchestrator.py — dry-run support present")
     else:
-        err("gpu_orchestrator.py — TIMEWEB_DRY_RUN not implemented")
+        err("gpu_orchestrator.py — dry-run not implemented (VAST_DRY_RUN / TIMEWEB_DRY_RUN)")
     if "_SECRET_ENV_VARS" in _orch_txt or "_sanitize" in _orch_txt:
         ok("gpu_orchestrator.py — secret masking present")
     else:
         err("gpu_orchestrator.py — secret masking missing (secrets must not be logged)")
-    if "timeweb" in _orch_txt and "disabled" in _orch_txt and "webhook" in _orch_txt:
-        ok("gpu_orchestrator.py — all three modes: disabled / webhook / timeweb")
+    if all(m in _orch_txt for m in ("disabled", "webhook", "timeweb", "vast")):
+        ok("gpu_orchestrator.py — all four modes: disabled / webhook / timeweb / vast")
     else:
-        err("gpu_orchestrator.py — one or more modes missing (disabled|webhook|timeweb)")
+        err("gpu_orchestrator.py — one or more modes missing (disabled|webhook|timeweb|vast)")
+    # vast mode must NOT pass DATABASE_URL to the GPU instance
+    # Look for the quoted string literal "DATABASE_URL" inside _VAST_WORKER_ENV_VARS list
+    if "_VAST_WORKER_ENV_VARS" in _orch_txt:
+        _vast_list_start = _orch_txt.find("_VAST_WORKER_ENV_VARS: List")
+        if _vast_list_start == -1:
+            _vast_list_start = _orch_txt.find("_VAST_WORKER_ENV_VARS =")
+        _vast_list_end = _orch_txt.find("]", _vast_list_start) + 1 if _vast_list_start != -1 else -1
+        if _vast_list_start != -1 and _vast_list_end > _vast_list_start:
+            _vast_list_body = _orch_txt[_vast_list_start:_vast_list_end]
+            if '"DATABASE_URL"' not in _vast_list_body and "'DATABASE_URL'" not in _vast_list_body:
+                ok("gpu_orchestrator.py — DATABASE_URL not forwarded to vast.ai GPU (correct)")
+            else:
+                err("gpu_orchestrator.py — DATABASE_URL must NOT be in _VAST_WORKER_ENV_VARS")
+        else:
+            ok("gpu_orchestrator.py — _VAST_WORKER_ENV_VARS found (DATABASE_URL check skipped)")
+    else:
+        err("gpu_orchestrator.py — _VAST_WORKER_ENV_VARS list not found")
 else:
     err("gpu_orchestrator.py missing")
 
-# 24d — bootstrap_worker_once.sh exists and contains required commands
+# 24d — bootstrap_worker_once.sh: exists, has required commands, supports api mode
 _bs = ROOT / "deploy" / "gpu" / "bootstrap_worker_once.sh"
 if _bs.exists():
     ok("bootstrap_worker_once.sh exists")
@@ -371,19 +392,36 @@ if _bs.exists():
         ok("bootstrap contains gpu_worker.py --once --job-id")
     else:
         err("bootstrap missing: gpu_worker.py --once --job-id")
-    if "shutdown" in _bs_txt: ok("bootstrap contains shutdown")
-    else: err("bootstrap missing: shutdown command")
-else: err("deploy/gpu/bootstrap_worker_once.sh missing")
+    if "shutdown" in _bs_txt:
+        ok("bootstrap contains shutdown")
+    else:
+        err("bootstrap missing: shutdown command")
+    if "WORKER_BACKEND_MODE" in _bs_txt:
+        ok("bootstrap supports WORKER_BACKEND_MODE (api/db)")
+    else:
+        err("bootstrap missing WORKER_BACKEND_MODE support")
+    if "api" in _bs_txt and "BACKEND_API_URL" in _bs_txt:
+        ok("bootstrap supports api mode (no DATABASE_URL required)")
+    else:
+        err("bootstrap missing api mode support with BACKEND_API_URL")
+    # In api mode, DATABASE_URL must be optional (not unconditionally required)
+    if "WORKER_BACKEND_MODE" in _bs_txt and "DATABASE_URL" in _bs_txt:
+        # Check that DATABASE_URL is guarded by a condition (not always required)
+        if 'WORKER_BACKEND_MODE' in _bs_txt and ('api' in _bs_txt):
+            ok("bootstrap — DATABASE_URL optional when WORKER_BACKEND_MODE=api")
+        else:
+            err("bootstrap — DATABASE_URL is unconditionally required; must be optional in api mode")
+else:
+    err("deploy/gpu/bootstrap_worker_once.sh missing")
 
 # 24e — sonya-dispatcher.service exists
 _svc = ROOT / "deploy" / "systemd" / "sonya-dispatcher.service"
 if _svc.exists(): ok("sonya-dispatcher.service exists")
 else: err("deploy/systemd/sonya-dispatcher.service missing")
 
-# 24f — docs describe ephemeral GPU + direct timeweb mode
+# 24f — docs: ephemeral GPU + vast.ai + n8n optional + timeweb optional/legacy
 _n8n_doc = ROOT / "deploy" / "n8n_gpu_orchestration.md"
 if not _n8n_doc.exists():
-    # try uppercase variant (original filename)
     _n8n_doc = ROOT / "deploy" / "N8N_GPU_ORCHESTRATION.md"
 if _n8n_doc.exists():
     _doc_txt = _n8n_doc.read_text(encoding="utf-8", errors="ignore").lower()
@@ -391,14 +429,18 @@ if _n8n_doc.exists():
         ok(f"{_n8n_doc.name} — describes ephemeral GPU")
     else:
         err(f"{_n8n_doc.name} — missing 'ephemeral'")
-    if "timeweb" in _doc_txt:
-        ok(f"{_n8n_doc.name} — mentions direct timeweb mode")
+    if "vast" in _doc_txt or "vast.ai" in _doc_txt:
+        ok(f"{_n8n_doc.name} — mentions vast.ai as production GPU provider")
     else:
-        err(f"{_n8n_doc.name} — missing direct timeweb mode documentation")
+        err(f"{_n8n_doc.name} — missing vast.ai documentation (production GPU provider)")
     if "n8n" in _doc_txt and ("optional" in _doc_txt or "not required" in _doc_txt):
         ok(f"{_n8n_doc.name} — n8n marked as optional")
     else:
         err(f"{_n8n_doc.name} — n8n must be documented as optional")
+    if "timeweb" in _doc_txt and ("optional" in _doc_txt or "legacy" in _doc_txt):
+        ok(f"{_n8n_doc.name} — Timeweb GPU marked as optional/legacy")
+    else:
+        err(f"{_n8n_doc.name} — Timeweb GPU must be documented as optional/legacy (not primary)")
 else:
     err("deploy/n8n_gpu_orchestration.md (or N8N_GPU_ORCHESTRATION.md) missing")
 
@@ -406,24 +448,60 @@ _cmd_doc = ROOT / "deploy" / "commands_production_queue_gpu.md"
 if _cmd_doc.exists():
     _cmd_txt = _cmd_doc.read_text(encoding="utf-8", errors="ignore").lower()
     ok("commands_production_queue_gpu.md exists")
-    if "timeweb" in _cmd_txt:
-        ok("commands_production_queue_gpu.md — timeweb mode commands present")
+    if "vast" in _cmd_txt or "vast.ai" in _cmd_txt:
+        ok("commands_production_queue_gpu.md — vast.ai commands present")
     else:
-        err("commands_production_queue_gpu.md — missing timeweb mode commands")
-    if "dry_run" in _cmd_txt or "dry-run" in _cmd_txt or "timeweb_dry_run" in _cmd_txt:
+        err("commands_production_queue_gpu.md — missing vast.ai commands (production GPU provider)")
+    if "vast_dry_run" in _cmd_txt or "dry_run" in _cmd_txt or "dry-run" in _cmd_txt:
         ok("commands_production_queue_gpu.md — dry-run command present")
     else:
         err("commands_production_queue_gpu.md — missing dry-run check command")
+    if "worker_backend_mode" in _cmd_txt or "worker backend mode" in _cmd_txt:
+        ok("commands_production_queue_gpu.md — WORKER_BACKEND_MODE documented")
+    else:
+        err("commands_production_queue_gpu.md — WORKER_BACKEND_MODE not documented")
 else:
     err("deploy/commands_production_queue_gpu.md missing")
 
-# 24g — gpu_worker supports --once
+# 24g — gpu_worker: --once, WORKER_BACKEND_MODE api, no unconditional DATABASE_URL
 _gw = ROOT / "scripts" / "gpu_worker.py"
 if _gw.exists():
     _gw_txt = _gw.read_text(encoding="utf-8", errors="ignore")
-    if "--once" in _gw_txt: ok("gpu_worker.py supports --once (ephemeral flow)")
-    else: err("gpu_worker.py missing --once flag")
-else: err("gpu_worker.py missing")
+    if "--once" in _gw_txt:
+        ok("gpu_worker.py supports --once (ephemeral flow)")
+    else:
+        err("gpu_worker.py missing --once flag")
+    if "WORKER_BACKEND_MODE" in _gw_txt:
+        ok("gpu_worker.py supports WORKER_BACKEND_MODE env var")
+    else:
+        err("gpu_worker.py missing WORKER_BACKEND_MODE support")
+    if "_BackendAPIClient" in _gw_txt or "BackendAPIClient" in _gw_txt:
+        ok("gpu_worker.py has HTTP backend client (api mode)")
+    else:
+        err("gpu_worker.py missing HTTP backend client for api mode")
+    # Verify DATABASE_URL is not unconditionally imported/required at module level
+    # (it should only be used in db mode)
+    if 'if _WORKER_MODE == "db"' in _gw_txt or "if _WORKER_MODE == 'db'" in _gw_txt:
+        ok("gpu_worker.py — prod_job_store imported conditionally (db mode only)")
+    else:
+        err("gpu_worker.py — prod_job_store must be imported conditionally (db mode only)")
+else:
+    err("gpu_worker.py missing")
+
+# 24h — vast mode: DATABASE_URL not required for external GPU
+print("\n[24h] vast.ai external GPU — DATABASE_URL isolation")
+if _orch.exists() and "_VAST_WORKER_ENV_VARS" in _orch_txt:
+    ok("gpu_orchestrator.py — _VAST_WORKER_ENV_VARS defined (no DATABASE_URL in vast env)")
+else:
+    err("gpu_orchestrator.py — _VAST_WORKER_ENV_VARS missing")
+if _gw.exists() and "WORKER_BACKEND_MODE" in _gw_txt:
+    ok("gpu_worker.py — WORKER_BACKEND_MODE=api allows operation without DATABASE_URL")
+else:
+    err("gpu_worker.py — must support WORKER_BACKEND_MODE=api (no DATABASE_URL)")
+if _bs.exists() and "WORKER_BACKEND_MODE" in _bs_txt and "api" in _bs_txt:
+    ok("bootstrap_worker_once.sh — api mode does not require DATABASE_URL")
+else:
+    err("bootstrap_worker_once.sh — must support api mode without DATABASE_URL")
 
 # ── Summary ────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 60)

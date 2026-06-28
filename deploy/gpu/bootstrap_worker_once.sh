@@ -4,18 +4,25 @@
 # Called once by a freshly-created GPU instance provisioned by the orchestrator.
 # After the job completes the instance shuts itself down automatically.
 #
-# Required env vars injected by the orchestrator / cloud-init:
+# Backend modes (WORKER_BACKEND_MODE):
+#   db   — default; direct PostgreSQL (requires DATABASE_URL)
+#   api  — HTTP-only via BACKEND_API_URL (no DATABASE_URL needed)
+#          Used with external GPU providers (vast.ai) that cannot reach
+#          private PostgreSQL at 192.168.0.4.
+#
+# Required env vars — common:
 #   JOB_ID                  UUID of the job to process
 #   MODE                    mode name, e.g. trailer_film_breaker
 #   SHUTDOWN_AFTER_JOB      true | false  (default true)
-#   DATABASE_URL            PostgreSQL DSN
-#   S3_ENDPOINT_URL
-#   S3_ACCESS_KEY_ID
-#   S3_SECRET_ACCESS_KEY
-#   S3_BUCKET_NAME
-#   S3_REGION
-#   BACKEND_API_URL         e.g. https://sonya-e.com
+#   BACKEND_API_URL         https://sonya-e.com
+#   S3_ENDPOINT_URL, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_BUCKET_NAME
+#
+# Required env vars — api mode (WORKER_BACKEND_MODE=api):
 #   WORKER_SECRET           HMAC secret for worker API calls
+#   (DATABASE_URL is NOT required)
+#
+# Required env vars — db mode (WORKER_BACKEND_MODE=db):
+#   DATABASE_URL            PostgreSQL DSN
 
 set -euo pipefail
 
@@ -33,18 +40,30 @@ fail() { echo "[$(ts)] [ERROR] $*"; exit 1; }
 log "=== SONYA GPU worker bootstrap start ==="
 log "JOB_ID=${JOB_ID:-<not set>}"
 log "MODE=${MODE:-<not set>}"
+log "WORKER_BACKEND_MODE=${WORKER_BACKEND_MODE:-db}"
+log "BACKEND_API_URL=${BACKEND_API_URL:-<not set>}"
 
 # ── Validate required env ──────────────────────────────────────────────────────
 : "${JOB_ID:?JOB_ID env var is required}"
 : "${MODE:?MODE env var is required}"
-: "${DATABASE_URL:?DATABASE_URL env var is required}"
 : "${BACKEND_API_URL:?BACKEND_API_URL env var is required}"
 
+WORKER_BACKEND_MODE="${WORKER_BACKEND_MODE:-db}"
 SHUTDOWN_AFTER_JOB="${SHUTDOWN_AFTER_JOB:-true}"
 REPO_URL="${REPO_URL:-https://github.com/samnesvoj/sonya-production.git}"
 INSTALL_DIR="/opt/sonya"
 VENV_DIR="${INSTALL_DIR}/.venv"
 ENV_LOCAL="${INSTALL_DIR}/.env.local"
+
+if [[ "${WORKER_BACKEND_MODE}" == "api" ]]; then
+    # API mode: no DATABASE_URL needed; require WORKER_SECRET for auth
+    : "${WORKER_SECRET:?WORKER_SECRET is required when WORKER_BACKEND_MODE=api}"
+    log "Backend mode: api (HTTP worker endpoints, no direct DB access)"
+else
+    # DB mode: require DATABASE_URL for direct PostgreSQL access
+    : "${DATABASE_URL:?DATABASE_URL is required when WORKER_BACKEND_MODE=db}"
+    log "Backend mode: db (direct PostgreSQL)"
+fi
 
 # ── System dependencies ────────────────────────────────────────────────────────
 log "Installing system dependencies..."
@@ -82,21 +101,25 @@ log "Installing Python dependencies from requirements-worker.txt..."
 "${VENV_DIR}/bin/pip" install --quiet -r "${INSTALL_DIR}/requirements-worker.txt"
 log "Python dependencies installed."
 
-# ── Write .env.local from injected env vars ────────────────────────────────────
+# ── Write .env.local ──────────────────────────────────────────────────────────
 log "Writing ${ENV_LOCAL}..."
-cat > "${ENV_LOCAL}" << EOF
-DATABASE_URL=${DATABASE_URL}
-S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-}
-S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-}
-S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-}
-S3_BUCKET_NAME=${S3_BUCKET_NAME:-}
-S3_REGION=${S3_REGION:-}
-BACKEND_API_URL=${BACKEND_API_URL}
-WORKER_SECRET=${WORKER_SECRET:-}
-WORKER_TOKEN=${WORKER_TOKEN:-}
-WORKER_ID=${WORKER_ID:-gpu-ephemeral-${JOB_ID:0:8}}
-AUTO_GPU_TRIGGER_ENABLED=false
-EOF
+{
+    echo "WORKER_BACKEND_MODE=${WORKER_BACKEND_MODE}"
+    echo "BACKEND_API_URL=${BACKEND_API_URL}"
+    echo "S3_ENDPOINT_URL=${S3_ENDPOINT_URL:-}"
+    echo "S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-}"
+    echo "S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-}"
+    echo "S3_BUCKET_NAME=${S3_BUCKET_NAME:-}"
+    echo "S3_REGION=${S3_REGION:-}"
+    echo "MODELS_S3_BUCKET=${MODELS_S3_BUCKET:-}"
+    echo "WORKER_SECRET=${WORKER_SECRET:-}"
+    echo "WORKER_ID=${WORKER_ID:-gpu-ephemeral-${JOB_ID:0:8}}"
+    echo "AUTO_GPU_TRIGGER_ENABLED=false"
+    # DATABASE_URL only written when in db mode and the var is set
+    if [[ "${WORKER_BACKEND_MODE}" != "api" && -n "${DATABASE_URL:-}" ]]; then
+        echo "DATABASE_URL=${DATABASE_URL}"
+    fi
+} > "${ENV_LOCAL}"
 chmod 600 "${ENV_LOCAL}"
 log ".env.local written (mode 600)."
 
