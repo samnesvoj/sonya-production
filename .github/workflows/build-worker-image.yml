@@ -1,0 +1,47 @@
+name: Build SONYA worker image
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "deploy/docker/**"
+      - "scripts/**"
+      - "modes/**"
+      - "configs/**"
+      - "requirements-*.txt"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build-worker:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set image name
+        run: |
+          echo "IMAGE=ghcr.io/samnesvoj/sonya-worker" >> $GITHUB_ENV
+          echo "SHA_TAG=ghcr.io/samnesvoj/sonya-worker:${GITHUB_SHA}" >> $GITHUB_ENV
+
+      - name: Build and push worker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/docker/Dockerfile.worker
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.SHA_TAG }}
