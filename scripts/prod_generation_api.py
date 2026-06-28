@@ -68,6 +68,23 @@ from scripts.security import (
     safe_error,
     verify_worker_secret,
 )
+
+# ── Priority table (server-side, from X-User-Plan header) ──────────────────────
+_PLAN_PRIORITY: dict[str, int] = {
+    "admin":   1000,
+    "pro":      500,
+    "paid":     300,
+    "free":     100,
+    "unknown":  100,
+}
+
+
+def _resolve_priority(request: Request) -> tuple[int, str]:
+    """Return (priority, plan) from X-User-Plan header. Always server-assigned."""
+    plan = (request.headers.get("X-User-Plan") or "unknown").lower().strip()
+    if plan not in _PLAN_PRIORITY:
+        plan = "unknown"
+    return _PLAN_PRIORITY[plan], plan
 from scripts.security_audit import (
     EVT_JOB_CREATED,
     EVT_JOB_CLAIMED,
@@ -176,6 +193,9 @@ async def create_generation_job(
     user_id  = get_user_id(request)
     trace_id = new_trace_id()
 
+    # Priority assigned server-side — clients cannot override
+    priority, plan = _resolve_priority(request)
+
     # Mode validation
     if mode not in ALLOWED_MODES:
         raise HTTPException(
@@ -219,7 +239,8 @@ async def create_generation_job(
         logger.error("[api] s3_upload_failed job_id=%s trace_id=%s: %s", job_id, trace_id, exc)
         raise safe_error("storage_error", 500, trace_id)
 
-    # Create job in DB
+    # Create job in DB — GPU is never triggered here; the dispatcher service
+    # picks up queued jobs and calls the GPU orchestrator asynchronously.
     try:
         job_id = create_job(
             job_id=job_id,
@@ -227,10 +248,27 @@ async def create_generation_job(
             mode=mode,
             params=parsed_params,
             s3_input_key=s3_key,
+            queue_priority=priority,  # existing column (migration 003)
         )
     except Exception as exc:
         logger.error("[api] create_job_failed trace_id=%s: %s", trace_id, exc)
         raise safe_error("db_error", 500, trace_id)
+
+    # Persist migration-006 columns (priority + plan) — best-effort
+    try:
+        from scripts.prod_job_store import _get_conn  # type: ignore
+        conn = _get_conn()
+        try:
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE generation_jobs SET priority=%s, plan=%s WHERE id=%s",
+                        (priority, plan, job_id),
+                    )
+        finally:
+            conn.close()
+    except Exception as _exc:
+        logger.warning("[api] priority_col_update_skipped job_id=%s exc=%s", job_id, _exc)
 
     # Register input file
     try:
@@ -244,10 +282,13 @@ async def create_generation_job(
         logger.warning("[api] add_input_file_failed job_id=%s: %s", job_id, exc)
 
     audit(EVT_JOB_CREATED, user_id=user_id, job_id=job_id, trace_id=trace_id,
-          details={"mode": mode, "size_bytes": len(content)},
+          details={"mode": mode, "size_bytes": len(content), "plan": plan, "priority": priority},
           ip_address=request.client.host if request.client else None)
 
-    logger.info("[api] job_created job_id=%s user_id=%s mode=%s size=%d", job_id, user_id, mode, len(content))
+    logger.info(
+        "[api] job_created job_id=%s user_id=%s mode=%s plan=%s priority=%d size=%d",
+        job_id, user_id, mode, plan, priority, len(content),
+    )
 
     job = get_job(job_id)
     return JobResponse(

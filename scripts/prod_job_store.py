@@ -419,3 +419,233 @@ def list_job_files(job_id: str) -> List[Dict[str, Any]]:
                      (job_id,))
     finally:
         conn.close()
+
+
+# ── GPU dispatcher queue API (migration 006) ————————————————————————————————————
+
+def get_next_queued_job_for_dispatch() -> Optional[Dict[str, Any]]:
+    """
+    Peek at the next dispatchable job without locking it.
+
+    Selects status='queued', attempts < max_attempts,
+    locked_until IS NULL or expired,
+    ordered by priority DESC then queued_at ASC (FIFO within same priority).
+
+    Returns the row dict or None.  Use lock_job_for_dispatch to atomically
+    acquire the job before calling the orchestrator.
+    """
+    conn = _get_conn()
+    try:
+        return _row(
+            conn,
+            """
+            SELECT *
+            FROM generation_jobs
+            WHERE status = 'queued'
+              AND attempts < max_attempts
+              AND (locked_until IS NULL OR locked_until < NOW())
+            ORDER BY priority DESC, queued_at ASC
+            LIMIT 1
+            """,
+            (),
+        )
+    finally:
+        conn.close()
+
+
+def lock_job_for_dispatch(job_id: str, lock_seconds: int = 120) -> Optional[Dict[str, Any]]:
+    """
+    Atomically lock a queued job for the dispatcher.
+
+    Uses SELECT … FOR UPDATE SKIP LOCKED so two dispatcher instances never
+    race on the same row.  Increments attempts and sets locked_until.
+
+    Returns the updated row, or None if the job was already taken.
+    """
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE generation_jobs
+                    SET
+                        attempts     = attempts + 1,
+                        locked_until = NOW() + (%s || ' seconds')::INTERVAL,
+                        updated_at   = NOW()
+                    WHERE id = (
+                        SELECT id
+                        FROM generation_jobs
+                        WHERE id = %s
+                          AND status = 'queued'
+                          AND attempts < max_attempts
+                          AND (locked_until IS NULL OR locked_until < NOW())
+                        FOR UPDATE SKIP LOCKED
+                        LIMIT 1
+                    )
+                    RETURNING *
+                    """,
+                    (str(lock_seconds), job_id),
+                )
+                row = cur.fetchone()
+                return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def mark_gpu_requested(
+    job_id: str,
+    orchestrator_payload: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Set status=gpu_requested, gpu_status=requested, record payload + timestamp."""
+    import json as _json
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE generation_jobs
+                    SET
+                        status               = 'gpu_requested',
+                        gpu_status           = 'requested',
+                        gpu_requested_at     = NOW(),
+                        locked_until         = NULL,
+                        orchestrator_payload = %s,
+                        orchestrator_error   = NULL,
+                        updated_at           = NOW()
+                    WHERE id = %s
+                    """,
+                    (_json.dumps(orchestrator_payload or {}), job_id),
+                )
+    finally:
+        conn.close()
+    logger.info("[job_store] gpu_requested job_id=%s", job_id)
+
+
+def mark_gpu_request_failed(job_id: str, error: str) -> None:
+    """
+    Record a failed GPU orchestration attempt.
+
+    If attempts >= max_attempts → status='failed' + failed_at.
+    Otherwise → status='queued' for dispatcher retry.
+    """
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE generation_jobs
+                    SET
+                        gpu_status         = 'request_failed',
+                        orchestrator_error = %s,
+                        locked_until       = NULL,
+                        status = CASE
+                            WHEN attempts >= max_attempts THEN 'failed'
+                            ELSE 'queued'
+                        END,
+                        failed_at = CASE
+                            WHEN attempts >= max_attempts THEN NOW()
+                            ELSE NULL
+                        END,
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (error[:2000], job_id),
+                )
+    finally:
+        conn.close()
+    logger.warning("[job_store] gpu_request_failed job_id=%s error=%.120s", job_id, error)
+
+
+def mark_worker_started(job_id: str) -> None:
+    """Transition to worker_started and record timestamp."""
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE generation_jobs
+                    SET
+                        status            = 'worker_started',
+                        gpu_status        = 'worker_running',
+                        worker_started_at = NOW(),
+                        updated_at        = NOW()
+                    WHERE id = %s
+                    """,
+                    (job_id,),
+                )
+    finally:
+        conn.close()
+    logger.info("[job_store] worker_started job_id=%s", job_id)
+
+
+def mark_job_completed(
+    job_id: str,
+    s3_output_key: str,
+    clip_count: Optional[int] = None,
+    processing_ms: Optional[int] = None,
+) -> None:
+    """Dispatcher-friendly complete: delegates to complete_job + sets gpu_status=done."""
+    complete_job(
+        job_id=job_id,
+        s3_output_key=s3_output_key,
+        clip_count=clip_count,
+        processing_ms=processing_ms,
+    )
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE generation_jobs SET gpu_status='gpu_completed', updated_at=NOW() WHERE id=%s",
+                    (job_id,),
+                )
+    finally:
+        conn.close()
+    logger.info("[job_store] job_completed_dispatcher job_id=%s", job_id)
+
+
+def mark_job_failed(job_id: str, error_code: str, error_message: str) -> None:
+    """Dispatcher-friendly fail: delegates to fail_job + sets gpu_status=failed + failed_at."""
+    fail_job(
+        job_id=job_id,
+        error_code=error_code,
+        error_message=error_message,
+        retry=False,
+    )
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE generation_jobs
+                    SET gpu_status='failed', failed_at=NOW(), updated_at=NOW()
+                    WHERE id=%s
+                    """,
+                    (job_id,),
+                )
+    finally:
+        conn.close()
+    logger.warning("[job_store] job_failed_dispatcher job_id=%s", job_id)
+
+
+def count_active_gpu_jobs() -> int:
+    """
+    Count jobs currently in GPU-active states.
+    Used by the dispatcher to enforce MAX_ACTIVE_GPU_JOBS concurrency cap.
+    """
+    gpu_active = ("gpu_requested", "gpu_booting", "worker_started", "model_downloading")
+    conn = _get_conn()
+    try:
+        row = _row(
+            conn,
+            "SELECT COUNT(*) AS n FROM generation_jobs WHERE status = ANY(%s)",
+            (list(gpu_active),),
+        )
+        return int(row["n"]) if row else 0
+    finally:
+        conn.close()

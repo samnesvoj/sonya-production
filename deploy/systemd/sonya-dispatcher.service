@@ -1,0 +1,30 @@
+[Unit]
+Description=SONYA GPU Job Dispatcher
+Documentation=https://github.com/samnesvoj/sonya-production
+After=network-online.target
+Wants=network-online.target
+After=sonya-api.service
+
+[Service]
+Type=simple
+User=sonya
+Group=sonya
+WorkingDirectory=/opt/sonya
+EnvironmentFile=/opt/sonya/.env.local
+
+ExecStart=/opt/sonya/.venv/bin/python scripts/gpu_dispatcher.py
+
+Restart=always
+RestartSec=10
+
+PrivateTmp=true
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/sonya /var/log/sonya /tmp
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=sonya-dispatcher
+
+[Install]
+WantedBy=multi-user.target

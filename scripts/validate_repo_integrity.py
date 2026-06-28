@@ -15,6 +15,19 @@ ROOT   = Path(__file__).parent.parent
 ERRORS: list[str] = []
 WARNS:  list[str] = []
 
+# Directories that must never be scanned for project-level checks.
+_SKIP_DIRS = {
+    ".git", ".cursor", ".venv", "venv",
+    "__pycache__", ".pytest_cache", ".mypy_cache", "node_modules",
+}
+
+
+def _rglob_project(pattern: str):
+    """rglob that silently skips all service/tool directories."""
+    for p in ROOT.rglob(pattern):
+        if not any(part in _SKIP_DIRS for part in p.relative_to(ROOT).parts):
+            yield p
+
 
 def err(msg: str)  -> None: ERRORS.append(f"  ERROR: {msg}")
 def warn(msg: str) -> None: WARNS.append(f"  WARN:  {msg}")
@@ -41,15 +54,15 @@ for name in ["SONYA-DATASET", "SONYA", "sonya_clean_deploy", "backend",
 # ── 3. Weight files ────────────────────────────────────────────────────────────
 print("\n[3] Weight files")
 _WEIGHT_EXTS = {".pt", ".onnx", ".safetensors", ".bin", ".task"}
-found_weights = [p for p in ROOT.rglob("*") if p.suffix in _WEIGHT_EXTS]
+found_weights = [p for p in _rglob_project("*") if p.suffix in _WEIGHT_EXTS]
 if found_weights:
     for p in found_weights: err(f"Weight file: {p.relative_to(ROOT)}")
 else: ok("No weight files found")
 
 # ── 4. __pycache__ / *.pyc ────────────────────────────────────────────────────
 print("\n[4] __pycache__ / *.pyc")
-pcs  = [p for p in ROOT.rglob("__pycache__") if p.is_dir()]
-pycs = list(ROOT.rglob("*.pyc"))
+pcs  = [p for p in _rglob_project("__pycache__") if p.is_dir()]
+pycs = list(_rglob_project("*.pyc"))
 if pcs:
     for p in pcs: err(f"__pycache__: {p.relative_to(ROOT)}")
 elif pycs:
@@ -63,7 +76,7 @@ if not mdir.exists():
     err("scripts/migrations/ missing")
 else:
     sqls = sorted(mdir.glob("*.sql"))
-    if len(sqls) < 3: err(f"Too few migrations: {len(sqls)} (need ≥3)")
+    if len(sqls) < 6: err(f"Too few migrations: {len(sqls)} (need ≥6)")
     else:
         for s in sqls:
             if s.stat().st_size < 50: err(f"Empty migration: {s.name}")
@@ -87,7 +100,7 @@ _SECRET_PATTERNS = [
     "DATABASE_URL=postgresql", "WORKER_SECRET=",
 ]
 secret_found = False
-for fpath in ROOT.rglob("*.py"):
+for fpath in _rglob_project("*.py"):
     if fpath.resolve() == _SELF: continue
     text = fpath.read_text(encoding="utf-8", errors="ignore")
     for pat in _SECRET_PATTERNS:
@@ -307,6 +320,66 @@ for fpath in list(ROOT.glob("*.md")) + list((ROOT / "deploy").glob("*.md")):
             err(f"Forbidden word {w!r} in {fpath.relative_to(ROOT)}")
             fw_found = True
 if not fw_found: ok("No forbidden words in docs")
+
+# ── 24. GPU queue + ephemeral flow ────────────────────────────────────────────
+print("\n[24] GPU queue + ephemeral flow")
+
+# 24a — migration 006 exists
+_mig_dir = ROOT / "scripts" / "migrations"
+_mig006 = list(_mig_dir.glob("006_*.sql"))
+if _mig006: ok(f"migration 006 exists — {_mig006[0].name}")
+else: err("migration 006 not found (006_gpu_queue_priority.sql)")
+
+# 24b — gpu_dispatcher.py exists
+_disp = ROOT / "scripts" / "gpu_dispatcher.py"
+if _disp.exists(): ok("gpu_dispatcher.py exists")
+else: err("gpu_dispatcher.py missing")
+
+# 24c — gpu_orchestrator.py exists and uses webhook mode
+_orch = ROOT / "scripts" / "gpu_orchestrator.py"
+if _orch.exists():
+    _orch_txt = _orch.read_text(encoding="utf-8", errors="ignore")
+    if "webhook" in _orch_txt: ok("gpu_orchestrator.py — webhook mode present")
+    else: err("gpu_orchestrator.py — 'webhook' not found")
+else: err("gpu_orchestrator.py missing")
+
+# 24d — bootstrap_worker_once.sh exists and contains required commands
+_bs = ROOT / "deploy" / "gpu" / "bootstrap_worker_once.sh"
+if _bs.exists():
+    ok("bootstrap_worker_once.sh exists")
+    _bs_txt = _bs.read_text(encoding="utf-8", errors="ignore")
+    if "gpu_worker.py" in _bs_txt and "--once" in _bs_txt and "--job-id" in _bs_txt:
+        ok("bootstrap contains gpu_worker.py --once --job-id")
+    else:
+        err("bootstrap missing: gpu_worker.py --once --job-id")
+    if "shutdown" in _bs_txt: ok("bootstrap contains shutdown")
+    else: err("bootstrap missing: shutdown command")
+else: err("deploy/gpu/bootstrap_worker_once.sh missing")
+
+# 24e — sonya-dispatcher.service exists
+_svc = ROOT / "deploy" / "systemd" / "sonya-dispatcher.service"
+if _svc.exists(): ok("sonya-dispatcher.service exists")
+else: err("deploy/systemd/sonya-dispatcher.service missing")
+
+# 24f — docs describe ephemeral GPU
+_n8n_doc = ROOT / "deploy" / "n8n_gpu_orchestration.md"
+if _n8n_doc.exists():
+    _doc_txt = _n8n_doc.read_text(encoding="utf-8", errors="ignore").lower()
+    if "ephemeral" in _doc_txt: ok("n8n_gpu_orchestration.md describes ephemeral GPU")
+    else: err("n8n_gpu_orchestration.md missing 'ephemeral'")
+else: err("deploy/n8n_gpu_orchestration.md missing")
+
+_cmd_doc = ROOT / "deploy" / "commands_production_queue_gpu.md"
+if _cmd_doc.exists(): ok("commands_production_queue_gpu.md exists")
+else: err("deploy/commands_production_queue_gpu.md missing")
+
+# 24g — gpu_worker supports --once
+_gw = ROOT / "scripts" / "gpu_worker.py"
+if _gw.exists():
+    _gw_txt = _gw.read_text(encoding="utf-8", errors="ignore")
+    if "--once" in _gw_txt: ok("gpu_worker.py supports --once (ephemeral flow)")
+    else: err("gpu_worker.py missing --once flag")
+else: err("gpu_worker.py missing")
 
 # ── Summary ────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 60)
