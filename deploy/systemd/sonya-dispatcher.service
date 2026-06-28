@@ -7,8 +7,7 @@ After=sonya-api.service
 
 [Service]
 Type=simple
-User=sonya
-Group=sonya
+
 WorkingDirectory=/opt/sonya
 EnvironmentFile=/opt/sonya/.env.local
 
