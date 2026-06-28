@@ -482,48 +482,124 @@ def _build_vast_startup_script(job_id: str, mode: str) -> str:
     return "\n".join(script_lines) + "\n"
 
 
+def _extract_offers_from_response(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Extract the list of GPU offers from a vast.ai API response.
+    Tries common top-level keys: offers, results, bundles, data, list.
+    Logs available keys when the schema is unexpected.
+    """
+    for key in ("offers", "results", "bundles", "data", "list"):
+        val = data.get(key)
+        if isinstance(val, list):
+            return val
+    # Unknown schema — log top-level keys to help debugging
+    top_keys = list(data.keys())[:10]
+    logger.warning("vast_response_unexpected_schema top_level_keys=%s", top_keys)
+    return []
+
+
 def _vast_search_offers(min_vram_gb: int, gpu_name: str) -> Optional[Dict[str, Any]]:
     """
     Search vast.ai for the cheapest available GPU offer matching requirements.
-    Returns the best offer dict, or None if nothing found.
+
+    vast.ai /bundles/ does NOT accept order_by/order/sort query params —
+    they cause HTTP 400.  We fetch all available offers and filter/sort
+    in Python instead.
+
+    Returns the best (cheapest dph_total) matching offer dict, or None.
     """
+    # Only the 'q' JSON filter and 'api_key' are sent — no order/sort params.
     query: Dict[str, Any] = {
-        "gpu_ram":   {"gte": min_vram_gb},
-        "rentable":  {"eq": True},
-        "verified":  {"eq": True},
-        "cuda_max_good": {"gte": 12.0},
+        "gpu_ram": {"gte": min_vram_gb},
+        "rentable": {"eq": True},
     }
     if gpu_name:
         query["gpu_name"] = {"eq": gpu_name}
 
     params = {
         "q": json.dumps(query),
-        "order_by": "dph_total",
-        "order": "asc",
-        "api_key": _VAST_API_KEY,
+        "api_key": _VAST_API_KEY,   # token — not logged elsewhere
     }
+
     try:
         import requests  # type: ignore
 
         resp = requests.get(
             f"{_VAST_API_BASE}/bundles/",
             params=params,
-            timeout=20,
+            timeout=30,
         )
+
         if not resp.ok:
-            logger.warning("vast_search_failed http=%d body=%s", resp.status_code, resp.text[:200])
+            logger.warning(
+                "vast_search_failed http=%d body=%s", resp.status_code, resp.text[:300]
+            )
             return None
+
         data = resp.json()
-        offers = data.get("offers", [])
-        if not offers:
-            logger.warning("vast_no_offers min_vram=%dGB gpu_name=%r", min_vram_gb, gpu_name)
+        offers = _extract_offers_from_response(data)
+
+        logger.info("vast_search_raw_offers count=%d", len(offers))
+        if offers:
+            logger.debug(
+                "vast_offer_first_keys keys=%s", list(offers[0].keys())[:15]
+            )
+
+        # ── Python-side filtering ─────────────────────────────────────────────
+        filtered: List[Dict[str, Any]] = []
+        for offer in offers:
+            gpu_ram = offer.get("gpu_ram") or offer.get("gpu_ram_free_mb", 0)
+            # gpu_ram may be in GB or MB; normalise to GB
+            if isinstance(gpu_ram, (int, float)) and gpu_ram > 1000:
+                gpu_ram = gpu_ram / 1024  # MB → GB
+
+            if isinstance(gpu_ram, (int, float)) and gpu_ram < min_vram_gb:
+                logger.debug(
+                    "vast_offer_skip id=%s reason=vram(%s)<min(%s)",
+                    offer.get("id"), gpu_ram, min_vram_gb,
+                )
+                continue
+
+            # Accept if rentable/verified fields are missing (not all schemas include them)
+            rentable = offer.get("rentable", offer.get("rented", None))
+            if rentable is False:
+                logger.debug("vast_offer_skip id=%s reason=not_rentable", offer.get("id"))
+                continue
+
+            verified = offer.get("verified", None)
+            if verified is False:
+                logger.debug("vast_offer_skip id=%s reason=not_verified", offer.get("id"))
+                continue
+
+            filtered.append(offer)
+
+        if not filtered:
+            logger.warning(
+                "vast_no_matching_offers total=%d min_vram=%dGB gpu_name=%r",
+                len(offers), min_vram_gb, gpu_name,
+            )
             return None
-        best = offers[0]
+
+        # ── Sort by price (cheapest first) ────────────────────────────────────
+        def _price_key(o: Dict[str, Any]) -> float:
+            for price_field in ("dph_total", "dph_base", "price", "cost_per_hour"):
+                v = o.get(price_field)
+                if isinstance(v, (int, float)):
+                    return float(v)
+            return float("inf")
+
+        filtered.sort(key=_price_key)
+        best = filtered[0]
+
         logger.info(
-            "vast_offer_selected id=%s gpu=%s vram=%sGB dph=%.4f",
-            best.get("id"), best.get("gpu_name"), best.get("gpu_ram"), best.get("dph_total", 0),
+            "vast_offer_selected id=%s gpu=%s vram=%s dph=%.4f",
+            best.get("id"),
+            best.get("gpu_name", "?"),
+            best.get("gpu_ram", "?"),
+            _price_key(best),
         )
         return best
+
     except Exception as exc:
         logger.warning("vast_search_error exc=%s", exc)
         return None
@@ -565,22 +641,10 @@ def _trigger_vast(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
         "startup_script_bytes": len(startup_script),
     }
 
-    # ── Dry-run ────────────────────────────────────────────────────────────────
-    if _VAST_DRY_RUN:
-        logger.info(
-            "vast_dry_run job_id=%s label=%s config=%s",
-            job_id, instance_label, json.dumps(sanitized_config, indent=2),
-        )
-        return True, {
-            "ok": True, "provider": "vast", "dry_run": True,
-            "instance_label": instance_label,
-            "sanitized_config": sanitized_config,
-        }
-
-    # ── Search for a GPU offer ─────────────────────────────────────────────────
+    # ── Search for a GPU offer (also in dry-run, so we can show what would be chosen) ──
     logger.info(
-        "vast_searching_offers job_id=%s min_vram=%dGB gpu=%r image=%s",
-        job_id, _VAST_GPU_MIN_VRAM, _VAST_GPU_NAME or "any", _VAST_IMAGE,
+        "vast_searching_offers job_id=%s min_vram=%dGB gpu=%r image=%s dry_run=%s",
+        job_id, _VAST_GPU_MIN_VRAM, _VAST_GPU_NAME or "any", _VAST_IMAGE, _VAST_DRY_RUN,
     )
     offer = _vast_search_offers(_VAST_GPU_MIN_VRAM, _VAST_GPU_NAME)
     if not offer:
@@ -590,6 +654,25 @@ def _trigger_vast(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
         }
 
     ask_id = offer.get("id")
+
+    # ── Dry-run: show chosen offer, skip instance creation ────────────────────
+    if _VAST_DRY_RUN:
+        sanitized_config["chosen_offer"] = {
+            "id": str(ask_id),
+            "gpu_name": offer.get("gpu_name", "?"),
+            "gpu_ram": offer.get("gpu_ram", "?"),
+            "dph_total": offer.get("dph_total", offer.get("dph_base", "?")),
+            "reliability": offer.get("reliability", "?"),
+        }
+        logger.info(
+            "vast_dry_run job_id=%s label=%s config=%s",
+            job_id, instance_label, json.dumps(sanitized_config, indent=2),
+        )
+        return True, {
+            "ok": True, "provider": "vast", "dry_run": True,
+            "instance_label": instance_label,
+            "sanitized_config": sanitized_config,
+        }
 
     # ── Create instance ────────────────────────────────────────────────────────
     instance_payload: Dict[str, Any] = {
