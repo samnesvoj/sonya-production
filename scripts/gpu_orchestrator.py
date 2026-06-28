@@ -53,11 +53,16 @@ vast mode env vars  (production GPU provider)
 ────────────────────────────────────────────────────────────────────────────────
   VAST_API_KEY                vast.ai API key                       (never logged)
   VAST_IMAGE                  Docker image (e.g. nvidia/cuda:12.2.0-devel-ubuntu22.04)
-  VAST_GPU_NAME               optional GPU model filter (e.g. RTX4090, A100)
+  VAST_GPU_NAME               optional legacy exact-match filter (prefer regex vars below)
   VAST_GPU_MIN_VRAM           minimum VRAM in GB (default 24)
   VAST_DISK_GB                disk size in GB (default 50)
   VAST_INSTANCE_LABEL_PREFIX  label prefix for created instances (default sonya-gpu)
-  VAST_DRY_RUN                true → log sanitized payload, skip API call
+  VAST_DRY_RUN                true → search offers, log chosen offer, skip instance creation
+  VAST_GPU_INCLUDE_REGEX      case-insensitive regex; only offers matching this are accepted
+                              default: RTX 3060|RTX 3070|...|RTX 4090|A4000|A5000|L4|L40
+  VAST_GPU_EXCLUDE_REGEX      case-insensitive regex; offers matching this are rejected
+                              default: Tesla|V100|P100|K80|T4
+                              Set to empty string to disable the respective filter.
 
   # Forwarded to the GPU instance via startup script (never logged):
   BACKEND_API_URL     WORKER_SECRET
@@ -74,6 +79,7 @@ import hmac
 import json
 import logging
 import os
+import re
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
@@ -121,11 +127,32 @@ _REPO_URL = os.environ.get(
 _VAST_API_BASE          = "https://console.vast.ai/api/v0"
 _VAST_API_KEY           = os.environ.get("VAST_API_KEY", "")       # never logged
 _VAST_IMAGE             = os.environ.get("VAST_IMAGE", "nvidia/cuda:12.2.0-devel-ubuntu22.04")
-_VAST_GPU_NAME          = os.environ.get("VAST_GPU_NAME", "")      # optional GPU model filter
+_VAST_GPU_NAME          = os.environ.get("VAST_GPU_NAME", "")      # optional legacy exact-match filter
 _VAST_GPU_MIN_VRAM      = int(os.environ.get("VAST_GPU_MIN_VRAM", "24"))
 _VAST_DISK_GB           = int(os.environ.get("VAST_DISK_GB", "50"))
 _VAST_LABEL_PREFIX      = os.environ.get("VAST_INSTANCE_LABEL_PREFIX", "sonya-gpu")
 _VAST_DRY_RUN           = os.environ.get("VAST_DRY_RUN", "false").lower() == "true"
+
+# GPU model allow/deny lists (case-insensitive regex matched against gpu_name field).
+# Defaults select consumer RTX and professional Ada/Ampere cards and explicitly
+# exclude legacy data-center GPUs that are slow and cheap but unsuitable for
+# real-time video inference (Tesla V100/P100/K80/T4).
+_VAST_GPU_INCLUDE_REGEX: str = os.environ.get(
+    "VAST_GPU_INCLUDE_REGEX",
+    r"RTX 3060|RTX 3070|RTX 3080|RTX 3090|RTX 4060|RTX 4070|RTX 4080|RTX 4090|A4000|A5000|L4|L40",
+)
+_VAST_GPU_EXCLUDE_REGEX: str = os.environ.get(
+    "VAST_GPU_EXCLUDE_REGEX",
+    r"Tesla|V100|P100|K80|T4\b",
+)
+
+# Compiled once at import time (empty pattern → None = no constraint)
+_vast_include_re: Optional[re.Pattern[str]] = (
+    re.compile(_VAST_GPU_INCLUDE_REGEX, re.IGNORECASE) if _VAST_GPU_INCLUDE_REGEX else None
+)
+_vast_exclude_re: Optional[re.Pattern[str]] = (
+    re.compile(_VAST_GPU_EXCLUDE_REGEX, re.IGNORECASE) if _VAST_GPU_EXCLUDE_REGEX else None
+)
 
 # Env vars forwarded to Timeweb GPU instances via cloud-init (may contain secrets)
 _TW_WORKER_ENV_VARS: List[str] = [
@@ -482,6 +509,20 @@ def _build_vast_startup_script(job_id: str, mode: str) -> str:
     return "\n".join(script_lines) + "\n"
 
 
+def _get_offer_gpu_name(offer: Dict[str, Any]) -> str:
+    """
+    Extract a GPU model name from an offer dict.
+    vast.ai uses different field names across API versions.
+    """
+    for field in ("gpu_name", "gpu_names", "gpu", "model", "gpu_display_name"):
+        val = offer.get(field)
+        if isinstance(val, str) and val:
+            return val
+        if isinstance(val, list) and val:
+            return str(val[0])
+    return ""
+
+
 def _extract_offers_from_response(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Extract the list of GPU offers from a vast.ai API response.
@@ -548,27 +589,42 @@ def _vast_search_offers(min_vram_gb: int, gpu_name: str) -> Optional[Dict[str, A
         # ── Python-side filtering ─────────────────────────────────────────────
         filtered: List[Dict[str, Any]] = []
         for offer in offers:
+            oid = offer.get("id", "?")
+            gpu_label = _get_offer_gpu_name(offer)
+
+            # VRAM check (field may be GB or MB)
             gpu_ram = offer.get("gpu_ram") or offer.get("gpu_ram_free_mb", 0)
-            # gpu_ram may be in GB or MB; normalise to GB
             if isinstance(gpu_ram, (int, float)) and gpu_ram > 1000:
                 gpu_ram = gpu_ram / 1024  # MB → GB
-
             if isinstance(gpu_ram, (int, float)) and gpu_ram < min_vram_gb:
                 logger.debug(
-                    "vast_offer_skip id=%s reason=vram(%s)<min(%s)",
-                    offer.get("id"), gpu_ram, min_vram_gb,
+                    "vast_offer_skip id=%s gpu=%r reason=vram(%.1f)<min(%d)",
+                    oid, gpu_label, gpu_ram, min_vram_gb,
                 )
                 continue
 
-            # Accept if rentable/verified fields are missing (not all schemas include them)
-            rentable = offer.get("rentable", offer.get("rented", None))
-            if rentable is False:
-                logger.debug("vast_offer_skip id=%s reason=not_rentable", offer.get("id"))
+            # Rentable / verified — skip only if explicitly False
+            if offer.get("rentable") is False:
+                logger.debug("vast_offer_skip id=%s gpu=%r reason=not_rentable", oid, gpu_label)
+                continue
+            if offer.get("verified") is False:
+                logger.debug("vast_offer_skip id=%s gpu=%r reason=not_verified", oid, gpu_label)
                 continue
 
-            verified = offer.get("verified", None)
-            if verified is False:
-                logger.debug("vast_offer_skip id=%s reason=not_verified", offer.get("id"))
+            # GPU model exclusion list (legacy data-center GPUs)
+            if gpu_label and _vast_exclude_re and _vast_exclude_re.search(gpu_label):
+                logger.debug(
+                    "vast_offer_skip id=%s gpu=%r reason=exclude_regex(%r)",
+                    oid, gpu_label, _VAST_GPU_EXCLUDE_REGEX,
+                )
+                continue
+
+            # GPU model inclusion list (require consumer/prosumer RTX / Ada / Ampere)
+            if gpu_label and _vast_include_re and not _vast_include_re.search(gpu_label):
+                logger.debug(
+                    "vast_offer_skip id=%s gpu=%r reason=not_in_include_regex",
+                    oid, gpu_label,
+                )
                 continue
 
             filtered.append(offer)

@@ -18,15 +18,20 @@ endpoints.  No `DATABASE_URL` is passed to the GPU instance.
 
 ---
 
-## Quick sanity check — vast.ai dry-run (no instance created)
+## Quick sanity check — vast.ai dry-run (searches offers, no instance created)
+
+Recommended first production test GPU: **RTX 3060 12 GB**.
+Avoid: Tesla V100, P100, K80, T4 (default exclude regex blocks them).
 
 ```bash
 GPU_ORCHESTRATOR_MODE=vast \
-VAST_API_KEY=test \
+VAST_API_KEY=<your-key> \
 VAST_DRY_RUN=true \
 VAST_IMAGE=nvidia/cuda:12.2.0-devel-ubuntu22.04 \
-VAST_GPU_MIN_VRAM=24 \
+VAST_GPU_MIN_VRAM=12 \
 VAST_DISK_GB=50 \
+VAST_GPU_INCLUDE_REGEX="RTX 3060|RTX 3070|RTX 3080|RTX 3090|RTX 4060|RTX 4070|RTX 4080|RTX 4090|A4000|A5000|L4|L40" \
+VAST_GPU_EXCLUDE_REGEX="Tesla|V100|P100|K80|T4" \
 BACKEND_API_URL=https://sonya-e.com \
 WORKER_SECRET=test \
 AUTO_GPU_TRIGGER_ENABLED=true \
@@ -203,11 +208,13 @@ AUTO_GPU_TRIGGER_ENABLED=true
 GPU_ORCHESTRATOR_MODE=vast
 VAST_API_KEY=<your-vast-api-key>            # never commit
 VAST_IMAGE=nvidia/cuda:12.2.0-devel-ubuntu22.04
-VAST_GPU_MIN_VRAM=24
+VAST_GPU_MIN_VRAM=12                        # 12 GB for RTX 3060; 24+ for heavier modes
 VAST_DISK_GB=50
 VAST_INSTANCE_LABEL_PREFIX=sonya-gpu
 VAST_DRY_RUN=false
-VAST_GPU_NAME=                              # optional GPU model filter
+# GPU model filters — recommended for first production test:
+VAST_GPU_INCLUDE_REGEX=RTX 3060|RTX 3070|RTX 3080|RTX 3090|RTX 4060|RTX 4070|RTX 4080|RTX 4090|A4000|A5000|L4|L40
+VAST_GPU_EXCLUDE_REGEX=Tesla|V100|P100|K80|T4
 SHUTDOWN_AFTER_JOB=true
 GPU_DISPATCH_INTERVAL_SECONDS=20
 MAX_ACTIVE_GPU_JOBS=1

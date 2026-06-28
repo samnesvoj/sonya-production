@@ -380,6 +380,28 @@ if _orch.exists():
             ok("gpu_orchestrator.py — _VAST_WORKER_ENV_VARS found (DATABASE_URL check skipped)")
     else:
         err("gpu_orchestrator.py — _VAST_WORKER_ENV_VARS list not found")
+    # GPU model include/exclude filters
+    if "VAST_GPU_INCLUDE_REGEX" in _orch_txt:
+        ok("gpu_orchestrator.py — VAST_GPU_INCLUDE_REGEX supported")
+    else:
+        err("gpu_orchestrator.py — VAST_GPU_INCLUDE_REGEX missing")
+    if "VAST_GPU_EXCLUDE_REGEX" in _orch_txt:
+        ok("gpu_orchestrator.py — VAST_GPU_EXCLUDE_REGEX supported")
+    else:
+        err("gpu_orchestrator.py — VAST_GPU_EXCLUDE_REGEX missing")
+    # Default exclusions must cover legacy data-center GPUs
+    if "Tesla" in _orch_txt and "V100" in _orch_txt:
+        ok("gpu_orchestrator.py — default exclude covers Tesla/V100")
+    else:
+        err("gpu_orchestrator.py — default VAST_GPU_EXCLUDE_REGEX must include Tesla|V100")
+    if "RTX" in _orch_txt and "VAST_GPU_INCLUDE_REGEX" in _orch_txt:
+        ok("gpu_orchestrator.py — default include covers RTX consumer GPUs")
+    else:
+        err("gpu_orchestrator.py — default VAST_GPU_INCLUDE_REGEX must include RTX models")
+    if "_get_offer_gpu_name" in _orch_txt:
+        ok("gpu_orchestrator.py — _get_offer_gpu_name helper (multi-field gpu name extraction)")
+    else:
+        err("gpu_orchestrator.py — _get_offer_gpu_name missing")
 else:
     err("gpu_orchestrator.py missing")
 
