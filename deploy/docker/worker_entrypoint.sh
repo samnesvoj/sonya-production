@@ -2,13 +2,20 @@
 # worker_entrypoint.sh — SONYA Docker GPU worker entrypoint
 #
 # Runs inside the container on a vast.ai ephemeral GPU instance.
-# Secrets are injected via `docker run -e VAR=value` — never baked in.
-# DATABASE_URL is NOT required (WORKER_BACKEND_MODE=api).
+#
+# Production path:
+#   VPS dispatcher → vast.ai direct image → THIS entrypoint
+#   → prod_preflight_check → model_downloader → gpu_worker
+#   → backend worker API (BACKEND_API_URL) → S3 → shutdown/destroy
+#
+# Secrets are injected by vast.ai via the `env` dict in the create payload
+# (sent over HTTPS to vast.ai API, never embedded in a startup script).
+# DATABASE_URL is NOT required — WORKER_BACKEND_MODE=api.
 #
 # Required env vars:
 #   JOB_ID              UUID of the job to process
 #   MODE                mode name (default: trailer_film_breaker)
-#   BACKEND_API_URL     https://sonya-e.com
+#   BACKEND_API_URL     https://sonya-e.com/api/worker
 #   WORKER_SECRET       HMAC secret for worker API calls
 #   S3_ENDPOINT_URL, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY,
 #   S3_BUCKET_NAME, S3_REGION, MODELS_S3_BUCKET

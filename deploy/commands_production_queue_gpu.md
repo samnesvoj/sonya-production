@@ -1,17 +1,34 @@
 # Production Queue + Ephemeral GPU — Operations Commands
 
+## Production Path
+
+**VPS dispatcher → Vast direct image → worker_entrypoint → backend worker API → S3 → shutdown/destroy**
+
+1. VPS dispatcher (`gpu_dispatcher.py`) picks up a queued job.
+2. `gpu_orchestrator.py` (mode=`vast`) searches vast.ai for the cheapest matching GPU.
+3. Creates a vast.ai instance using `VAST_WORKER_IMAGE` as the image directly.
+4. Env vars (secrets included) are passed via the vast.ai `env` dict over HTTPS — not in any startup script.
+5. `onstart` = `"bash /entrypoint.sh"` — lightweight, no git clone, no Docker-in-Docker.
+6. `worker_entrypoint.sh` (image ENTRYPOINT) runs inside the container:
+   - validates env vars, writes `.env.local`
+   - `prod_preflight_check.py --role worker`
+   - `model_downloader.py --mode $MODE` (downloads from S3)
+   - `gpu_worker.py --once --job-id $JOB_ID` (api mode → backend worker API)
+7. Results uploaded directly to S3.
+8. Instance shuts down and is destroyed.
+
 ## GPU Provider
 
 **Production GPU provider: [vast.ai](https://vast.ai)**
 
 Vast.ai GPU instances are external and cannot reach the private PostgreSQL
-server at `192.168.0.4`.  The worker therefore uses `WORKER_BACKEND_MODE=api`
-and communicates with the VPS exclusively through `BACKEND_API_URL` worker
-endpoints.  No `DATABASE_URL` is passed to the GPU instance.
+server at `192.168.0.4`.  The worker uses `WORKER_BACKEND_MODE=api` —
+all job operations go through `BACKEND_API_URL` worker endpoints.
+No `DATABASE_URL` is passed to the GPU instance.
 
 | Mode | GPU provider | Use case |
 |---|---|---|
-| `vast` | **vast.ai** — recommended production GPU | External GPU; uses WORKER_BACKEND_MODE=api |
+| `vast` | **vast.ai** — recommended production GPU | Direct image; WORKER_BACKEND_MODE=api |
 | `timeweb` | Timeweb Cloud — optional/legacy | If already using Timeweb for GPU; can reach private DB |
 | `webhook` | External orchestrator (n8n etc.) — optional | Visual workflow needed |
 | `disabled` | None | Safe default |

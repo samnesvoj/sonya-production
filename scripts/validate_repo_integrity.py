@@ -528,6 +528,8 @@ else:
 # ── 25. Docker worker image ────────────────────────────────────────────────────
 print("\n[25] Docker worker image")
 
+import re as _re   # used throughout sections 25-27
+
 _dockerfile = ROOT / "deploy" / "docker" / "Dockerfile.worker"
 if _dockerfile.exists():
     ok("deploy/docker/Dockerfile.worker exists")
@@ -546,11 +548,15 @@ if _dockerfile.exists():
         ok("Dockerfile.worker — WORKER_BACKEND_MODE=api set as ENV default")
     else:
         err("Dockerfile.worker — WORKER_BACKEND_MODE=api must be set as ENV default")
-    # Must have an entrypoint
-    if "ENTRYPOINT" in _df_txt or "entrypoint" in _df_txt.lower():
+    # Must have an entrypoint defined and chmod +x applied
+    if "ENTRYPOINT" in _df_txt:
         ok("Dockerfile.worker — ENTRYPOINT defined")
     else:
         err("Dockerfile.worker — missing ENTRYPOINT")
+    if "chmod +x /entrypoint.sh" in _df_txt or "chmod +x" in _df_txt:
+        ok("Dockerfile.worker — entrypoint chmod +x applied")
+    else:
+        err("Dockerfile.worker — missing chmod +x on entrypoint")
 else:
     err("deploy/docker/Dockerfile.worker missing")
 
@@ -565,17 +571,30 @@ if _entrypoint.exists():
             ok(f"worker_entrypoint.sh — validates {req}")
         else:
             err(f"worker_entrypoint.sh — missing validation for {req}")
-    # Must NOT mandate DATABASE_URL (it may appear in a comment explaining its absence)
-    import re as _re
+    # Must NOT mandate DATABASE_URL
     if not _re.search(r':\s*["\$]?\{?\s*DATABASE_URL\s*:[\?!]', _ep_txt):
         ok("worker_entrypoint.sh — DATABASE_URL not mandated (api mode)")
     else:
         err("worker_entrypoint.sh — must not mandate DATABASE_URL (use WORKER_BACKEND_MODE=api)")
-    # Must run gpu_worker.py
+    # Must run gpu_worker.py --once --job-id
     if "gpu_worker.py" in _ep_txt and "--once" in _ep_txt and "--job-id" in _ep_txt:
         ok("worker_entrypoint.sh — runs gpu_worker.py --once --job-id")
     else:
         err("worker_entrypoint.sh — missing: gpu_worker.py --once --job-id")
+    # Must run preflight and model download
+    if "prod_preflight_check.py" in _ep_txt:
+        ok("worker_entrypoint.sh — runs prod_preflight_check.py")
+    else:
+        err("worker_entrypoint.sh — missing prod_preflight_check.py call")
+    if "model_downloader.py" in _ep_txt:
+        ok("worker_entrypoint.sh — runs model_downloader.py")
+    else:
+        err("worker_entrypoint.sh — missing model_downloader.py call")
+    # Must document the production path in its header comment
+    if "backend worker api" in _ep_txt.lower() or "backend_api_url" in _ep_txt.lower():
+        ok("worker_entrypoint.sh — documents backend API path")
+    else:
+        err("worker_entrypoint.sh — must document backend API path in header")
 else:
     err("deploy/docker/worker_entrypoint.sh missing")
 
@@ -590,11 +609,11 @@ else: err("deploy/docker/build_worker_image.ps1 missing")
 
 # gpu_orchestrator must support VAST_WORKER_IMAGE
 if _orch.exists() and "VAST_WORKER_IMAGE" in _orch_txt:
-    ok("gpu_orchestrator.py — VAST_WORKER_IMAGE docker mode supported")
+    ok("gpu_orchestrator.py — VAST_WORKER_IMAGE direct image mode supported")
 else:
     err("gpu_orchestrator.py — VAST_WORKER_IMAGE not supported")
 
-# GHCR_TOKEN must be in secret set (never logged)
+# GHCR_TOKEN must remain in secret set (never logged, even if not required for public images)
 if _orch.exists() and "GHCR_TOKEN" in _orch_txt and "_SECRET_ENV_VARS" in _orch_txt:
     _secret_block_start = _orch_txt.find("_SECRET_ENV_VARS = frozenset")
     _secret_block_end   = _orch_txt.find("}", _secret_block_start) + 1
@@ -612,6 +631,151 @@ if "private" in _cmd_txt_lower and ("ghcr" in _cmd_txt_lower or "docker" in _cmd
     ok("commands doc — mentions private repo + GHCR docker flow")
 else:
     err("commands_production_queue_gpu.md — must document private repo + GHCR docker flow")
+
+# ── Section 26 — vast.ai startup script safety (git-clone fallback) ────────────
+# The base64/bash-lc wrapper is only used in git-clone fallback mode (no VAST_WORKER_IMAGE).
+# In direct image mode, onstart is simply "bash /entrypoint.sh".
+
+print("\n-- 26. vast.ai startup script safety --")
+
+# 26a — _wrap_vast_startup_command must exist (git-clone fallback)
+if _orch.exists():
+    if "_wrap_vast_startup_command" in _orch_txt:
+        ok("gpu_orchestrator.py — _wrap_vast_startup_command present (git-clone fallback)")
+    else:
+        err("gpu_orchestrator.py — missing _wrap_vast_startup_command (needed for git-clone fallback)")
+else:
+    err("gpu_orchestrator.py not found")
+
+# 26b — git-clone fallback still uses base64/bash-lc (avoids exec-shebang error)
+if _orch.exists():
+    has_base64_wrap = (
+        "base64.b64encode" in _orch_txt
+        and "bash -lc" in _orch_txt
+        and "base64 -d" in _orch_txt
+    )
+    if has_base64_wrap:
+        ok("gpu_orchestrator.py — git-clone fallback: base64 + bash -lc wrapper present")
+    else:
+        err("gpu_orchestrator.py — git-clone fallback must use base64 + bash -lc wrapper")
+
+# 26c — runtype=ssh (correct for both direct image and git-clone)
+if _orch.exists():
+    if '"runtype":   "ssh"' in _orch_txt or '"runtype": "ssh"' in _orch_txt:
+        ok("gpu_orchestrator.py — runtype=ssh (correct for onstart execution)")
+    elif '"runtype":   "args"' in _orch_txt or '"runtype": "args"' in _orch_txt:
+        err("gpu_orchestrator.py — runtype must be 'ssh', not 'args'")
+    else:
+        ok("gpu_orchestrator.py — runtype=args absent (ok)")
+
+# 26d — _sanitized_startup_preview: no secrets in logs
+if _orch.exists():
+    if "_sanitized_startup_preview" in _orch_txt:
+        ok("gpu_orchestrator.py — _sanitized_startup_preview present (secrets not logged)")
+    else:
+        err("gpu_orchestrator.py — missing _sanitized_startup_preview")
+
+# 26e — raw startup_script not logged (secrets safe in our own logs)
+if _orch.exists():
+    _bad_log = _re.search(r'logger\.\w+\([^)]*\bstartup_script\b[^)]*\)', _orch_txt)
+    if not _bad_log:
+        ok("gpu_orchestrator.py — startup_script not passed to logger (secrets safe)")
+    else:
+        err("gpu_orchestrator.py — startup_script appears in logger call — remove to protect secrets")
+
+# 26f — set +x in git-clone script builder (prevents bash tracing secret values)
+if _orch.exists():
+    if "set +x" in _orch_txt:
+        ok("gpu_orchestrator.py — 'set +x' in startup script (prevents secret tracing)")
+    else:
+        err("gpu_orchestrator.py — startup script must include 'set +x'")
+
+# ── Section 27 — vast.ai direct image mode ─────────────────────────────────────
+# Production path: VPS dispatcher → vast.ai direct image → worker_entrypoint
+# → backend worker API → S3 → instance shutdown/destroy
+#
+# Key invariants:
+#   - VAST_WORKER_IMAGE is used as the `image` field in the create payload
+#   - env vars (including secrets) go in the `env` dict field (HTTPS, not in scripts)
+#   - onstart = "bash /entrypoint.sh" — NO git clone, docker pull, docker run inside
+#   - No Docker-in-Docker
+#   - GHCR_TOKEN not required for first test if image is public
+
+print("\n-- 27. vast.ai direct image mode --")
+
+# 27a — _build_vast_env_dict helper present
+if _orch.exists():
+    if "_build_vast_env_dict" in _orch_txt:
+        ok("gpu_orchestrator.py — _build_vast_env_dict helper present (direct image env dict)")
+    else:
+        err("gpu_orchestrator.py — missing _build_vast_env_dict (env dict for direct image mode)")
+
+# 27b — VAST_WORKER_IMAGE used as image (not _VAST_IMAGE) in direct image path
+if _orch.exists():
+    if "effective_image" in _orch_txt and "_VAST_WORKER_IMAGE" in _orch_txt:
+        ok("gpu_orchestrator.py — VAST_WORKER_IMAGE used as effective_image in direct mode")
+    else:
+        err("gpu_orchestrator.py — direct image mode must use VAST_WORKER_IMAGE as the image field")
+
+# 27c — env dict passed to Vast (not embedded in onstart script)
+if _orch.exists():
+    if '"env"' in _orch_txt and "env_dict" in _orch_txt and "payload_extra" in _orch_txt:
+        ok("gpu_orchestrator.py — env dict used for direct image secrets (not in onstart script)")
+    else:
+        err("gpu_orchestrator.py — direct image mode must pass env vars via env dict field")
+
+# 27d — No docker pull/run in direct image onstart (no nested docker)
+if _orch.exists():
+    # In direct image mode, onstart = "bash /entrypoint.sh" — check that
+    # docker pull and docker run are NOT in the same code block as direct-image path.
+    # We check that "bash /entrypoint.sh" appears as the direct-image onstart.
+    if '"bash /entrypoint.sh"' in _orch_txt or "'bash /entrypoint.sh'" in _orch_txt:
+        ok("gpu_orchestrator.py — direct image onstart is minimal (bash /entrypoint.sh)")
+    else:
+        err("gpu_orchestrator.py — direct image onstart must be 'bash /entrypoint.sh', not a docker run script")
+
+# 27e — Docker-in-Docker patterns absent from direct image path
+# Check that docker pull/run/login are NOT used as bash string literals being built
+# into startup scripts (i.e., not inside Python string literals — quoted forms only).
+# Comments that SAY "no docker pull/run" are fine and expected.
+if _orch.exists():
+    _docker_quoted = _re.search(
+        r'["\']docker\s+(pull|run|login)\b',
+        _orch_txt
+    )
+    if not _docker_quoted:
+        ok("gpu_orchestrator.py — no Docker-in-Docker ops as bash commands (direct image path correct)")
+    else:
+        err("gpu_orchestrator.py — docker pull/run/login found as bash commands — remove Docker-in-Docker")
+
+# 27f — env_dict key names logged, not values
+if _orch.exists():
+    # sanitized_config should log env_vars_forwarded (list of key names), not env_dict values
+    if "env_vars_forwarded" in _orch_txt:
+        ok("gpu_orchestrator.py — sanitized_config logs env var names only (no secret values)")
+    else:
+        err("gpu_orchestrator.py — sanitized_config must log env_vars_forwarded (key names), not values")
+
+# 27g — worker_entrypoint.sh is the ENTRYPOINT in Dockerfile (Vast runs it directly)
+if _dockerfile.exists() and _entrypoint.exists():
+    _df_txt_local = _dockerfile.read_text(encoding="utf-8", errors="ignore") if not _df_txt else _df_txt
+    _ep_exists_as_entrypoint = (
+        "COPY deploy/docker/worker_entrypoint.sh /entrypoint.sh" in _df_txt_local
+        and 'ENTRYPOINT ["/entrypoint.sh"]' in _df_txt_local
+    )
+    if _ep_exists_as_entrypoint:
+        ok("Dockerfile.worker — worker_entrypoint.sh is the image ENTRYPOINT (/entrypoint.sh)")
+    else:
+        err("Dockerfile.worker — worker_entrypoint.sh must be COPY'd to /entrypoint.sh and set as ENTRYPOINT")
+
+# 27h — docs describe the VPS → Vast direct image → API → S3 → shutdown flow
+_n8n_txt_lower = _n8n_doc.read_text(encoding="utf-8", errors="ignore").lower() if _n8n_doc.exists() else ""
+_flow_keywords = ["direct image", "vast direct", "entrypoint", "backend api", "s3", "shutdown"]
+_flow_hits = [kw for kw in _flow_keywords if kw in _n8n_txt_lower or kw in _cmd_txt_lower]
+if len(_flow_hits) >= 4:
+    ok(f"docs — production flow documented ({', '.join(_flow_hits[:4])})")
+else:
+    err("docs — must document VPS -> Vast direct image -> entrypoint -> backend API -> S3 -> shutdown flow")
 
 # ── Summary ────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 60)

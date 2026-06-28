@@ -40,7 +40,9 @@ Otherwise use `GPU_ORCHESTRATOR_MODE=vast` and the VPS calls vast.ai directly.
 
 ---
 
-## Architecture — vast.ai mode (production / recommended)
+## Architecture — vast.ai direct image mode (production / recommended)
+
+**Production path:** VPS dispatcher → Vast direct image → worker_entrypoint → backend worker API → S3 → shutdown/destroy
 
 ```
 Client ──POST /api/generation/jobs──▶  VPS API (FastAPI, Timeweb VPS)
@@ -53,24 +55,39 @@ VPS Dispatcher (systemd) ◀─poll─────────────┘
 gpu_orchestrator.trigger_gpu_for_job()  [GPU_ORCHESTRATOR_MODE=vast]
     │  GET  https://console.vast.ai/api/v0/bundles/ — find cheapest GPU offer
     │  PUT  https://console.vast.ai/api/v0/asks/{id}/ — create instance
-    │  startup script (onstart): env vars + git clone + bootstrap
-    │  WORKER_BACKEND_MODE=api injected — no DATABASE_URL passed
+    │      image:  ghcr.io/samnesvoj/sonya-worker:latest  (VAST_WORKER_IMAGE)
+    │      env:    {JOB_ID, MODE, BACKEND_API_URL, WORKER_SECRET, S3_*, …}
+    │              (secrets sent over HTTPS to vast.ai API, not in any script)
+    │      onstart: "bash /entrypoint.sh"  — lightweight, no git clone/docker pull
     ▼
-GPU Instance (ephemeral, vast.ai)
-    │  runs deploy/gpu/bootstrap_worker_once.sh
-    │  apt-get git python3-venv ffmpeg …
-    │  git clone repo → /opt/sonya
-    │  pip install requirements-worker.txt
-    │  python scripts/model_downloader.py --mode $MODE
-    │  python scripts/gpu_worker.py --once --job-id $JOB_ID
-    │       └─ uses WORKER_BACKEND_MODE=api:
-    │           POST /api/worker/claim          (claim job)
-    │           POST /api/worker/jobs/{id}/status  (status updates)
-    │           POST /api/worker/jobs/{id}/files   (register output files)
-    │           POST /api/worker/jobs/{id}/complete (mark done)
+GPU Instance (ephemeral, vast.ai) — runs ghcr.io/samnesvoj/sonya-worker:latest
+    │  Vast pulls the pre-built image directly (no git clone, no Docker-in-Docker)
+    │  worker_entrypoint.sh  (image ENTRYPOINT)
+    │      validates env vars (JOB_ID, BACKEND_API_URL, WORKER_SECRET, S3_*, …)
+    │      writes .env.local (chmod 600)
+    │      python scripts/prod_preflight_check.py --role worker
+    │      python scripts/model_downloader.py --mode $MODE  (downloads from S3)
+    │      python scripts/gpu_worker.py --once --job-id $JOB_ID
+    │           └─ WORKER_BACKEND_MODE=api  (no DATABASE_URL, no direct DB access)
+    │               POST /api/worker/claim              (claim job)
+    │               POST /api/worker/jobs/{id}/status   (status updates)
+    │               POST /api/worker/jobs/{id}/files    (register output files)
+    │               POST /api/worker/jobs/{id}/complete (mark done)
     │  uploads results directly to S3
-    │  shutdown -h now
+    │  shutdown -h now  (SHUTDOWN_AFTER_JOB=true)
+    ▼
+Instance destroyed / billing stops
 ```
+
+> **Repo is private** — `VAST_WORKER_IMAGE` (GHCR image) carries the code.
+> No `git clone`, no Docker-in-Docker, no `GHCR_TOKEN` required on the VPS
+> if the image is published as public on GHCR for the initial test.
+
+### Fallback: git-clone mode (public repos / dev only)
+
+When `VAST_WORKER_IMAGE` is not set, the orchestrator falls back to a
+git-clone startup script (base64-wrapped to avoid the shebang-as-path error).
+This requires the repository to be public. **Not recommended for production.**
 
 ---
 
