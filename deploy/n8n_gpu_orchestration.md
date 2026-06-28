@@ -131,6 +131,11 @@ Avoid for first test: **Tesla V100, P100, K80, T4** — cheap but slow for
 real-time video inference. The default `VAST_GPU_EXCLUDE_REGEX` blocks them
 automatically.
 
+**Avoid locations: South Korea (KR), China (CN)** — connectivity/latency issues
+with sonya-e.com backend. The default `VAST_LOCATION_EXCLUDE_REGEX` blocks them.
+
+Preferred locations: **US, EU (DE/NL/PL/FR/FI/SE), JP**.
+
 ## vast.ai Mode — Env Vars (VPS .env.local)
 
 ```
@@ -138,6 +143,7 @@ AUTO_GPU_TRIGGER_ENABLED=true
 GPU_ORCHESTRATOR_MODE=vast
 VAST_API_KEY=<bearer-token>               # never logged
 VAST_IMAGE=nvidia/cuda:12.2.0-devel-ubuntu22.04
+VAST_WORKER_IMAGE=ghcr.io/samnesvoj/sonya-worker:latest  # direct image (private repo)
 VAST_GPU_MIN_VRAM=12                      # 12 GB for RTX 3060; raise to 24 for heavier modes
 VAST_DISK_GB=50
 VAST_INSTANCE_LABEL_PREFIX=sonya-gpu
@@ -145,6 +151,9 @@ VAST_DRY_RUN=false                        # set true to search offers without cr
 # GPU model filters (case-insensitive regex):
 VAST_GPU_INCLUDE_REGEX=RTX 3060|RTX 3070|RTX 3080|RTX 3090|RTX 4060|RTX 4070|RTX 4080|RTX 4090|A4000|A5000|L4|L40
 VAST_GPU_EXCLUDE_REGEX=Tesla|V100|P100|K80|T4
+# Location filters (avoid KR/CN — connectivity issues):
+VAST_LOCATION_EXCLUDE_REGEX=South Korea|Korea|KR|China|CN
+# VAST_LOCATION_INCLUDE_REGEX=US|Germany|Netherlands|Poland|France|Finland|Sweden|Japan
 SHUTDOWN_AFTER_JOB=true
 GPU_DISPATCH_INTERVAL_SECONDS=20
 MAX_ACTIVE_GPU_JOBS=1

@@ -168,6 +168,26 @@ _vast_exclude_re: Optional[re.Pattern[str]] = (
     re.compile(_VAST_GPU_EXCLUDE_REGEX, re.IGNORECASE) if _VAST_GPU_EXCLUDE_REGEX else None
 )
 
+# Location allow/deny lists.
+# Matched case-insensitively against country, country_code, geolocation, region, city
+# fields in the offer.  Default excludes South Korea and China which have shown
+# connectivity/latency problems with sonya-e.com backend.
+# Recommended locations for first production test: US, EU (DE/NL/FR/FI/SE/PL), JP.
+_VAST_LOCATION_INCLUDE_REGEX: str = os.environ.get("VAST_LOCATION_INCLUDE_REGEX", "")
+_VAST_LOCATION_EXCLUDE_REGEX: str = os.environ.get(
+    "VAST_LOCATION_EXCLUDE_REGEX",
+    r"South Korea|Korea|^KR$|\bKR\b|China|^CN$|\bCN\b",
+)
+
+_vast_location_include_re: Optional[re.Pattern[str]] = (
+    re.compile(_VAST_LOCATION_INCLUDE_REGEX, re.IGNORECASE)
+    if _VAST_LOCATION_INCLUDE_REGEX else None
+)
+_vast_location_exclude_re: Optional[re.Pattern[str]] = (
+    re.compile(_VAST_LOCATION_EXCLUDE_REGEX, re.IGNORECASE)
+    if _VAST_LOCATION_EXCLUDE_REGEX else None
+)
+
 # Env vars forwarded to Timeweb GPU instances via cloud-init (may contain secrets)
 _TW_WORKER_ENV_VARS: List[str] = [
     "BACKEND_API_URL",
@@ -613,6 +633,42 @@ def _get_offer_gpu_name(offer: Dict[str, Any]) -> str:
     return ""
 
 
+def _get_offer_location_label(offer: Dict[str, Any]) -> str:
+    """
+    Build a composite location string from whatever geographic fields vast.ai
+    returns.  The label is matched against VAST_LOCATION_INCLUDE/EXCLUDE_REGEX.
+
+    vast.ai API may return location info in various fields depending on API
+    version and offer type; we try all known fields and concatenate non-empty
+    values so a single regex can match country name, ISO code, city, or region.
+    """
+    parts: List[str] = []
+    for field in (
+        "country",          # "United States", "South Korea" …
+        "country_code",     # "US", "KR", "DE" …
+        "geolocation",      # "Seoul, KR" or "Frankfurt, DE" …
+        "location",         # free-form location string
+        "region",           # "EU", "NA", "ASIA" …
+        "city",             # "Seoul", "Amsterdam" …
+        "datacenter",       # sometimes contains city/country
+        "host_region",      # some API versions
+    ):
+        val = offer.get(field)
+        if isinstance(val, str) and val.strip():
+            parts.append(val.strip())
+
+    # Also check nested dicts (e.g. {"location": {"country": "KR", "city": "Seoul"}})
+    for field in ("location", "geolocation"):
+        nested = offer.get(field)
+        if isinstance(nested, dict):
+            for sub in ("country", "country_code", "city", "region"):
+                sv = nested.get(sub)
+                if isinstance(sv, str) and sv.strip():
+                    parts.append(sv.strip())
+
+    return " | ".join(dict.fromkeys(parts))  # deduplicate while preserving order
+
+
 def _extract_offers_from_response(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Extract the list of GPU offers from a vast.ai API response.
@@ -717,6 +773,23 @@ def _vast_search_offers(min_vram_gb: int, gpu_name: str) -> Optional[Dict[str, A
                 )
                 continue
 
+            # Location exclusion list (KR/CN and other unstable regions by default)
+            loc_label = _get_offer_location_label(offer)
+            if loc_label and _vast_location_exclude_re and _vast_location_exclude_re.search(loc_label):
+                logger.debug(
+                    "vast_offer_skip id=%s gpu=%r loc=%r reason=location_exclude",
+                    oid, gpu_label, loc_label,
+                )
+                continue
+
+            # Location inclusion list (optional: restrict to US/EU/JP etc.)
+            if loc_label and _vast_location_include_re and not _vast_location_include_re.search(loc_label):
+                logger.debug(
+                    "vast_offer_skip id=%s gpu=%r loc=%r reason=location_not_include",
+                    oid, gpu_label, loc_label,
+                )
+                continue
+
             filtered.append(offer)
 
         if not filtered:
@@ -738,11 +811,12 @@ def _vast_search_offers(min_vram_gb: int, gpu_name: str) -> Optional[Dict[str, A
         best = filtered[0]
 
         logger.info(
-            "vast_offer_selected id=%s gpu=%s vram=%s dph=%.4f",
+            "vast_offer_selected id=%s gpu=%s vram=%s dph=%.4f loc=%r",
             best.get("id"),
             best.get("gpu_name", "?"),
             best.get("gpu_ram", "?"),
             _price_key(best),
+            _get_offer_location_label(best) or "unknown",
         )
         return best
 
@@ -807,16 +881,20 @@ def _trigger_vast(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
 
     # Safe for logging — no secret values
     sanitized_config: Dict[str, Any] = {
-        "provider":         "vast",
-        "instance_label":   instance_label,
-        "effective_image":  effective_image,
-        "deployment_mode":  deployment_mode,
-        "gpu_name_filter":  _VAST_GPU_NAME or "(any)",
-        "min_vram_gb":      _VAST_GPU_MIN_VRAM,
-        "disk_gb":          _VAST_DISK_GB,
-        "worker_backend_mode": "api",
-        "env_vars_forwarded": sorted(env_dict.keys()),  # key names only, no values
-        "startup_preview":  _sanitized_startup_preview(job_id, mode),
+        "provider":               "vast",
+        "instance_label":         instance_label,
+        "effective_image":        effective_image,
+        "deployment_mode":        deployment_mode,
+        "gpu_name_filter":        _VAST_GPU_NAME or "(any)",
+        "gpu_include_regex":      _VAST_GPU_INCLUDE_REGEX or "(none)",
+        "gpu_exclude_regex":      _VAST_GPU_EXCLUDE_REGEX or "(none)",
+        "location_include_regex": _VAST_LOCATION_INCLUDE_REGEX or "(none)",
+        "location_exclude_regex": _VAST_LOCATION_EXCLUDE_REGEX or "(none)",
+        "min_vram_gb":            _VAST_GPU_MIN_VRAM,
+        "disk_gb":                _VAST_DISK_GB,
+        "worker_backend_mode":    "api",
+        "env_vars_forwarded":     sorted(env_dict.keys()),  # key names only, no values
+        "startup_preview":        _sanitized_startup_preview(job_id, mode),
     }
 
     # ── Search for a GPU offer (also in dry-run to show chosen offer) ─────────
@@ -842,6 +920,7 @@ def _trigger_vast(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
             "gpu_ram":     offer.get("gpu_ram", "?"),
             "dph_total":   offer.get("dph_total", offer.get("dph_base", "?")),
             "reliability": offer.get("reliability", "?"),
+            "location":    _get_offer_location_label(offer) or "unknown",
         }
         logger.info(
             "vast_dry_run job_id=%s label=%s config=%s",

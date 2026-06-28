@@ -777,6 +777,66 @@ if len(_flow_hits) >= 4:
 else:
     err("docs — must document VPS -> Vast direct image -> entrypoint -> backend API -> S3 -> shutdown flow")
 
+# ── Section 28 — vast.ai location filter ──────────────────────────────────────
+print("\n-- 28. vast.ai location filter --")
+
+# 28a — VAST_LOCATION_INCLUDE_REGEX and VAST_LOCATION_EXCLUDE_REGEX config present
+if _orch.exists():
+    if "VAST_LOCATION_INCLUDE_REGEX" in _orch_txt:
+        ok("gpu_orchestrator.py — VAST_LOCATION_INCLUDE_REGEX supported")
+    else:
+        err("gpu_orchestrator.py — missing VAST_LOCATION_INCLUDE_REGEX")
+    if "VAST_LOCATION_EXCLUDE_REGEX" in _orch_txt:
+        ok("gpu_orchestrator.py — VAST_LOCATION_EXCLUDE_REGEX supported")
+    else:
+        err("gpu_orchestrator.py — missing VAST_LOCATION_EXCLUDE_REGEX")
+else:
+    err("gpu_orchestrator.py not found")
+
+# 28b — default exclude covers South Korea / KR
+if _orch.exists():
+    _orch_has_kr = (
+        "South Korea" in _orch_txt and
+        ("KR" in _orch_txt or "Korea" in _orch_txt) and
+        "_VAST_LOCATION_EXCLUDE_REGEX" in _orch_txt
+    )
+    if _orch_has_kr:
+        ok("gpu_orchestrator.py — default VAST_LOCATION_EXCLUDE_REGEX excludes South Korea/KR")
+    else:
+        err("gpu_orchestrator.py — VAST_LOCATION_EXCLUDE_REGEX must exclude South Korea/KR by default")
+
+# 28c — _get_offer_location_label helper present
+if _orch.exists():
+    if "_get_offer_location_label" in _orch_txt:
+        ok("gpu_orchestrator.py — _get_offer_location_label helper present")
+    else:
+        err("gpu_orchestrator.py — missing _get_offer_location_label helper")
+
+# 28d — location filtering applied in offer loop (both exclude and include paths)
+if _orch.exists():
+    has_loc_exclude = "location_exclude" in _orch_txt or "location_exclude_re" in _orch_txt
+    has_loc_include = "location_not_include" in _orch_txt or "location_include_re" in _orch_txt
+    if has_loc_exclude:
+        ok("gpu_orchestrator.py — location exclusion filter applied in offer loop")
+    else:
+        err("gpu_orchestrator.py — location exclusion filter missing from offer loop")
+    if has_loc_include:
+        ok("gpu_orchestrator.py — location inclusion filter applied in offer loop")
+    else:
+        err("gpu_orchestrator.py — location inclusion filter missing from offer loop")
+
+# 28e — docs mention location filter and KR exclusion
+_n8n_loc = _n8n_doc.read_text(encoding="utf-8", errors="ignore") if _n8n_doc.exists() else ""
+_cmd_loc  = _cmd_doc.read_text(encoding="utf-8", errors="ignore") if _cmd_doc.exists() else ""
+_loc_ok = (
+    ("South Korea" in _n8n_loc or "South Korea" in _cmd_loc) and
+    ("VAST_LOCATION_EXCLUDE_REGEX" in _n8n_loc or "VAST_LOCATION_EXCLUDE_REGEX" in _cmd_loc)
+)
+if _loc_ok:
+    ok("docs — VAST_LOCATION_EXCLUDE_REGEX + South Korea exclusion documented")
+else:
+    err("docs — must document VAST_LOCATION_EXCLUDE_REGEX and South Korea exclusion")
+
 # ── Summary ────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 60)
 if WARNS:
