@@ -18,6 +18,35 @@ endpoints.  No `DATABASE_URL` is passed to the GPU instance.
 
 ---
 
+## Docker Image — Build and Push (private repo flow)
+
+The GitHub repo is **private**. vast.ai instances cannot git-clone it.
+Build a Docker image with the code and push it to GHCR; instances pull the
+image at runtime. Secrets are **never** baked into the image.
+
+```bash
+# On your local machine (from repo root):
+bash deploy/docker/build_worker_image.sh
+# Or on Windows:
+.\deploy\docker\build_worker_image.ps1
+```
+
+Manual push to GHCR:
+```bash
+echo "$GHCR_TOKEN" | docker login ghcr.io -u samnesvoj --password-stdin
+docker push ghcr.io/samnesvoj/sonya-worker:latest
+docker push ghcr.io/samnesvoj/sonya-worker:<git-sha>
+```
+
+Set GHCR_TOKEN on the VPS (so the dispatcher can pass it to vast.ai):
+```bash
+# Add to /etc/sonya/env.local or systemd override:
+GHCR_USERNAME=samnesvoj
+GHCR_TOKEN=<github-pat-read-packages>   # never commit
+```
+
+---
+
 ## Quick sanity check — vast.ai dry-run (searches offers, no instance created)
 
 Recommended first production test GPU: **RTX 3060 12 GB**.
@@ -28,29 +57,37 @@ GPU_ORCHESTRATOR_MODE=vast \
 VAST_API_KEY=<your-key> \
 VAST_DRY_RUN=true \
 VAST_IMAGE=nvidia/cuda:12.2.0-devel-ubuntu22.04 \
+VAST_WORKER_IMAGE=ghcr.io/samnesvoj/sonya-worker:latest \
 VAST_GPU_MIN_VRAM=12 \
 VAST_DISK_GB=50 \
 VAST_GPU_INCLUDE_REGEX="RTX 3060|RTX 3070|RTX 3080|RTX 3090|RTX 4060|RTX 4070|RTX 4080|RTX 4090|A4000|A5000|L4|L40" \
 VAST_GPU_EXCLUDE_REGEX="Tesla|V100|P100|K80|T4" \
+GHCR_USERNAME=samnesvoj \
+GHCR_TOKEN=<token> \
 BACKEND_API_URL=https://sonya-e.com \
 WORKER_SECRET=test \
 AUTO_GPU_TRIGGER_ENABLED=true \
   python scripts/gpu_dispatcher.py --once
 ```
 
-## Real vast.ai dispatch test (creates an instance)
+## Real vast.ai dispatch test (creates an instance, pulls Docker image)
 
 ```bash
 GPU_ORCHESTRATOR_MODE=vast \
 VAST_API_KEY=<your-key> \
 VAST_DRY_RUN=false \
 VAST_IMAGE=nvidia/cuda:12.2.0-devel-ubuntu22.04 \
-VAST_GPU_MIN_VRAM=24 \
+VAST_WORKER_IMAGE=ghcr.io/samnesvoj/sonya-worker:latest \
+VAST_GPU_MIN_VRAM=12 \
 VAST_DISK_GB=50 \
+VAST_GPU_INCLUDE_REGEX="RTX 3060|RTX 3090|RTX 4090|A4000|A5000" \
+VAST_GPU_EXCLUDE_REGEX="Tesla|V100|P100|K80|T4" \
+GHCR_USERNAME=samnesvoj \
+GHCR_TOKEN=<token> \
 BACKEND_API_URL=https://sonya-e.com \
 WORKER_SECRET=<secret> \
 S3_ENDPOINT_URL=<url> S3_ACCESS_KEY_ID=<id> S3_SECRET_ACCESS_KEY=<key> \
-S3_BUCKET_NAME=sonya-prod S3_REGION=<region> \
+S3_BUCKET_NAME=sonya-prod S3_REGION=<region> MODELS_S3_BUCKET=<bucket> \
 AUTO_GPU_TRIGGER_ENABLED=true \
   python scripts/gpu_dispatcher.py --once
 ```
@@ -203,18 +240,25 @@ psql "$DATABASE_URL" -c "
 
 ## Dispatcher Env Vars — vast mode / production (VPS .env.local)
 
+> **Repo is private.** Set `VAST_WORKER_IMAGE` to your GHCR image so
+> vast.ai instances pull the pre-built image instead of cloning the repo.
+
 ```
 AUTO_GPU_TRIGGER_ENABLED=true
 GPU_ORCHESTRATOR_MODE=vast
 VAST_API_KEY=<your-vast-api-key>            # never commit
 VAST_IMAGE=nvidia/cuda:12.2.0-devel-ubuntu22.04
+VAST_WORKER_IMAGE=ghcr.io/samnesvoj/sonya-worker:latest   # pre-built image (private repo)
 VAST_GPU_MIN_VRAM=12                        # 12 GB for RTX 3060; 24+ for heavier modes
 VAST_DISK_GB=50
 VAST_INSTANCE_LABEL_PREFIX=sonya-gpu
 VAST_DRY_RUN=false
-# GPU model filters — recommended for first production test:
+# GPU model filters:
 VAST_GPU_INCLUDE_REGEX=RTX 3060|RTX 3070|RTX 3080|RTX 3090|RTX 4060|RTX 4070|RTX 4080|RTX 4090|A4000|A5000|L4|L40
 VAST_GPU_EXCLUDE_REGEX=Tesla|V100|P100|K80|T4
+# GHCR credentials for pulling private image on vast.ai instance:
+GHCR_USERNAME=samnesvoj
+GHCR_TOKEN=<github-pat-read-packages>       # never commit
 SHUTDOWN_AFTER_JOB=true
 GPU_DISPATCH_INTERVAL_SECONDS=20
 MAX_ACTIVE_GPU_JOBS=1

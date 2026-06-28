@@ -525,6 +525,94 @@ if _bs.exists() and "WORKER_BACKEND_MODE" in _bs_txt and "api" in _bs_txt:
 else:
     err("bootstrap_worker_once.sh — must support api mode without DATABASE_URL")
 
+# ── 25. Docker worker image ────────────────────────────────────────────────────
+print("\n[25] Docker worker image")
+
+_dockerfile = ROOT / "deploy" / "docker" / "Dockerfile.worker"
+if _dockerfile.exists():
+    ok("deploy/docker/Dockerfile.worker exists")
+    _df_txt = _dockerfile.read_text(encoding="utf-8", errors="ignore")
+    # Must not COPY secrets or model weights into the image
+    for forbidden in (".env", "models/", "*.pt", "*.onnx", "*.safetensors"):
+        if f"COPY {forbidden}" in _df_txt or f"ADD {forbidden}" in _df_txt:
+            err(f"Dockerfile.worker — COPY/ADD of forbidden path: {forbidden}")
+    # Must use the pytorch CUDA base
+    if "pytorch/pytorch" in _df_txt or "cuda" in _df_txt.lower():
+        ok("Dockerfile.worker — uses CUDA/PyTorch base image")
+    else:
+        err("Dockerfile.worker — missing CUDA base image")
+    # WORKER_BACKEND_MODE must be set to api
+    if "WORKER_BACKEND_MODE=api" in _df_txt:
+        ok("Dockerfile.worker — WORKER_BACKEND_MODE=api set as ENV default")
+    else:
+        err("Dockerfile.worker — WORKER_BACKEND_MODE=api must be set as ENV default")
+    # Must have an entrypoint
+    if "ENTRYPOINT" in _df_txt or "entrypoint" in _df_txt.lower():
+        ok("Dockerfile.worker — ENTRYPOINT defined")
+    else:
+        err("Dockerfile.worker — missing ENTRYPOINT")
+else:
+    err("deploy/docker/Dockerfile.worker missing")
+
+_entrypoint = ROOT / "deploy" / "docker" / "worker_entrypoint.sh"
+if _entrypoint.exists():
+    ok("deploy/docker/worker_entrypoint.sh exists")
+    _ep_txt = _entrypoint.read_text(encoding="utf-8", errors="ignore")
+    # Must validate required env vars
+    for req in ("JOB_ID", "BACKEND_API_URL", "WORKER_SECRET", "S3_ENDPOINT_URL",
+                "S3_BUCKET_NAME", "MODELS_S3_BUCKET"):
+        if req in _ep_txt:
+            ok(f"worker_entrypoint.sh — validates {req}")
+        else:
+            err(f"worker_entrypoint.sh — missing validation for {req}")
+    # Must NOT mandate DATABASE_URL (it may appear in a comment explaining its absence)
+    import re as _re
+    if not _re.search(r':\s*["\$]?\{?\s*DATABASE_URL\s*:[\?!]', _ep_txt):
+        ok("worker_entrypoint.sh — DATABASE_URL not mandated (api mode)")
+    else:
+        err("worker_entrypoint.sh — must not mandate DATABASE_URL (use WORKER_BACKEND_MODE=api)")
+    # Must run gpu_worker.py
+    if "gpu_worker.py" in _ep_txt and "--once" in _ep_txt and "--job-id" in _ep_txt:
+        ok("worker_entrypoint.sh — runs gpu_worker.py --once --job-id")
+    else:
+        err("worker_entrypoint.sh — missing: gpu_worker.py --once --job-id")
+else:
+    err("deploy/docker/worker_entrypoint.sh missing")
+
+# Build scripts
+_build_sh = ROOT / "deploy" / "docker" / "build_worker_image.sh"
+if _build_sh.exists(): ok("build_worker_image.sh exists")
+else: err("deploy/docker/build_worker_image.sh missing")
+
+_build_ps = ROOT / "deploy" / "docker" / "build_worker_image.ps1"
+if _build_ps.exists(): ok("build_worker_image.ps1 exists")
+else: err("deploy/docker/build_worker_image.ps1 missing")
+
+# gpu_orchestrator must support VAST_WORKER_IMAGE
+if _orch.exists() and "VAST_WORKER_IMAGE" in _orch_txt:
+    ok("gpu_orchestrator.py — VAST_WORKER_IMAGE docker mode supported")
+else:
+    err("gpu_orchestrator.py — VAST_WORKER_IMAGE not supported")
+
+# GHCR_TOKEN must be in secret set (never logged)
+if _orch.exists() and "GHCR_TOKEN" in _orch_txt and "_SECRET_ENV_VARS" in _orch_txt:
+    _secret_block_start = _orch_txt.find("_SECRET_ENV_VARS = frozenset")
+    _secret_block_end   = _orch_txt.find("}", _secret_block_start) + 1
+    _secret_block = _orch_txt[_secret_block_start:_secret_block_end]
+    if "GHCR_TOKEN" in _secret_block:
+        ok("gpu_orchestrator.py — GHCR_TOKEN in _SECRET_ENV_VARS (never logged)")
+    else:
+        err("gpu_orchestrator.py — GHCR_TOKEN must be in _SECRET_ENV_VARS")
+else:
+    err("gpu_orchestrator.py — GHCR_TOKEN handling missing")
+
+# Docs mention private repo
+_cmd_txt_lower = _cmd_doc.read_text(encoding="utf-8", errors="ignore").lower() if _cmd_doc.exists() else ""
+if "private" in _cmd_txt_lower and ("ghcr" in _cmd_txt_lower or "docker" in _cmd_txt_lower):
+    ok("commands doc — mentions private repo + GHCR docker flow")
+else:
+    err("commands_production_queue_gpu.md — must document private repo + GHCR docker flow")
+
 # ── Summary ────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 60)
 if WARNS:

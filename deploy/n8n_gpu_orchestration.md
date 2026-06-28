@@ -106,6 +106,14 @@ GPU Instance (ephemeral)
 
 ---
 
+## vast.ai Mode — Recommended GPU for first production test
+
+**Recommended: RTX 3060 12 GB** (affordable, sufficient VRAM for all SONYA modes).
+
+Avoid for first test: **Tesla V100, P100, K80, T4** — cheap but slow for
+real-time video inference. The default `VAST_GPU_EXCLUDE_REGEX` blocks them
+automatically.
+
 ## vast.ai Mode — Env Vars (VPS .env.local)
 
 ```
@@ -113,11 +121,13 @@ AUTO_GPU_TRIGGER_ENABLED=true
 GPU_ORCHESTRATOR_MODE=vast
 VAST_API_KEY=<bearer-token>               # never logged
 VAST_IMAGE=nvidia/cuda:12.2.0-devel-ubuntu22.04
-VAST_GPU_MIN_VRAM=24
+VAST_GPU_MIN_VRAM=12                      # 12 GB for RTX 3060; raise to 24 for heavier modes
 VAST_DISK_GB=50
 VAST_INSTANCE_LABEL_PREFIX=sonya-gpu
-VAST_DRY_RUN=false                        # set true for testing without creating instance
-VAST_GPU_NAME=                            # optional, e.g. RTX4090
+VAST_DRY_RUN=false                        # set true to search offers without creating instance
+# GPU model filters (case-insensitive regex):
+VAST_GPU_INCLUDE_REGEX=RTX 3060|RTX 3070|RTX 3080|RTX 3090|RTX 4060|RTX 4070|RTX 4080|RTX 4090|A4000|A5000|L4|L40
+VAST_GPU_EXCLUDE_REGEX=Tesla|V100|P100|K80|T4
 SHUTDOWN_AFTER_JOB=true
 GPU_DISPATCH_INTERVAL_SECONDS=20
 MAX_ACTIVE_GPU_JOBS=1

@@ -1,0 +1,37 @@
+# .dockerignore — files never copied into the worker image
+
+# Secrets / env files — NEVER baked in
+.env
+.env.*
+.env.local
+.env.example
+
+# Model weights — downloaded at runtime from S3
+models/
+weights/
+*.pt
+*.onnx
+*.safetensors
+*.bin
+*.task
+
+# Dev / test artefacts
+.git/
+.cursor/
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+node_modules/
+
+# Logs and temp files
+*.log
+/tmp/
+outputs/
+runs/
+raw_videos/
+test_videos/
+datasets/
