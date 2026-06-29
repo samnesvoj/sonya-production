@@ -659,14 +659,12 @@ if _orch.exists():
     else:
         err("gpu_orchestrator.py — git-clone fallback must use base64 + bash -lc wrapper")
 
-# 26c — runtype=ssh (correct for both direct image and git-clone)
+# 26c — runtype=ssh present for git-clone fallback (dev/debug only)
 if _orch.exists():
-    if '"runtype":   "ssh"' in _orch_txt or '"runtype": "ssh"' in _orch_txt:
-        ok("gpu_orchestrator.py — runtype=ssh (correct for onstart execution)")
-    elif '"runtype":   "args"' in _orch_txt or '"runtype": "args"' in _orch_txt:
-        err("gpu_orchestrator.py — runtype must be 'ssh', not 'args'")
+    if '"runtype":  "ssh"' in _orch_txt or '"runtype": "ssh"' in _orch_txt:
+        ok("gpu_orchestrator.py — runtype=ssh present (git-clone fallback, dev/debug only)")
     else:
-        ok("gpu_orchestrator.py — runtype=args absent (ok)")
+        err("gpu_orchestrator.py — runtype=ssh missing from git-clone fallback path")
 
 # 26d — _sanitized_startup_preview: no secrets in logs
 if _orch.exists():
@@ -691,15 +689,15 @@ if _orch.exists():
         err("gpu_orchestrator.py — startup script must include 'set +x'")
 
 # ── Section 27 — vast.ai direct image mode ─────────────────────────────────────
-# Production path: VPS dispatcher → vast.ai direct image → worker_entrypoint
-# → backend worker API → S3 → instance shutdown/destroy
+# Production path: VPS dispatcher → vast.ai direct image (runtype=args)
+# → worker_entrypoint → backend worker API → S3 → instance shutdown/destroy
 #
 # Key invariants:
-#   - VAST_WORKER_IMAGE is used as the `image` field in the create payload
-#   - env vars (including secrets) go in the `env` dict field (HTTPS, not in scripts)
-#   - onstart = "bash /entrypoint.sh" — NO git clone, docker pull, docker run inside
-#   - No Docker-in-Docker
-#   - GHCR_TOKEN not required for first test if image is public
+#   - VAST_WORKER_IMAGE is used as the `image` field
+#   - runtype=args (NOT ssh) — no SSH daemon, no openssh-server installation
+#   - args_str = "bash -lc /entrypoint.sh" — short command, no secrets
+#   - env vars (secrets) in `env` dict (HTTPS to vast.ai API, not in script)
+#   - No Docker-in-Docker, no git clone
 
 print("\n-- 27. vast.ai direct image mode --")
 
@@ -710,34 +708,52 @@ if _orch.exists():
     else:
         err("gpu_orchestrator.py — missing _build_vast_env_dict (env dict for direct image mode)")
 
-# 27b — VAST_WORKER_IMAGE used as image (not _VAST_IMAGE) in direct image path
+# 27b — VAST_WORKER_IMAGE used as effective_image in direct image path
 if _orch.exists():
     if "effective_image" in _orch_txt and "_VAST_WORKER_IMAGE" in _orch_txt:
         ok("gpu_orchestrator.py — VAST_WORKER_IMAGE used as effective_image in direct mode")
     else:
         err("gpu_orchestrator.py — direct image mode must use VAST_WORKER_IMAGE as the image field")
 
-# 27c — env dict passed to Vast (not embedded in onstart script)
+# 27c — env dict passed to Vast (not embedded in script)
 if _orch.exists():
-    if '"env"' in _orch_txt and "env_dict" in _orch_txt and "payload_extra" in _orch_txt:
-        ok("gpu_orchestrator.py — env dict used for direct image secrets (not in onstart script)")
+    if '"env"' in _orch_txt and "env_dict" in _orch_txt and "payload_fields" in _orch_txt:
+        ok("gpu_orchestrator.py — env dict used for direct image secrets (not in args_str)")
     else:
         err("gpu_orchestrator.py — direct image mode must pass env vars via env dict field")
 
-# 27d — No docker pull/run in direct image onstart (no nested docker)
+# 27d — runtype=args used for direct image (NOT runtype=ssh)
 if _orch.exists():
-    # In direct image mode, onstart = "bash /entrypoint.sh" — check that
-    # docker pull and docker run are NOT in the same code block as direct-image path.
-    # We check that "bash /entrypoint.sh" appears as the direct-image onstart.
-    if '"bash /entrypoint.sh"' in _orch_txt or "'bash /entrypoint.sh'" in _orch_txt:
-        ok("gpu_orchestrator.py — direct image onstart is minimal (bash /entrypoint.sh)")
+    has_args_mode = '"runtype":  "args"' in _orch_txt or '"runtype": "args"' in _orch_txt
+    if has_args_mode:
+        ok("gpu_orchestrator.py — runtype=args used for direct image mode (no SSH wrapper)")
     else:
-        err("gpu_orchestrator.py — direct image onstart must be 'bash /entrypoint.sh', not a docker run script")
+        err("gpu_orchestrator.py — direct image mode must use runtype=args, not runtype=ssh")
 
-# 27e — Docker-in-Docker patterns absent from direct image path
-# Check that docker pull/run/login are NOT used as bash string literals being built
-# into startup scripts (i.e., not inside Python string literals — quoted forms only).
-# Comments that SAY "no docker pull/run" are fine and expected.
+# 27e — args_str contains entrypoint command (not a multiline script, no secrets)
+if _orch.exists():
+    has_entrypoint_cmd = (
+        '"bash -lc /entrypoint.sh"' in _orch_txt
+        or "'bash -lc /entrypoint.sh'" in _orch_txt
+        or '"args_str"' in _orch_txt
+    )
+    if has_entrypoint_cmd:
+        ok("gpu_orchestrator.py — args_str contains entrypoint command (bash -lc /entrypoint.sh)")
+    else:
+        err("gpu_orchestrator.py — args_str must be 'bash -lc /entrypoint.sh' for direct image mode")
+
+# 27f_ssh — direct image path must NOT use runtype=ssh (ssh installs openssh-server)
+# The presence of "runtype=ssh" is fine only in the git-clone fallback path.
+# The critical check: "direct-image" deployment_mode must be paired with runtype=args.
+if _orch.exists():
+    # Check that deployment_mode direct-image-args and runtype=args appear together
+    has_direct_args = "direct-image-args" in _orch_txt and '"runtype":  "args"' in _orch_txt
+    if has_direct_args:
+        ok("gpu_orchestrator.py — direct-image-args uses runtype=args (no SSH wrapper)")
+    else:
+        err("gpu_orchestrator.py — direct image deployment_mode must be paired with runtype=args")
+
+# 27g (was 27e) — Docker-in-Docker absent from orchestrator bash commands
 if _orch.exists():
     _docker_quoted = _re.search(
         r'["\']docker\s+(pull|run|login)\b',

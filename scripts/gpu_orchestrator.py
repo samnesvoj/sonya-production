@@ -927,13 +927,16 @@ def _trigger_vast(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
     Deployment paths
     ----------------
     Direct image  (VAST_WORKER_IMAGE set — production):
-        Vast pulls the worker image directly.  Env vars are passed via the
-        ``env`` dict field in the create payload (over HTTPS, never logged).
-        onstart = "bash /entrypoint.sh"  — no docker pull/run inside.
+        runtype=args — vast.ai runs the container directly as a one-shot job.
+        The Docker ENTRYPOINT (/entrypoint.sh) is invoked via bash -lc.
+        NO openssh-server installation, NO SSH wrapper, NO interactive mode.
+        Env vars pass via the ``env`` dict field (HTTPS to vast.ai, never logged).
+        args_str contains only the entrypoint command — no secrets.
 
-    Git-clone fallback  (VAST_WORKER_IMAGE not set — public repos / dev):
-        Vast boots a bare CUDA image.  onstart contains a base64-encoded
-        bash script that git-clones the repo and calls bootstrap_worker_once.sh.
+    Git-clone fallback  (VAST_WORKER_IMAGE not set — public repos / dev only):
+        runtype=ssh — used only for dev/debug, not production.
+        Boots bare CUDA image; onstart is a base64-encoded bash script that
+        git-clones the repo and calls bootstrap_worker_once.sh.
     """
     if not _VAST_API_KEY:
         err = "vast mode requires VAST_API_KEY"
@@ -953,30 +956,47 @@ def _trigger_vast(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
 
     if _VAST_WORKER_IMAGE:
         # ── Direct image mode (production) ────────────────────────────────────
-        # Vast.ai pulls VAST_WORKER_IMAGE and runs its ENTRYPOINT directly.
-        # Env vars go in the `env` dict — transmitted over HTTPS, never in logs.
-        # onstart is intentionally minimal: no docker pull/run, no git clone.
-        env_dict       = _build_vast_env_dict(job_id, mode)
+        # runtype=args: vast.ai runs the container as a direct job — no SSH daemon,
+        # no openssh-server, no interactive wrapper.  The image ENTRYPOINT is
+        # called via bash -lc which gives a clean login-shell environment.
+        #
+        # Secrets go in `env` dict (transmitted over HTTPS to vast.ai API,
+        # NEVER written to logs or embedded in args_str).
+        env_dict        = _build_vast_env_dict(job_id, mode)
         effective_image = _VAST_WORKER_IMAGE
-        onstart        = "bash /entrypoint.sh"
-        deployment_mode = "direct-image"
-        payload_extra: Dict[str, Any] = {"env": env_dict}
+        deployment_mode = "direct-image-args"
+        # args_str: safe to log — no secrets here, only the entrypoint path
+        _args_str       = "bash -lc /entrypoint.sh"
+        payload_fields: Dict[str, Any] = {
+            "runtype":  "args",
+            "args_str": _args_str,
+            "env":      env_dict,   # secrets carried over HTTPS, not in any script
+        }
+        env_forwarded_keys = sorted(env_dict.keys())
     else:
-        # ── Git-clone fallback (public repos / dev) ───────────────────────────
-        # Boots bare CUDA image; startup script installs deps, clones repo.
-        startup_script  = _build_vast_startup_script(job_id, mode)
-        effective_image = _VAST_IMAGE
-        onstart         = _wrap_vast_startup_command(startup_script)
-        deployment_mode = "git-clone"
-        env_dict        = {}
-        payload_extra   = {}
+        # ── Git-clone fallback (public repos / dev only, NOT production) ──────
+        # runtype=ssh: used only when no pre-built image is available.
+        # The base64-wrapped onstart script installs deps, clones the public repo,
+        # and calls bootstrap_worker_once.sh.
+        startup_script     = _build_vast_startup_script(job_id, mode)
+        effective_image    = _VAST_IMAGE
+        deployment_mode    = "git-clone-ssh"
+        env_dict           = {}
+        env_forwarded_keys = []
+        payload_fields = {
+            "runtype":  "ssh",
+            "onstart":  _wrap_vast_startup_command(startup_script),
+        }
 
-    # Safe for logging — no secret values
+    # Safe for logging — no secret values, no args content containing secrets
     sanitized_config: Dict[str, Any] = {
         "provider":               "vast",
         "instance_label":         instance_label,
         "effective_image":        effective_image,
         "deployment_mode":        deployment_mode,
+        "runtype":                payload_fields["runtype"],
+        # args_str is safe to log (no secrets; env dict carries them separately)
+        "args_str":               payload_fields.get("args_str", "(n/a — ssh/onstart mode)"),
         "gpu_name_filter":        _VAST_GPU_NAME or "(any)",
         "gpu_include_regex":      _VAST_GPU_INCLUDE_REGEX or "(none)",
         "gpu_exclude_regex":      _VAST_GPU_EXCLUDE_REGEX or "(none)",
@@ -987,7 +1007,7 @@ def _trigger_vast(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
         "min_vram_gb":            _VAST_GPU_MIN_VRAM,
         "disk_gb":                _VAST_DISK_GB,
         "worker_backend_mode":    "api",
-        "env_vars_forwarded":     sorted(env_dict.keys()),  # key names only, no values
+        "env_vars_forwarded":     env_forwarded_keys,  # key names only, no values
         "startup_preview":        _sanitized_startup_preview(job_id, mode),
     }
 
@@ -1030,21 +1050,23 @@ def _trigger_vast(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
         }
 
     # ── Create instance ────────────────────────────────────────────────────────
-    # runtype=ssh: vast.ai executes onstart as a shell command inside the container.
-    # Direct image: onstart="bash /entrypoint.sh" — no docker ops inside.
-    # Git-clone:    onstart=base64-encoded script — avoids exec-shebang-as-path error.
+    # Direct image (production):
+    #   runtype=args + args_str="bash -lc /entrypoint.sh" + env dict
+    #   → No SSH daemon, no openssh-server, no interactive wrapper.
+    #   → Container starts and runs the worker ENTRYPOINT as a one-shot job.
+    # Git-clone fallback (dev/debug):
+    #   runtype=ssh + onstart=base64-wrapped bash script.
     instance_payload: Dict[str, Any] = {
         "client_id": "me",
         "image":     effective_image,
         "disk":      _VAST_DISK_GB,
-        "onstart":   onstart,
-        "runtype":   "ssh",
         "label":     instance_label,
-        **payload_extra,   # adds "env": env_dict for direct-image mode
+        **payload_fields,   # runtype + (args_str+env | onstart) per deployment mode
     }
     logger.info(
-        "vast_create_instance job_id=%s ask_id=%s label=%s image=%s mode=%s",
-        job_id, ask_id, instance_label, effective_image, deployment_mode,
+        "vast_create_instance job_id=%s ask_id=%s label=%s image=%s runtype=%s mode=%s",
+        job_id, ask_id, instance_label, effective_image,
+        payload_fields["runtype"], deployment_mode,
     )
     try:
         import requests  # type: ignore

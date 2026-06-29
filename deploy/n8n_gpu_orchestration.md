@@ -55,12 +55,15 @@ VPS Dispatcher (systemd) ◀─poll─────────────┘
 gpu_orchestrator.trigger_gpu_for_job()  [GPU_ORCHESTRATOR_MODE=vast]
     │  GET  https://console.vast.ai/api/v0/bundles/ — find cheapest GPU offer
     │  PUT  https://console.vast.ai/api/v0/asks/{id}/ — create instance
-    │      image:  ghcr.io/samnesvoj/sonya-worker:latest  (VAST_WORKER_IMAGE)
-    │      env:    {JOB_ID, MODE, BACKEND_API_URL, WORKER_SECRET, S3_*, …}
-    │              (secrets sent over HTTPS to vast.ai API, not in any script)
-    │      onstart: "bash /entrypoint.sh"  — lightweight, no git clone/docker pull
+    │      image:    ghcr.io/samnesvoj/sonya-worker:latest  (VAST_WORKER_IMAGE)
+    │      runtype:  args  ← NOT ssh (ssh installs openssh-server, wraps entrypoint)
+    │      args_str: "bash -lc /entrypoint.sh"  (short, no secrets)
+    │      env:      {JOB_ID, MODE, BACKEND_API_URL, WORKER_SECRET, S3_*, …}
+    │                (secrets sent over HTTPS to vast.ai API, not in args_str)
     ▼
 GPU Instance (ephemeral, vast.ai) — runs ghcr.io/samnesvoj/sonya-worker:latest
+    │  runtype=args: Vast runs container directly as one-shot job
+    │  NO openssh-server, NO SSH daemon, NO interactive wrapper
     │  Vast pulls the pre-built image directly (no git clone, no Docker-in-Docker)
     │  worker_entrypoint.sh  (image ENTRYPOINT)
     │      validates env vars (JOB_ID, BACKEND_API_URL, WORKER_SECRET, S3_*, …)
@@ -83,10 +86,16 @@ Instance destroyed / billing stops
 > No `git clone`, no Docker-in-Docker, no `GHCR_TOKEN` required on the VPS
 > if the image is published as public on GHCR for the initial test.
 
+### SSH mode — debugging only
+
+`runtype=ssh` is used **only** in the git-clone fallback (no `VAST_WORKER_IMAGE`).
+It installs openssh-server, tmux, and sudo — not suitable for production jobs.
+Use `runtype=args` (the default when `VAST_WORKER_IMAGE` is set) for production.
+
 ### Fallback: git-clone mode (public repos / dev only)
 
 When `VAST_WORKER_IMAGE` is not set, the orchestrator falls back to a
-git-clone startup script (base64-wrapped to avoid the shebang-as-path error).
+git-clone startup script (`runtype=ssh`, base64-wrapped onstart).
 This requires the repository to be public. **Not recommended for production.**
 
 ---

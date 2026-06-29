@@ -6,9 +6,9 @@
 
 1. VPS dispatcher (`gpu_dispatcher.py`) picks up a queued job.
 2. `gpu_orchestrator.py` (mode=`vast`) searches vast.ai for the cheapest matching GPU.
-3. Creates a vast.ai instance using `VAST_WORKER_IMAGE` as the image directly.
-4. Env vars (secrets included) are passed via the vast.ai `env` dict over HTTPS — not in any startup script.
-5. `onstart` = `"bash /entrypoint.sh"` — lightweight, no git clone, no Docker-in-Docker.
+3. Creates a vast.ai instance: `runtype=args`, image = `VAST_WORKER_IMAGE`.
+4. Env vars (secrets) passed via `env` dict over HTTPS — not embedded in `args_str`.
+5. `args_str` = `"bash -lc /entrypoint.sh"` — short command, no SSH daemon, no openssh-server.
 6. `worker_entrypoint.sh` (image ENTRYPOINT) runs inside the container:
    - validates env vars, writes `.env.local`
    - `prod_preflight_check.py --role worker`
