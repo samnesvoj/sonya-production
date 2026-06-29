@@ -990,6 +990,154 @@ if _orch.exists():
     else:
         err("gpu_orchestrator.py — vast env dict must include both S3_BUCKET and S3_BUCKET_NAME")
 
+# ── Section 31 — fast worker image (lightweight cold-pull) ────────────────────
+# Separate lightweight image (sonya-worker:fast) using python:3.11-slim base.
+# No conda / pytorch base; torch CUDA wheel bundles its own runtime.
+# Optimised for cold-pull speed on vast.ai.
+
+print("\n-- 31. fast worker image (lightweight cold-pull) --")
+
+_fast_dockerfile = ROOT / "deploy" / "docker" / "Dockerfile.worker.fast"
+_fast_reqs       = ROOT / "deploy" / "docker" / "requirements-worker-fast.txt"
+_fast_workflow   = ROOT / ".github" / "workflows" / "build-worker-fast-image.yml"
+_fast_ps1        = ROOT / "deploy" / "docker" / "build_worker_fast_image.ps1"
+_fast_sh         = ROOT / "deploy" / "docker" / "build_worker_fast_image.sh"
+
+# 31a — Dockerfile.worker.fast exists
+if _fast_dockerfile.exists():
+    ok("deploy/docker/Dockerfile.worker.fast exists")
+    _fdf = _fast_dockerfile.read_text(encoding="utf-8", errors="ignore")
+
+    # 31b — does NOT use pytorch/pytorch as base
+    if "pytorch/pytorch" not in _fdf:
+        ok("fast Dockerfile — does NOT use pytorch/pytorch as base (no conda/jupyter)")
+    else:
+        err("fast Dockerfile — must NOT use pytorch/pytorch base (use python:3.11-slim or nvidia/cuda runtime)")
+
+    # 31c — forbidden heavy packages not installed via apt/pip
+    # Only scan non-comment lines so header comments don't trigger false positives.
+    _fdf_code_lines = [
+        _l for _l in _fdf.splitlines()
+        if not _l.strip().startswith("#")
+    ]
+    _fdf_code = "\n".join(_fdf_code_lines)
+    _forbidden_apt = ["openssh-server", "tmux", "sudo", "jupyter", "conda", "git "]
+    _found_forbidden_apt = [p for p in _forbidden_apt if p in _fdf_code]
+    if not _found_forbidden_apt:
+        ok("fast Dockerfile — no openssh-server/tmux/sudo/jupyter/conda/git in apt installs")
+    else:
+        err(f"fast Dockerfile — must not install: {_found_forbidden_apt}")
+
+    # 31d — pip --no-cache-dir used
+    if "--no-cache-dir" in _fdf:
+        ok("fast Dockerfile — pip uses --no-cache-dir (smaller layers)")
+    else:
+        err("fast Dockerfile — pip must use --no-cache-dir")
+
+    # 31e — apt --no-install-recommends used
+    if "--no-install-recommends" in _fdf:
+        ok("fast Dockerfile — apt uses --no-install-recommends")
+    else:
+        err("fast Dockerfile — apt must use --no-install-recommends")
+
+    # 31f — apt cache cleaned
+    if "rm -rf /var/lib/apt/lists/*" in _fdf:
+        ok("fast Dockerfile — apt cache cleaned")
+    else:
+        err("fast Dockerfile — apt cache must be cleaned (rm -rf /var/lib/apt/lists/*)")
+
+    # 31g — JSON ENTRYPOINT form
+    if 'ENTRYPOINT ["/entrypoint.sh"]' in _fdf:
+        ok('fast Dockerfile — JSON ENTRYPOINT ["/entrypoint.sh"]')
+    else:
+        err('fast Dockerfile — ENTRYPOINT must be JSON form: ENTRYPOINT ["/entrypoint.sh"]')
+
+    # 31h — torch CUDA wheel installed (not CPU-only)
+    if "+cu" in _fdf or "download.pytorch.org/whl/cu" in _fdf:
+        ok("fast Dockerfile — torch CUDA wheel used (not CPU)")
+    else:
+        err("fast Dockerfile — torch must be installed as CUDA wheel (whl/cu124)")
+else:
+    err("deploy/docker/Dockerfile.worker.fast not found")
+
+# 31i — fast requirements file exists and excludes backend-only deps
+if _fast_reqs.exists():
+    ok("deploy/docker/requirements-worker-fast.txt exists")
+    _frq = _fast_reqs.read_text(encoding="utf-8", errors="ignore")
+    _backend_only = ["fastapi", "uvicorn", "psycopg2", "alembic", "pytest",
+                     "jupyter", "notebook", "ipykernel"]
+    # Only flag if uncommented (not on a comment line)
+    _found_backend = []
+    for _pkg in _backend_only:
+        for _line in _frq.splitlines():
+            _stripped = _line.strip()
+            if _stripped.startswith("#"):
+                continue
+            if _pkg in _stripped:
+                _found_backend.append(_pkg)
+                break
+    if not _found_backend:
+        ok("requirements-worker-fast.txt — excludes backend-only deps (fastapi/uvicorn/psycopg2/pytest/jupyter)")
+    else:
+        err(f"requirements-worker-fast.txt — must not include: {_found_backend}")
+
+    if "opencv-python-headless" in _frq:
+        ok("requirements-worker-fast.txt — uses opencv-python-headless (smaller)")
+    else:
+        err("requirements-worker-fast.txt — prefer opencv-python-headless over opencv-python")
+else:
+    err("deploy/docker/requirements-worker-fast.txt not found")
+
+# 31j — GitHub Actions workflow exists and pushes :fast
+if _fast_workflow.exists():
+    ok(".github/workflows/build-worker-fast-image.yml exists")
+    _wf = _fast_workflow.read_text(encoding="utf-8", errors="ignore")
+    if "sonya-worker:fast" in _wf:
+        ok("fast workflow — pushes sonya-worker:fast tag")
+    else:
+        err("fast workflow — must push sonya-worker:fast tag")
+    if "secrets.GITHUB_TOKEN" in _wf or "GHCR" in _wf:
+        ok("fast workflow — GHCR login present (GITHUB_TOKEN)")
+    else:
+        err("fast workflow — must include GHCR login")
+    if "Dockerfile.worker.fast" in _wf:
+        ok("fast workflow — references Dockerfile.worker.fast")
+    else:
+        err("fast workflow — must reference deploy/docker/Dockerfile.worker.fast")
+else:
+    err(".github/workflows/build-worker-fast-image.yml not found")
+
+# 31k — local build scripts exist and show image size
+if _fast_ps1.exists():
+    ok("deploy/docker/build_worker_fast_image.ps1 exists")
+    if "Size" in _fast_ps1.read_text(encoding="utf-8", errors="ignore"):
+        ok("build_worker_fast_image.ps1 — shows image size after build")
+    else:
+        err("build_worker_fast_image.ps1 — must print image size (docker image inspect --format={{.Size}})")
+else:
+    err("deploy/docker/build_worker_fast_image.ps1 not found")
+
+if _fast_sh.exists():
+    ok("deploy/docker/build_worker_fast_image.sh exists")
+    _fsh_txt = _fast_sh.read_text(encoding="utf-8", errors="ignore")
+    if "Size" in _fsh_txt or ".Size" in _fsh_txt:
+        ok("build_worker_fast_image.sh — shows image size after build")
+    else:
+        err("build_worker_fast_image.sh — must print image size (docker image inspect --format={{.Size}})")
+else:
+    err("deploy/docker/build_worker_fast_image.sh not found")
+
+# 31l — docs recommend sonya-worker:fast as production VAST_WORKER_IMAGE
+_cmds_fast = ROOT / "deploy" / "commands_production_queue_gpu.md"
+if _cmds_fast.exists():
+    _cmds_f_txt = _cmds_fast.read_text(encoding="utf-8", errors="ignore")
+    if "sonya-worker:fast" in _cmds_f_txt:
+        ok("commands doc — sonya-worker:fast recommended as VAST_WORKER_IMAGE")
+    else:
+        err("commands doc — must recommend sonya-worker:fast as production VAST_WORKER_IMAGE")
+else:
+    err("commands_production_queue_gpu.md not found")
+
 # ── Summary ────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 60)
 if WARNS:

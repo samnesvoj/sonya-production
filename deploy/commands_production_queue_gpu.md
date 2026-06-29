@@ -35,27 +35,57 @@ No `DATABASE_URL` is passed to the GPU instance.
 
 ---
 
-## Docker Image — Build and Push (private repo flow)
+## Docker Images — Build and Push (private repo flow)
 
 The GitHub repo is **private**. vast.ai instances cannot git-clone it.
 Build a Docker image with the code and push it to GHCR; instances pull the
 image at runtime. Secrets are **never** baked into the image.
 
+### Image tags
+
+| Tag | Base | Use case |
+|---|---|---|
+| `sonya-worker:fast` | `python:3.11-slim-bookworm` + torch CUDA wheel | **Recommended for vast.ai production** — smallest cold-pull |
+| `sonya-worker:latest` | `pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime` | Stable/full fallback |
+
+**Production recommendation:** Use `sonya-worker:fast` as `VAST_WORKER_IMAGE` on vast.ai.  
+Cold-pull is significantly faster — no conda, no jupyter, no dev tools.  
+Torch CUDA runtime is bundled inside the pip wheel; no nvidia/cuda base needed.
+
+### Build the fast image (recommended for vast.ai)
+
 ```bash
-# On your local machine (from repo root):
+# Linux / macOS (from repo root):
+bash deploy/docker/build_worker_fast_image.sh
+# Windows PowerShell:
+.\deploy\docker\build_worker_fast_image.ps1
+```
+
+Script prints the uncompressed image size after build.
+
+### Build the full (latest) image
+
+```bash
 bash deploy/docker/build_worker_image.sh
 # Or on Windows:
 .\deploy\docker\build_worker_image.ps1
 ```
 
-Manual push to GHCR:
+### Manual push to GHCR
+
 ```bash
 echo "$GHCR_TOKEN" | docker login ghcr.io -u samnesvoj --password-stdin
+docker push ghcr.io/samnesvoj/sonya-worker:fast
 docker push ghcr.io/samnesvoj/sonya-worker:latest
-docker push ghcr.io/samnesvoj/sonya-worker:<git-sha>
 ```
 
-Set GHCR_TOKEN on the VPS (so the dispatcher can pass it to vast.ai):
+### GitHub Actions (automatic build on push to main)
+
+- `.github/workflows/build-worker-fast-image.yml` — builds and pushes `:fast`
+- `.github/workflows/build-worker-image.yml`      — builds and pushes `:latest`
+
+### Set GHCR_TOKEN on the VPS
+
 ```bash
 # Add to /etc/sonya/env.local or systemd override:
 GHCR_USERNAME=samnesvoj
@@ -77,7 +107,7 @@ GPU_ORCHESTRATOR_MODE=vast \
 VAST_API_KEY=<your-key> \
 VAST_DRY_RUN=true \
 VAST_IMAGE=nvidia/cuda:12.2.0-devel-ubuntu22.04 \
-VAST_WORKER_IMAGE=ghcr.io/samnesvoj/sonya-worker:latest \
+VAST_WORKER_IMAGE=ghcr.io/samnesvoj/sonya-worker:fast \
 VAST_GPU_MIN_VRAM=12 \
 VAST_DISK_GB=50 \
 VAST_GPU_INCLUDE_REGEX="RTX 3060|RTX 3070|RTX 3080|RTX 3090|RTX 4060|RTX 4070|RTX 4080|RTX 4090|A4000|A5000|L4|L40" \
@@ -100,7 +130,7 @@ GPU_ORCHESTRATOR_MODE=vast \
 VAST_API_KEY=<your-key> \
 VAST_DRY_RUN=false \
 VAST_IMAGE=nvidia/cuda:12.2.0-devel-ubuntu22.04 \
-VAST_WORKER_IMAGE=ghcr.io/samnesvoj/sonya-worker:latest \
+VAST_WORKER_IMAGE=ghcr.io/samnesvoj/sonya-worker:fast \
 VAST_GPU_MIN_VRAM=12 \
 VAST_DISK_GB=50 \
 VAST_GPU_INCLUDE_REGEX="RTX 3060|RTX 3090|RTX 4090|A4000|A5000" \
