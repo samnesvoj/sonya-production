@@ -837,6 +837,74 @@ if _loc_ok:
 else:
     err("docs — must document VAST_LOCATION_EXCLUDE_REGEX and South Korea exclusion")
 
+# ── Section 29 — vast.ai verified / reliability filter ─────────────────────────
+# Unverified hosts hang at "Loading" / "Verifying checksum" and never reach backend.
+# Require verified=true + reliability >= 98 by default.
+
+print("\n-- 29. vast.ai verified / reliability filter --")
+
+# 29a — VAST_REQUIRE_VERIFIED config present with default true
+if _orch.exists():
+    if "VAST_REQUIRE_VERIFIED" in _orch_txt:
+        ok("gpu_orchestrator.py — VAST_REQUIRE_VERIFIED config present")
+    else:
+        err("gpu_orchestrator.py — missing VAST_REQUIRE_VERIFIED config")
+
+# 29b — VAST_MIN_RELIABILITY config present with default 98
+if _orch.exists():
+    if "VAST_MIN_RELIABILITY" in _orch_txt:
+        ok("gpu_orchestrator.py — VAST_MIN_RELIABILITY config present")
+    else:
+        err("gpu_orchestrator.py — missing VAST_MIN_RELIABILITY config")
+
+# 29c — _check_offer_verified helper (multi-field)
+if _orch.exists():
+    if "_check_offer_verified" in _orch_txt:
+        ok("gpu_orchestrator.py — _check_offer_verified helper present (multi-field)")
+    else:
+        err("gpu_orchestrator.py — missing _check_offer_verified helper")
+
+# 29d — _get_offer_reliability helper
+if _orch.exists():
+    if "_get_offer_reliability" in _orch_txt:
+        ok("gpu_orchestrator.py — _get_offer_reliability helper present")
+    else:
+        err("gpu_orchestrator.py — missing _get_offer_reliability helper")
+
+# 29e — reject reasons logged (not_verified / low_reliability)
+if _orch.exists():
+    has_not_verified   = "reason=not_verified" in _orch_txt
+    has_low_reliability = "reason=low_reliability" in _orch_txt
+    if has_not_verified:
+        ok("gpu_orchestrator.py — reason=not_verified logged on reject")
+    else:
+        err("gpu_orchestrator.py — missing reason=not_verified in offer skip log")
+    if has_low_reliability:
+        ok("gpu_orchestrator.py — reason=low_reliability logged on reject")
+    else:
+        err("gpu_orchestrator.py — missing reason=low_reliability in offer skip log")
+
+# 29f — chosen_offer includes verified + reliability fields in dry-run output
+if _orch.exists():
+    if '"verified"' in _orch_txt and '"reliability"' in _orch_txt:
+        ok("gpu_orchestrator.py — chosen_offer logs verified + reliability fields")
+    else:
+        err("gpu_orchestrator.py — chosen_offer must include verified and reliability fields")
+
+# 29g — docs mention verified hosts requirement
+_n8n_ver = _n8n_doc.read_text(encoding="utf-8", errors="ignore") if _n8n_doc.exists() else ""
+_cmd_ver  = _cmd_doc.read_text(encoding="utf-8", errors="ignore") if _cmd_doc.exists() else ""
+_verified_in_docs = (
+    "verified" in _n8n_ver.lower() or "verified" in _cmd_ver.lower()
+) and (
+    "VAST_REQUIRE_VERIFIED" in _n8n_ver or "VAST_REQUIRE_VERIFIED" in _cmd_ver
+    or "unverified" in _n8n_ver.lower() or "unverified" in _cmd_ver.lower()
+)
+if _verified_in_docs:
+    ok("docs — verified host requirement documented")
+else:
+    err("docs — must document VAST_REQUIRE_VERIFIED / avoid unverified hosts")
+
 # ── Summary ────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 60)
 if WARNS:

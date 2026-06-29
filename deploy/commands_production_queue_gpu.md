@@ -69,6 +69,7 @@ GHCR_TOKEN=<github-pat-read-packages>   # never commit
 Recommended first production test GPU: **RTX 3060 12 GB**.  
 Avoid: Tesla V100, P100, K80, T4 (GPU exclude regex blocks them).  
 Avoid: South Korea / KR, China / CN (location exclude regex blocks them — connectivity issues).  
+Avoid: **unverified hosts** — they hang at "Loading" / "Verifying checksum" and never reach the backend API. Default `VAST_REQUIRE_VERIFIED=true` + `VAST_MIN_RELIABILITY=98` filters them out.  
 Preferred locations: **US, EU (DE/NL/PL/FR/FI/SE), JP**.
 
 ```bash
@@ -82,6 +83,8 @@ VAST_DISK_GB=50 \
 VAST_GPU_INCLUDE_REGEX="RTX 3060|RTX 3070|RTX 3080|RTX 3090|RTX 4060|RTX 4070|RTX 4080|RTX 4090|A4000|A5000|L4|L40" \
 VAST_GPU_EXCLUDE_REGEX="Tesla|V100|P100|K80|T4" \
 VAST_LOCATION_EXCLUDE_REGEX="South Korea|Korea|KR|China|CN" \
+VAST_REQUIRE_VERIFIED=true \
+VAST_MIN_RELIABILITY=98 \
 GHCR_USERNAME=samnesvoj \
 GHCR_TOKEN=<token> \
 BACKEND_API_URL=https://sonya-e.com \
@@ -280,6 +283,9 @@ VAST_GPU_EXCLUDE_REGEX=Tesla|V100|P100|K80|T4
 # Location filters (avoid KR/CN — connectivity issues; prefer US/EU/JP):
 VAST_LOCATION_EXCLUDE_REGEX=South Korea|Korea|KR|China|CN
 # VAST_LOCATION_INCLUDE_REGEX=US|Germany|Netherlands|Poland|France|Finland|Sweden|Japan
+# Host verification (unverified hosts hang at "Loading" and never reach backend API):
+VAST_REQUIRE_VERIFIED=true
+VAST_MIN_RELIABILITY=98
 # GHCR credentials for pulling private image on vast.ai instance:
 GHCR_USERNAME=samnesvoj
 GHCR_TOKEN=<github-pat-read-packages>       # never commit

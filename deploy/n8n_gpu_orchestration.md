@@ -134,6 +134,10 @@ automatically.
 **Avoid locations: South Korea (KR), China (CN)** — connectivity/latency issues
 with sonya-e.com backend. The default `VAST_LOCATION_EXCLUDE_REGEX` blocks them.
 
+**Avoid unverified hosts** — they hang at "Loading" / "Verifying checksum" and the
+worker never reaches the backend API.  The default `VAST_REQUIRE_VERIFIED=true` +
+`VAST_MIN_RELIABILITY=98` filters them out automatically.
+
 Preferred locations: **US, EU (DE/NL/PL/FR/FI/SE), JP**.
 
 ## vast.ai Mode — Env Vars (VPS .env.local)
@@ -154,6 +158,9 @@ VAST_GPU_EXCLUDE_REGEX=Tesla|V100|P100|K80|T4
 # Location filters (avoid KR/CN — connectivity issues):
 VAST_LOCATION_EXCLUDE_REGEX=South Korea|Korea|KR|China|CN
 # VAST_LOCATION_INCLUDE_REGEX=US|Germany|Netherlands|Poland|France|Finland|Sweden|Japan
+# Host verification (unverified hosts hang and never reach backend API):
+VAST_REQUIRE_VERIFIED=true
+VAST_MIN_RELIABILITY=98
 SHUTDOWN_AFTER_JOB=true
 GPU_DISPATCH_INTERVAL_SECONDS=20
 MAX_ACTIVE_GPU_JOBS=1

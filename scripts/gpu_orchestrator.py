@@ -188,6 +188,14 @@ _vast_location_exclude_re: Optional[re.Pattern[str]] = (
     if _VAST_LOCATION_EXCLUDE_REGEX else None
 )
 
+# Host verification and reliability requirements.
+# Unverified hosts often hang at "Verifying checksum" / "Loading" and never
+# reach the backend API.  Require verified=true and reliability >= 98 by default.
+_VAST_REQUIRE_VERIFIED: bool = (
+    os.environ.get("VAST_REQUIRE_VERIFIED", "true").lower() != "false"
+)
+_VAST_MIN_RELIABILITY: float = float(os.environ.get("VAST_MIN_RELIABILITY", "98"))
+
 # Env vars forwarded to Timeweb GPU instances via cloud-init (may contain secrets)
 _TW_WORKER_ENV_VARS: List[str] = [
     "BACKEND_API_URL",
@@ -669,6 +677,57 @@ def _get_offer_location_label(offer: Dict[str, Any]) -> str:
     return " | ".join(dict.fromkeys(parts))  # deduplicate while preserving order
 
 
+def _get_offer_reliability(offer: Dict[str, Any]) -> Optional[float]:
+    """
+    Return the best reliability score (0–100) found in the offer, or None.
+
+    vast.ai exposes reliability under different field names across API versions
+    and offer types.  Higher is better; 100 = perfect.
+    """
+    for field in (
+        "reliability2",     # newer API: float 0.0–1.0 (multiply by 100)
+        "reliability",      # older API: sometimes 0–100, sometimes 0.0–1.0
+        "host_reliability",
+        "reliability_mult",
+    ):
+        val = offer.get(field)
+        if isinstance(val, (int, float)) and val is not None:
+            # Normalise: values ≤ 1.0 are fractions → convert to percentage
+            return float(val * 100) if val <= 1.0 else float(val)
+    return None
+
+
+def _check_offer_verified(offer: Dict[str, Any]) -> Optional[bool]:
+    """
+    Return True if the host is verified, False if explicitly unverified, None if unknown.
+
+    Checks multiple field names and string sentinel values used across vast.ai API versions.
+    """
+    for field in ("verified", "is_verified", "host_verified"):
+        val = offer.get(field)
+        if val is None:
+            continue
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, str):
+            lower = val.lower()
+            if lower in ("true", "yes", "verified", "1"):
+                return True
+            if lower in ("false", "no", "unverified", "0", "pending", ""):
+                return False
+        if isinstance(val, (int, float)):
+            return bool(val)
+    # "verification" field: may be "verified" / "unverified" string
+    verif = offer.get("verification")
+    if isinstance(verif, str):
+        lower = verif.lower()
+        if lower == "verified":
+            return True
+        if lower in ("unverified", "pending", "none", ""):
+            return False
+    return None  # unknown — caller decides based on reliability fallback
+
+
 def _extract_offers_from_response(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Extract the list of GPU offers from a vast.ai API response.
@@ -749,13 +808,42 @@ def _vast_search_offers(min_vram_gb: int, gpu_name: str) -> Optional[Dict[str, A
                 )
                 continue
 
-            # Rentable / verified — skip only if explicitly False
+            # Rentable — skip only if explicitly False
             if offer.get("rentable") is False:
                 logger.debug("vast_offer_skip id=%s gpu=%r reason=not_rentable", oid, gpu_label)
                 continue
-            if offer.get("verified") is False:
-                logger.debug("vast_offer_skip id=%s gpu=%r reason=not_verified", oid, gpu_label)
-                continue
+
+            # Verified / reliability check
+            # Unverified hosts hang at "Loading" / "Verifying checksum" and never
+            # reach the backend API.  Use multi-field extraction to handle all API versions.
+            if _VAST_REQUIRE_VERIFIED:
+                is_verified = _check_offer_verified(offer)
+                reliability  = _get_offer_reliability(offer)
+
+                if is_verified is False:
+                    # Host is explicitly marked unverified — reject regardless of reliability
+                    logger.debug(
+                        "vast_offer_skip id=%s gpu=%r reliability=%.1f reason=not_verified",
+                        oid, gpu_label, reliability or 0.0,
+                    )
+                    continue
+
+                if is_verified is None:
+                    # Verification status unknown — fall back to reliability threshold
+                    if reliability is None or reliability < _VAST_MIN_RELIABILITY:
+                        logger.debug(
+                            "vast_offer_skip id=%s gpu=%r reliability=%s reason=low_reliability_no_verified_field",
+                            oid, gpu_label, f"{reliability:.1f}" if reliability is not None else "N/A",
+                        )
+                        continue
+                else:
+                    # is_verified is True — still check reliability if available
+                    if reliability is not None and reliability < _VAST_MIN_RELIABILITY:
+                        logger.debug(
+                            "vast_offer_skip id=%s gpu=%r reliability=%.1f reason=low_reliability",
+                            oid, gpu_label, reliability,
+                        )
+                        continue
 
             # GPU model exclusion list (legacy data-center GPUs)
             if gpu_label and _vast_exclude_re and _vast_exclude_re.search(gpu_label):
@@ -810,12 +898,16 @@ def _vast_search_offers(min_vram_gb: int, gpu_name: str) -> Optional[Dict[str, A
         filtered.sort(key=_price_key)
         best = filtered[0]
 
+        best_reliability = _get_offer_reliability(best)
+        best_verified    = _check_offer_verified(best)
         logger.info(
-            "vast_offer_selected id=%s gpu=%s vram=%s dph=%.4f loc=%r",
+            "vast_offer_selected id=%s gpu=%s vram=%s dph=%.4f verified=%s reliability=%s loc=%r",
             best.get("id"),
             best.get("gpu_name", "?"),
             best.get("gpu_ram", "?"),
             _price_key(best),
+            best_verified,
+            f"{best_reliability:.1f}" if best_reliability is not None else "N/A",
             _get_offer_location_label(best) or "unknown",
         )
         return best
@@ -890,6 +982,8 @@ def _trigger_vast(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
         "gpu_exclude_regex":      _VAST_GPU_EXCLUDE_REGEX or "(none)",
         "location_include_regex": _VAST_LOCATION_INCLUDE_REGEX or "(none)",
         "location_exclude_regex": _VAST_LOCATION_EXCLUDE_REGEX or "(none)",
+        "require_verified":       _VAST_REQUIRE_VERIFIED,
+        "min_reliability":        _VAST_MIN_RELIABILITY,
         "min_vram_gb":            _VAST_GPU_MIN_VRAM,
         "disk_gb":                _VAST_DISK_GB,
         "worker_backend_mode":    "api",
@@ -914,12 +1008,15 @@ def _trigger_vast(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
 
     # ── Dry-run: show chosen offer, skip instance creation ────────────────────
     if _VAST_DRY_RUN:
+        _rel = _get_offer_reliability(offer)
+        _ver = _check_offer_verified(offer)
         sanitized_config["chosen_offer"] = {
             "id":          str(ask_id),
             "gpu_name":    offer.get("gpu_name", "?"),
             "gpu_ram":     offer.get("gpu_ram", "?"),
-            "dph_total":   offer.get("dph_total", offer.get("dph_base", "?")),
-            "reliability": offer.get("reliability", "?"),
+            "dph":         offer.get("dph_total", offer.get("dph_base", "?")),
+            "verified":    _ver,
+            "reliability": f"{_rel:.1f}" if _rel is not None else "N/A",
             "location":    _get_offer_location_label(offer) or "unknown",
         }
         logger.info(
