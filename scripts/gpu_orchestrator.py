@@ -527,6 +527,12 @@ def _build_vast_env_dict(job_id: str, mode: str) -> Dict[str, str]:
 
     Values are NEVER written to logs — only the key names appear in
     sanitized_config / log output.
+
+    S3 bucket aliasing
+    ------------------
+    S3_BUCKET_NAME (used by orchestrator) and S3_BUCKET (expected by preflight
+    and some S3 tools) are kept in sync: both are set to the same value so that
+    prod_preflight_check.py passes regardless of which field it inspects.
     """
     env: Dict[str, str] = {
         "JOB_ID": job_id,
@@ -538,6 +544,14 @@ def _build_vast_env_dict(job_id: str, mode: str) -> Dict[str, str]:
         val = os.environ.get(var, "")
         if val:
             env[var] = val
+
+    # Ensure both S3_BUCKET_NAME and S3_BUCKET are present (alias pair).
+    # prod_preflight_check.py accepts either; some S3 libs expect S3_BUCKET.
+    bucket = env.get("S3_BUCKET_NAME") or os.environ.get("S3_BUCKET", "")
+    if bucket:
+        env.setdefault("S3_BUCKET_NAME", bucket)
+        env["S3_BUCKET"] = bucket           # always inject alias
+
     return env
 
 

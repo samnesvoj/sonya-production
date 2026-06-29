@@ -53,6 +53,13 @@ MODE="${MODE:-trailer_film_breaker}"
 WORKER_BACKEND_MODE="${WORKER_BACKEND_MODE:-api}"
 WORKDIR="/opt/sonya"
 
+# ── S3 bucket alias (S3_BUCKET and S3_BUCKET_NAME are interchangeable) ────────
+# The Vast payload sends S3_BUCKET_NAME; some internal tools expect S3_BUCKET.
+# Keep both in sync so preflight and workers see the same value.
+S3_BUCKET_NAME="${S3_BUCKET_NAME:-${S3_BUCKET:-}}"
+S3_BUCKET="${S3_BUCKET:-${S3_BUCKET_NAME:-}}"
+MODELS_S3_BUCKET="${MODELS_S3_BUCKET:-${S3_BUCKET_NAME:-}}"
+
 # ── Write .env.local (worker reads this for runtime config) ───────────────────
 ENV_LOCAL="${WORKDIR}/.env.local"
 log "Writing ${ENV_LOCAL}..."
@@ -63,6 +70,7 @@ log "Writing ${ENV_LOCAL}..."
     echo "S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID}"
     echo "S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY}"
     echo "S3_BUCKET_NAME=${S3_BUCKET_NAME}"
+    echo "S3_BUCKET=${S3_BUCKET}"            # alias for tools that use S3_BUCKET
     echo "S3_REGION=${S3_REGION}"
     echo "MODELS_S3_BUCKET=${MODELS_S3_BUCKET}"
     echo "WORKER_SECRET=${WORKER_SECRET}"

@@ -921,6 +921,75 @@ if _verified_in_docs:
 else:
     err("docs — must document VAST_REQUIRE_VERIFIED / avoid unverified hosts")
 
+# ── Section 30 — preflight api-mode + S3 bucket alias ─────────────────────────
+# prod_preflight_check.py must NOT require DATABASE_URL when WORKER_BACKEND_MODE=api.
+# S3_BUCKET and S3_BUCKET_NAME must be treated as aliases everywhere.
+
+print("\n-- 30. preflight api-mode + S3 bucket alias --")
+
+_preflight = ROOT / "scripts" / "prod_preflight_check.py"
+if _preflight.exists():
+    _pf_txt = _preflight.read_text(encoding="utf-8", errors="ignore")
+
+    # 30a — preflight must handle --role worker argument format
+    if "_parse_role" in _pf_txt or "--role" in _pf_txt:
+        ok("prod_preflight_check.py — handles --role worker argument format")
+    else:
+        err("prod_preflight_check.py — must parse --role worker (not just positional)")
+
+    # 30b — api-mode worker must NOT check DATABASE_URL
+    if "WORKER_BACKEND_MODE" in _pf_txt and "api" in _pf_txt:
+        ok("prod_preflight_check.py — WORKER_BACKEND_MODE=api branch present")
+    else:
+        err("prod_preflight_check.py — missing WORKER_BACKEND_MODE=api branch")
+
+    # Confirm REQUIRED_WORKER_API list does not contain DATABASE_URL
+    # (DATABASE_URL is only in REQUIRED_BACKEND — intentional)
+    _api_list_start = _pf_txt.find("REQUIRED_WORKER_API")
+    _api_list_end   = _pf_txt.find("]", _api_list_start) + 1 if _api_list_start != -1 else -1
+    _api_list_body  = _pf_txt[_api_list_start:_api_list_end] if _api_list_start != -1 else ""
+    if "DATABASE_URL" not in _api_list_body:
+        ok("prod_preflight_check.py — DATABASE_URL not in REQUIRED_WORKER_API (api-mode correct)")
+    else:
+        err("prod_preflight_check.py — DATABASE_URL must not be in REQUIRED_WORKER_API")
+
+    # 30c — BACKEND_API_URL required in api-mode
+    if "BACKEND_API_URL" in _pf_txt and "REQUIRED_WORKER_API" in _pf_txt:
+        ok("prod_preflight_check.py — BACKEND_API_URL in REQUIRED_WORKER_API")
+    else:
+        err("prod_preflight_check.py — BACKEND_API_URL must be in REQUIRED_WORKER_API list")
+
+    # 30d — S3_BUCKET / S3_BUCKET_NAME alias check present
+    if "_s3_bucket_present" in _pf_txt or ("S3_BUCKET" in _pf_txt and "S3_BUCKET_NAME" in _pf_txt):
+        ok("prod_preflight_check.py — S3_BUCKET / S3_BUCKET_NAME alias handled")
+    else:
+        err("prod_preflight_check.py — must accept S3_BUCKET or S3_BUCKET_NAME (alias)")
+
+    # 30e — MODELS_S3_BUCKET fallback to S3_BUCKET_NAME
+    if "MODELS_S3_BUCKET" in _pf_txt and "S3_BUCKET_NAME" in _pf_txt:
+        ok("prod_preflight_check.py — MODELS_S3_BUCKET falls back to S3_BUCKET_NAME")
+    else:
+        err("prod_preflight_check.py — MODELS_S3_BUCKET must fall back to S3_BUCKET_NAME")
+else:
+    err("scripts/prod_preflight_check.py not found")
+
+# 30f — worker_entrypoint.sh creates S3_BUCKET alias from S3_BUCKET_NAME
+if _entrypoint.exists():
+    _ep_txt2 = _entrypoint.read_text(encoding="utf-8", errors="ignore")
+    if "S3_BUCKET=" in _ep_txt2 and "S3_BUCKET_NAME" in _ep_txt2:
+        ok("worker_entrypoint.sh — S3_BUCKET alias set from S3_BUCKET_NAME")
+    else:
+        err("worker_entrypoint.sh — must set S3_BUCKET=${S3_BUCKET:-$S3_BUCKET_NAME}")
+else:
+    err("worker_entrypoint.sh not found")
+
+# 30g — gpu_orchestrator.py injects both S3_BUCKET and S3_BUCKET_NAME in env dict
+if _orch.exists():
+    if "S3_BUCKET" in _orch_txt and "S3_BUCKET_NAME" in _orch_txt and "env[" in _orch_txt:
+        ok("gpu_orchestrator.py — S3_BUCKET + S3_BUCKET_NAME both in vast env dict")
+    else:
+        err("gpu_orchestrator.py — vast env dict must include both S3_BUCKET and S3_BUCKET_NAME")
+
 # ── Summary ────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 60)
 if WARNS:

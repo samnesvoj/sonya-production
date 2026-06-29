@@ -3,26 +3,69 @@ prod_preflight_check.py
 =======================
 Pre-flight environment check before starting the API or worker.
 Exits with code 1 if any required env var is missing.
+
+Usage
+-----
+  python prod_preflight_check.py --role worker    (recommended)
+  python prod_preflight_check.py --role backend
+  python prod_preflight_check.py worker           (legacy positional)
+  python prod_preflight_check.py backend          (legacy positional)
+
+Worker api-mode (WORKER_BACKEND_MODE=api)
+-----------------------------------------
+External GPU workers (vast.ai) communicate via BACKEND_API_URL, not PostgreSQL.
+DATABASE_URL is NOT checked — the instance cannot reach the private DB server.
+
+S3 bucket aliasing
+------------------
+S3_BUCKET and S3_BUCKET_NAME are treated as aliases.  Either one satisfies
+the bucket requirement — the check passes if at least one is set.
 """
 from __future__ import annotations
 
 import os
 import sys
 
-REQUIRED_BACKEND = [
+# ── Required env var groups ────────────────────────────────────────────────────
+
+# Backend (VPS API server) — requires DATABASE_URL
+REQUIRED_BACKEND: list[str] = [
     "DATABASE_URL",
-    "S3_BUCKET",
     "S3_ACCESS_KEY_ID",
     "S3_SECRET_ACCESS_KEY",
     "WORKER_SECRET",
 ]
 
-REQUIRED_WORKER = [
-    "S3_BUCKET",
+# Worker in db-mode (legacy, VPS-internal worker with DB access)
+REQUIRED_WORKER_DB: list[str] = [
     "S3_ACCESS_KEY_ID",
     "S3_SECRET_ACCESS_KEY",
-    "MODELS_S3_BUCKET",
 ]
+
+# Worker in api-mode (external GPU, e.g. vast.ai) — NO DATABASE_URL
+REQUIRED_WORKER_API: list[str] = [
+    "WORKER_SECRET",
+    "BACKEND_API_URL",
+    "S3_ENDPOINT_URL",
+    "S3_ACCESS_KEY_ID",
+    "S3_SECRET_ACCESS_KEY",
+]
+
+
+# ── Helpers ────────────────────────────────────────────────────────────────────
+
+def _s3_bucket_present() -> bool:
+    """Accept either S3_BUCKET or S3_BUCKET_NAME (they are aliases)."""
+    return bool(os.environ.get("S3_BUCKET") or os.environ.get("S3_BUCKET_NAME"))
+
+
+def _models_bucket_present() -> bool:
+    """MODELS_S3_BUCKET falls back to S3_BUCKET_NAME if not set."""
+    return bool(
+        os.environ.get("MODELS_S3_BUCKET")
+        or os.environ.get("S3_BUCKET_NAME")
+        or os.environ.get("S3_BUCKET")
+    )
 
 
 def check(var_list: list[str], label: str) -> bool:
@@ -34,15 +77,75 @@ def check(var_list: list[str], label: str) -> bool:
     return True
 
 
+def _parse_role() -> str:
+    """
+    Parse --role ROLE (preferred) or positional ROLE (legacy).
+    Returns 'worker', 'backend', or 'backend' (default).
+    """
+    args = sys.argv[1:]
+    for i, arg in enumerate(args):
+        if arg == "--role" and i + 1 < len(args):
+            return args[i + 1]
+        if arg in ("backend", "worker"):
+            return arg
+    return "backend"
+
+
+# ── Main ───────────────────────────────────────────────────────────────────────
+
 def main() -> None:
-    mode = sys.argv[1] if len(sys.argv) > 1 else "backend"
-    ok = True
-    if mode == "backend":
-        ok = check(REQUIRED_BACKEND, "backend")
-    elif mode == "worker":
-        ok = check(REQUIRED_WORKER, "worker")
+    role        = _parse_role()
+    worker_mode = os.environ.get("WORKER_BACKEND_MODE", "db").lower()
+    ok          = True
+
+    if role == "worker":
+        if worker_mode == "api":
+            # ── External GPU worker (vast.ai) — api-only mode ─────────────────
+            # DATABASE_URL is NOT required — instance cannot reach private Postgres.
+            # All job ops go through BACKEND_API_URL with WORKER_SECRET.
+            print("[PREFLIGHT] worker-api mode (WORKER_BACKEND_MODE=api) — no DATABASE_URL required")
+            ok = check(REQUIRED_WORKER_API, "worker-api")
+
+            if not _s3_bucket_present():
+                print(
+                    "[PREFLIGHT] worker-api — MISSING env vars: [S3_BUCKET or S3_BUCKET_NAME]",
+                    file=sys.stderr,
+                )
+                ok = False
+            else:
+                print("[PREFLIGHT] worker-api S3 bucket (S3_BUCKET / S3_BUCKET_NAME) — OK")
+
+            if not _models_bucket_present():
+                print(
+                    "[PREFLIGHT] worker-api — MISSING env vars: [MODELS_S3_BUCKET or S3_BUCKET_NAME]",
+                    file=sys.stderr,
+                )
+                ok = False
+            else:
+                print("[PREFLIGHT] worker-api MODELS_S3_BUCKET (or S3_BUCKET_NAME fallback) — OK")
+        else:
+            # ── VPS-internal db-mode worker ───────────────────────────────────
+            ok = check(REQUIRED_WORKER_DB, "worker-db")
+            if not _s3_bucket_present():
+                print(
+                    "[PREFLIGHT] worker-db — MISSING env vars: [S3_BUCKET or S3_BUCKET_NAME]",
+                    file=sys.stderr,
+                )
+                ok = False
+            else:
+                print("[PREFLIGHT] worker-db S3 bucket — OK")
     else:
-        ok = check(REQUIRED_BACKEND, "backend") and check(REQUIRED_WORKER, "worker")
+        # ── Backend API server ────────────────────────────────────────────────
+        ok = check(REQUIRED_BACKEND, "backend")
+        if not _s3_bucket_present():
+            print(
+                "[PREFLIGHT] backend — MISSING env vars: [S3_BUCKET or S3_BUCKET_NAME]",
+                file=sys.stderr,
+            )
+            ok = False
+        else:
+            print("[PREFLIGHT] backend S3 bucket — OK")
+
     sys.exit(0 if ok else 1)
 
 
