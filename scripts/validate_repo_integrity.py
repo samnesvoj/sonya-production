@@ -1237,6 +1237,131 @@ if "ssh" in _cmd_lm.lower() and ("override" in _cmd_lm.lower() or "overrides" in
 else:
     err("commands_production_queue_gpu.md — must note that SSH mode overrides Docker ENTRYPOINT")
 
+# ── Section 33 — Vast worker debug-safe mode ───────────────────────────────────
+# Diagnoses "Retrying in 1 second" retry loops without losing the container log
+# and without ever exposing secrets.
+
+print("\n-- 33. Vast worker debug-safe mode --")
+
+# 33a — worker_entrypoint.sh has an ERR trap
+if _entrypoint.exists():
+    _ep_dbg = _entrypoint.read_text(encoding="utf-8", errors="ignore")
+    if "trap" in _ep_dbg and "ERR" in _ep_dbg:
+        ok("worker_entrypoint.sh — error trap (trap ... ERR) present")
+    else:
+        err("worker_entrypoint.sh — missing error trap (trap ... ERR)")
+
+    # 33b — error handler prints [ENTRYPOINT_ERROR] diagnostics
+    if "ENTRYPOINT_ERROR" in _ep_dbg:
+        ok("worker_entrypoint.sh — prints [ENTRYPOINT_ERROR] diagnostics on failure")
+    else:
+        err("worker_entrypoint.sh — must print [ENTRYPOINT_ERROR] line=... exit_code=... on failure")
+
+    # 33c — VAST_DEBUG_SLEEP_ON_FAIL supported with sleep
+    if "VAST_DEBUG_SLEEP_ON_FAIL" in _ep_dbg and "sleep 900" in _ep_dbg:
+        ok("worker_entrypoint.sh — VAST_DEBUG_SLEEP_ON_FAIL supported (sleep 900 on fail)")
+    else:
+        err("worker_entrypoint.sh — must support VAST_DEBUG_SLEEP_ON_FAIL (sleep instead of exit)")
+
+    # 33d — default exits with original exit code when debug mode is off
+    if 'exit "${exit_code}"' in _ep_dbg or "exit \"$exit_code\"" in _ep_dbg:
+        ok("worker_entrypoint.sh — exits with original exit code when not in debug mode")
+    else:
+        err("worker_entrypoint.sh — error handler must exit with the original exit code")
+
+    # 33e — early startup banner present as the first lines
+    if "SONYA GPU worker container start" in _ep_dbg:
+        ok("worker_entrypoint.sh — early startup banner present")
+    else:
+        err("worker_entrypoint.sh — missing early startup banner")
+
+    # 33f — banner reports presence (yes/no) of secrets, never raw values
+    if "S3_BUCKET present" in _ep_dbg and "WORKER_SECRET present" in _ep_dbg:
+        ok("worker_entrypoint.sh — banner reports S3_BUCKET/WORKER_SECRET presence (yes/no only)")
+    else:
+        err("worker_entrypoint.sh — banner must report S3_BUCKET/WORKER_SECRET presence (yes/no)")
+
+    # 33g — env var names only in error handler (no secret values printed)
+    if "env | cut -d= -f1" in _ep_dbg:
+        ok("worker_entrypoint.sh — error handler lists env var NAMES only (no values)")
+    else:
+        err("worker_entrypoint.sh — error handler must list env var names only, never values")
+
+    # 33h — secret values never directly echoed in the banner/trap (heuristic: no ${WORKER_SECRET}
+    # or ${S3_SECRET_ACCESS_KEY} bare interpolation outside the .env.local writer block)
+    _dbg_section_end = _ep_dbg.find("# ── Required env validation")
+    _early_section = _ep_dbg[: _dbg_section_end if _dbg_section_end != -1 else len(_ep_dbg)]
+    _leaked = [
+        v for v in ("${WORKER_SECRET}", "${S3_SECRET_ACCESS_KEY}", "${S3_ACCESS_KEY_ID}")
+        if v in _early_section
+    ]
+    if not _leaked:
+        ok("worker_entrypoint.sh — no secret values interpolated in banner/trap section")
+    else:
+        err(f"worker_entrypoint.sh — secret value(s) interpolated in banner/trap section: {_leaked}")
+else:
+    err("deploy/docker/worker_entrypoint.sh not found (already checked above)")
+
+# 33i — gpu_orchestrator.py: VAST_DEBUG_SLEEP_ON_FAIL forwarded from VPS env
+if _orch.exists():
+    if "VAST_DEBUG_SLEEP_ON_FAIL" in _orch_txt:
+        ok("gpu_orchestrator.py — VAST_DEBUG_SLEEP_ON_FAIL config present")
+    else:
+        err("gpu_orchestrator.py — missing VAST_DEBUG_SLEEP_ON_FAIL config")
+    if '"VAST_DEBUG_SLEEP_ON_FAIL"' in _orch_txt and "_VAST_WORKER_ENV_VARS" in _orch_txt:
+        _wv_start = _orch_txt.find("_VAST_WORKER_ENV_VARS: List")
+        _wv_bracket_start = _orch_txt.find("= [", _wv_start) if _wv_start != -1 else -1
+        _wv_end = _orch_txt.find("]", _wv_bracket_start) + 1 if _wv_bracket_start != -1 else -1
+        _wv_body = _orch_txt[_wv_start:_wv_end] if _wv_start != -1 and _wv_end != -1 else ""
+        if '"VAST_DEBUG_SLEEP_ON_FAIL"' in _wv_body:
+            ok("gpu_orchestrator.py — VAST_DEBUG_SLEEP_ON_FAIL forwarded to worker env")
+        else:
+            err("gpu_orchestrator.py — VAST_DEBUG_SLEEP_ON_FAIL must be in _VAST_WORKER_ENV_VARS")
+    else:
+        err("gpu_orchestrator.py — VAST_DEBUG_SLEEP_ON_FAIL not wired into worker env vars")
+
+# 33j — sanitized payload dump helper present + writes to a file
+if _orch.exists():
+    if "_write_vast_payload_dump" in _orch_txt:
+        ok("gpu_orchestrator.py — _write_vast_payload_dump helper present")
+    else:
+        err("gpu_orchestrator.py — missing _write_vast_payload_dump (sanitized debug dump)")
+    if "sonya_vast_last_payload.json" in _orch_txt:
+        ok("gpu_orchestrator.py — sanitized payload dump written to sonya_vast_last_payload.json")
+    else:
+        err("gpu_orchestrator.py — payload dump must default to /tmp/sonya_vast_last_payload.json")
+
+# 33k — dump includes image/runtype/launch_mode/label/offer, key-names only for env/docker_options
+if _orch.exists():
+    _dump_start = _orch_txt.find("def _write_vast_payload_dump")
+    _dump_end = _orch_txt.find("\n\n\ndef ", _dump_start) if _dump_start != -1 else -1
+    _dump_body = _orch_txt[_dump_start:_dump_end] if _dump_start != -1 and _dump_end != -1 else _orch_txt[_dump_start:]
+    _required_dump_fields = ["env_keys", "docker_options_keys", "runtype", "launch_mode", "label", "image"]
+    _missing_fields = [f for f in _required_dump_fields if f'"{f}"' not in _dump_body]
+    if not _missing_fields:
+        ok("gpu_orchestrator.py — payload dump includes image/runtype/launch_mode/label/env+docker keys")
+    else:
+        err(f"gpu_orchestrator.py — payload dump missing fields: {_missing_fields}")
+    _raw_docker_options_key = _re.search(r'"docker_options"\s*:', _dump_body)
+    if "docker_opts_raw" in _dump_body and not _raw_docker_options_key:
+        ok("gpu_orchestrator.py — raw docker_options (with secret values) never written to dump")
+    else:
+        err("gpu_orchestrator.py — dump must never include raw docker_options (secret -e values)")
+
+# 33l — docs document debug mode + reminder to turn off
+if _cmd_doc.exists():
+    _cmd_dbg = _cmd_doc.read_text(encoding="utf-8", errors="ignore")
+    if "VAST_DEBUG_SLEEP_ON_FAIL" in _cmd_dbg:
+        ok("commands doc — VAST_DEBUG_SLEEP_ON_FAIL documented")
+    else:
+        err("commands_production_queue_gpu.md — must document VAST_DEBUG_SLEEP_ON_FAIL")
+    if "turn off" in _cmd_dbg.lower() or "turn it off" in _cmd_dbg.lower() or "disable" in _cmd_dbg.lower():
+        ok("commands doc — reminder to disable debug mode after diagnosis present")
+    else:
+        err("commands_production_queue_gpu.md — must remind to disable debug mode after diagnosis")
+else:
+    err("deploy/commands_production_queue_gpu.md not found (already checked above)")
+
 # ── Summary ────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 60)
 if WARNS:

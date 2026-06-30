@@ -278,6 +278,51 @@ python scripts/prod_preflight_check.py --role worker
 
 ---
 
+## Debug Mode — diagnosing a Vast "Retrying in 1 second" loop
+
+If the Vast instance card shows **"Retrying in 1 second"**, the container is
+crashing immediately on start (before the log can normally be read, since
+Vast restarts/destroys the container right away).
+
+**`VAST_DEBUG_SLEEP_ON_FAIL=true`** — used ONLY for diagnosing this kind of
+failure, never left on in normal production:
+
+```bash
+GPU_ORCHESTRATOR_MODE=vast \
+VAST_API_KEY=<your-key> \
+VAST_DRY_RUN=false \
+VAST_LAUNCH_MODE=entrypoint \
+VAST_WORKER_IMAGE=ghcr.io/samnesvoj/sonya-worker:fast \
+VAST_DEBUG_SLEEP_ON_FAIL=true \
+BACKEND_API_URL=https://sonya-e.com \
+WORKER_SECRET=<secret> \
+S3_ENDPOINT_URL=<url> S3_ACCESS_KEY_ID=<id> S3_SECRET_ACCESS_KEY=<key> \
+S3_BUCKET_NAME=sonya-prod S3_REGION=<region> MODELS_S3_BUCKET=<bucket> \
+AUTO_GPU_TRIGGER_ENABLED=true \
+  python scripts/gpu_dispatcher.py --once
+```
+
+What happens:
+
+1. `gpu_orchestrator.py` forwards `VAST_DEBUG_SLEEP_ON_FAIL=true` to the worker
+   container's env (via `docker_options` / `env` dict).
+2. `worker_entrypoint.sh` prints an early startup banner as the FIRST lines
+   of the log (date, pwd, whoami, python version, env presence yes/no for
+   `S3_BUCKET`, `S3_BUCKET_NAME`, `WORKER_SECRET` — never the raw values).
+3. On any failure, the error trap prints `[ENTRYPOINT_ERROR] line=... exit_code=...`
+   plus diagnostics, then **sleeps 900s** instead of exiting immediately —
+   giving you time to open the Vast instance log/console before it retries
+   or is destroyed.
+4. A sanitized dump of the create payload is written to
+   `/tmp/sonya_vast_last_payload.json` on the VPS (image, runtype, launch_mode,
+   label, offer, env/docker_options KEY NAMES only — secrets are never written).
+
+**Turn `VAST_DEBUG_SLEEP_ON_FAIL` back OFF (default `false`) once the failure
+has been diagnosed** — leaving it on in production wastes billable GPU time
+on every failure.
+
+---
+
 ## Monitoring
 
 ```bash
@@ -329,6 +374,8 @@ VAST_MIN_RELIABILITY=98
 # GHCR credentials for pulling private image on vast.ai instance:
 GHCR_USERNAME=samnesvoj
 GHCR_TOKEN=<github-pat-read-packages>       # never commit
+# Debug-safe mode (diagnose "Retrying in 1 second" loops only — turn off after):
+VAST_DEBUG_SLEEP_ON_FAIL=false
 SHUTDOWN_AFTER_JOB=true
 GPU_DISPATCH_INTERVAL_SECONDS=20
 MAX_ACTIVE_GPU_JOBS=1

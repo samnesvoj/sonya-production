@@ -80,6 +80,15 @@ vast mode env vars  (production GPU provider)
   GHCR_USERNAME               GitHub username for ghcr.io login (optional)
   GHCR_TOKEN                  GitHub PAT with read:packages scope  (never logged)
 
+  # Debug-safe mode (diagnosing Vast "Retrying in 1 second" retry loops):
+  VAST_DEBUG_SLEEP_ON_FAIL    true → forwarded to the worker container; on any
+                              entrypoint failure it sleeps 900s instead of exiting
+                              immediately, printing diagnostics first (no secrets).
+                              default: false. Turn OFF again once diagnosed.
+  VAST_DEBUG_PAYLOAD_DUMP_PATH path for the sanitized create-payload debug dump
+                              (default: /tmp/sonya_vast_last_payload.json).
+                              Secrets are NEVER written — only key names.
+
   # Forwarded to the GPU instance via startup script (never logged):
   BACKEND_API_URL     WORKER_SECRET
   S3_ENDPOINT_URL     S3_ACCESS_KEY_ID    S3_SECRET_ACCESS_KEY
@@ -90,6 +99,7 @@ vast mode env vars  (production GPU provider)
 from __future__ import annotations
 
 import base64
+import datetime
 import hashlib
 import hmac
 import json
@@ -161,6 +171,17 @@ _VAST_WORKER_IMAGE      = os.environ.get("VAST_WORKER_IMAGE", "")  # e.g. ghcr.i
 #                                        WARNING: SSH mode overrides Docker ENTRYPOINT.
 #   args        (experimental)         — runtype=args + bash -lc /entrypoint.sh.
 _VAST_LAUNCH_MODE       = os.environ.get("VAST_LAUNCH_MODE", "entrypoint").lower()
+
+# Debug-safe mode: forwarded to the worker container. On any entrypoint
+# failure, the container sleeps instead of exiting immediately so a human
+# can read the log before Vast retries/destroys the instance.
+# Used only to diagnose "Retrying in 1 second" loops — turn off afterwards.
+_VAST_DEBUG_SLEEP_ON_FAIL: bool = (
+    os.environ.get("VAST_DEBUG_SLEEP_ON_FAIL", "false").lower() == "true"
+)
+_VAST_DEBUG_PAYLOAD_DUMP_PATH = os.environ.get(
+    "VAST_DEBUG_PAYLOAD_DUMP_PATH", "/tmp/sonya_vast_last_payload.json"
+)
 _GHCR_USERNAME          = os.environ.get("GHCR_USERNAME", "")
 _GHCR_TOKEN             = os.environ.get("GHCR_TOKEN", "")         # never logged
 
@@ -247,6 +268,7 @@ _VAST_WORKER_ENV_VARS: List[str] = [
     "ELEVENLABS_API_KEY",
     "ELEVENLABS_VOICE_ID",
     "SHUTDOWN_AFTER_JOB",
+    "VAST_DEBUG_SLEEP_ON_FAIL",
 ]
 
 # Secret env vars — values are masked in all logs and dry-run output
@@ -591,6 +613,70 @@ def _build_vast_docker_options(env_dict: Dict[str, str]) -> str:
         escaped = v.replace("\\", "\\\\").replace('"', '\\"')
         parts.append(f'-e {k}="{escaped}"')
     return " ".join(parts)
+
+
+def _parse_docker_options_keys(docker_options: str) -> List[str]:
+    """
+    Extract env var NAMES referenced in a docker_options string (-e KEY="value").
+    Used only for safe logging/debug dumps — values are NEVER extracted or returned.
+    """
+    return sorted(set(re.findall(r'-e\s+([A-Za-z_][A-Za-z0-9_]*)=', docker_options)))
+
+
+def _write_vast_payload_dump(
+    job_id: str,
+    instance_label: str,
+    effective_image: str,
+    deployment_mode: str,
+    payload_fields: Dict[str, Any],
+    env_dict: Dict[str, str],
+    offer: Optional[Dict[str, Any]],
+    dry_run: bool,
+) -> Dict[str, Any]:
+    """
+    Build and persist a sanitized debug dump of the Vast create payload.
+
+    Used to diagnose "Retrying in 1 second" loops without ever exposing secrets:
+    secrets are NEVER written here — only key names (env_keys, docker_options_keys).
+    docker_options itself (which embeds real -e "value" pairs) is never dumped.
+
+    Written to VAST_DEBUG_PAYLOAD_DUMP_PATH (default /tmp/sonya_vast_last_payload.json).
+    Best-effort: write failures (e.g. read-only filesystem, Windows dev box) are
+    swallowed and logged at debug level only.
+    """
+    docker_opts_raw = payload_fields.get("docker_options", "")
+    dump: Dict[str, Any] = {
+        "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+        "job_id": job_id,
+        "instance_label": instance_label,
+        "label": instance_label,
+        "image": effective_image,
+        "deployment_mode": deployment_mode,
+        "runtype": payload_fields.get("runtype"),
+        "launch_mode": _VAST_LAUNCH_MODE,
+        "env_keys": sorted(env_dict.keys()),                 # key names only — no values
+        "docker_options_keys": _parse_docker_options_keys(docker_opts_raw),  # key names only
+        "docker_options_has_shm_size": "--shm-size" in docker_opts_raw,
+        "args_str": payload_fields.get("args_str", "(n/a)"),  # safe — no secrets in args_str
+        "onstart_present": bool(payload_fields.get("onstart")),
+        "dry_run": dry_run,
+    }
+    if offer:
+        dump["offer"] = {
+            "id": str(offer.get("id", "")),
+            "gpu": _get_offer_gpu_name(offer) or offer.get("gpu_name", "?"),
+            "location": _get_offer_location_label(offer) or "unknown",
+        }
+
+    rendered = json.dumps(dump, indent=2)
+    try:
+        with open(_VAST_DEBUG_PAYLOAD_DUMP_PATH, "w", encoding="utf-8") as f:
+            f.write(rendered)
+    except Exception as exc:
+        logger.debug("vast_payload_dump_write_failed path=%s exc=%s", _VAST_DEBUG_PAYLOAD_DUMP_PATH, exc)
+
+    logger.info("vast_payload_dump job_id=%s dump=%s", job_id, rendered)
+    return dump
 
 
 def _sanitized_startup_preview(job_id: str, mode: str) -> Dict[str, Any]:
@@ -1096,6 +1182,7 @@ def _trigger_vast(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
         "disk_gb":                _VAST_DISK_GB,
         "worker_backend_mode":    "api",
         "env_vars_forwarded":     env_forwarded_keys,  # key names only, no values
+        "debug_sleep_on_fail":    _VAST_DEBUG_SLEEP_ON_FAIL,
         "startup_preview":        _sanitized_startup_preview(job_id, mode),
     }
 
@@ -1113,6 +1200,14 @@ def _trigger_vast(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
         }
 
     ask_id = offer.get("id")
+
+    # ── Sanitized debug dump — written BEFORE create, for both dry-run and live ──
+    # Lets us inspect exactly what was about to be sent if Vast immediately
+    # enters a retry loop. Secrets are never included (key names only).
+    _write_vast_payload_dump(
+        job_id, instance_label, effective_image, deployment_mode,
+        payload_fields, env_dict, offer, dry_run=_VAST_DRY_RUN,
+    )
 
     # ── Dry-run: show chosen offer, skip instance creation ────────────────────
     if _VAST_DRY_RUN:

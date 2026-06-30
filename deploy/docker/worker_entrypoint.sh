@@ -19,20 +19,72 @@
 #   WORKER_SECRET       HMAC secret for worker API calls
 #   S3_ENDPOINT_URL, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY,
 #   S3_BUCKET_NAME, S3_REGION, MODELS_S3_BUCKET
+#
+# Debug-safe mode (diagnosing Vast "Retrying in 1 second" loops):
+#   VAST_DEBUG_SLEEP_ON_FAIL=true → on any failure, print diagnostics and
+#   sleep 900s instead of exiting immediately, so the log can be read on
+#   the vast.ai console before the instance is destroyed/retried.
+#   Default: false (production — exits immediately with the original code).
+#   Turn OFF again once the failure has been diagnosed.
 
-set -euo pipefail
+set -uo pipefail
 
 LOG_DIR="/var/log/sonya"
 LOG_FILE="${LOG_DIR}/gpu_worker_container.log"
 mkdir -p "${LOG_DIR}"
 exec > >(tee -a "${LOG_FILE}") 2>&1
 
+VAST_DEBUG_SLEEP_ON_FAIL="${VAST_DEBUG_SLEEP_ON_FAIL:-false}"
+
+_present() { [[ -n "${1:-}" ]] && echo "yes" || echo "no"; }
+_pyver()   { python --version 2>&1 || python3 --version 2>&1 || echo "python not found"; }
+
+# ── Early startup banner — FIRST lines printed, before any validation/logic ───
+# so the banner is captured even if the container dies almost instantly.
+echo "=== SONYA GPU worker container start ==="
+date '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date
+pwd
+whoami 2>/dev/null || id -un 2>/dev/null || echo "unknown"
+_pyver
+echo "WORKER_BACKEND_MODE=${WORKER_BACKEND_MODE:-api}"
+echo "BACKEND_API_URL=${BACKEND_API_URL:-<not set>}"
+echo "JOB_ID=${JOB_ID:-<not set>}"
+echo "S3_BUCKET present: $(_present "${S3_BUCKET:-}")"
+echo "S3_BUCKET_NAME present: $(_present "${S3_BUCKET_NAME:-}")"
+echo "WORKER_SECRET present: $(_present "${WORKER_SECRET:-}")"
+echo "VAST_DEBUG_SLEEP_ON_FAIL=${VAST_DEBUG_SLEEP_ON_FAIL}"
+echo "=== end startup banner ==="
+
+# ── Error trap — runs on ANY failing command from this point on ───────────────
+# Prints diagnostics (never secret values — only env var NAMES) and, when
+# VAST_DEBUG_SLEEP_ON_FAIL=true, sleeps instead of exiting so a human can
+# read the log before Vast retries/destroys the instance.
+_on_error() {
+    local exit_code=$?
+    local line_no="${1:-?}"
+    echo "[ENTRYPOINT_ERROR] line=${line_no} exit_code=${exit_code}"
+    date '+%Y-%m-%dT%H:%M:%S%z' 2>/dev/null || date
+    pwd
+    whoami 2>/dev/null || id -un 2>/dev/null || echo "unknown"
+    _pyver
+    echo "[ENTRYPOINT_ERROR] env var names present (values are NEVER printed):"
+    env | cut -d= -f1 | sort
+    if [[ "${VAST_DEBUG_SLEEP_ON_FAIL,,}" == "true" ]]; then
+        echo "[ENTRYPOINT_ERROR] VAST_DEBUG_SLEEP_ON_FAIL=true — sleeping 900s so the log can be inspected before the instance is retried/destroyed."
+        sleep 900
+    fi
+    exit "${exit_code}"
+}
+trap '_on_error "${LINENO}"' ERR
+
+set -e
+
 ts()   { date '+%Y-%m-%dT%H:%M:%S%z'; }
 log()  { echo "[$(ts)] [INFO]  $*"; }
 warn() { echo "[$(ts)] [WARN]  $*"; }
 fail() { echo "[$(ts)] [ERROR] $*"; exit 1; }
 
-log "=== SONYA GPU worker container start ==="
+log "=== SONYA GPU worker container start (detailed) ==="
 log "JOB_ID=${JOB_ID:-<not set>}"
 log "MODE=${MODE:-trailer_film_breaker}"
 log "BACKEND_API_URL=${BACKEND_API_URL:-<not set>}"
