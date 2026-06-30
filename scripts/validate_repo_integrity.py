@@ -1138,6 +1138,105 @@ if _cmds_fast.exists():
 else:
     err("commands_production_queue_gpu.md not found")
 
+# ── Section 32 — Vast entrypoint launch mode ───────────────────────────────────
+# The official Vast documentation defines three launch modes: entrypoint, ssh, jupyter.
+# Production automated workers must use entrypoint mode:
+#   - Vast calls Docker ENTRYPOINT (/entrypoint.sh) directly.
+#   - SSH mode overrides ENTRYPOINT (Vast installs openssh-server) — NOT for production.
+#   - ssh_onstart is only a fallback/debug option.
+
+print("\n-- 32. Vast entrypoint launch mode --")
+
+# 32a — VAST_LAUNCH_MODE config present
+if _orch.exists():
+    if "VAST_LAUNCH_MODE" in _orch_txt:
+        ok("gpu_orchestrator.py — VAST_LAUNCH_MODE config present")
+    else:
+        err("gpu_orchestrator.py — missing VAST_LAUNCH_MODE config (must default to entrypoint)")
+else:
+    err("gpu_orchestrator.py not found (already checked above)")
+
+# 32b — default launch mode is entrypoint
+if _orch.exists():
+    if '"entrypoint"' in _orch_txt and "VAST_LAUNCH_MODE" in _orch_txt:
+        ok("gpu_orchestrator.py — default VAST_LAUNCH_MODE=entrypoint")
+    else:
+        err("gpu_orchestrator.py — VAST_LAUNCH_MODE must default to \"entrypoint\"")
+
+# 32c — entrypoint mode uses runtype=entrypoint (not ssh or args as primary)
+if _orch.exists():
+    if '"runtype": "entrypoint"' in _orch_txt or '"runtype":        "entrypoint"' in _orch_txt:
+        ok("gpu_orchestrator.py — entrypoint launch mode uses runtype=entrypoint")
+    else:
+        err("gpu_orchestrator.py — entrypoint launch mode must use runtype=entrypoint per Vast docs")
+
+# 32d — entrypoint mode does NOT use onstart
+if _orch.exists():
+    _ep_idx = _orch_txt.find("direct-image-entrypoint")
+    if _ep_idx != -1:
+        _ep_block = _orch_txt[_ep_idx:_ep_idx + 400]
+        if "onstart" not in _ep_block:
+            ok("gpu_orchestrator.py — entrypoint mode does not use onstart")
+        else:
+            err("gpu_orchestrator.py — entrypoint mode must NOT use onstart (only ssh_onstart fallback)")
+    else:
+        err("gpu_orchestrator.py — direct-image-entrypoint deployment_mode not found")
+
+# 32e — docker_options include --shm-size (required for GPU workers)
+if _orch.exists():
+    if "shm-size" in _orch_txt:
+        ok("gpu_orchestrator.py — docker_options include --shm-size")
+    else:
+        err("gpu_orchestrator.py — entrypoint mode must include --shm-size in docker_options")
+
+# 32f — _build_vast_docker_options helper present
+if _orch.exists():
+    if "_build_vast_docker_options" in _orch_txt:
+        ok("gpu_orchestrator.py — _build_vast_docker_options helper present")
+    else:
+        err("gpu_orchestrator.py — missing _build_vast_docker_options (builds -e flags for entrypoint mode)")
+
+# 32g — docker_options string NEVER passed to logger (secrets protection)
+if _orch.exists():
+    _bad_opts_log = _re.search(
+        r'logger\.\w+\([^)]*\bdocker_opt[^)]*\)',
+        _orch_txt,
+    )
+    if not _bad_opts_log:
+        ok("gpu_orchestrator.py — docker_options not passed to logger (secret -e values safe)")
+    else:
+        err("gpu_orchestrator.py — docker_options must NOT be logged (contains secret -e values)")
+
+# 32h — ssh_onstart fallback still available (as debug/fallback path)
+if _orch.exists():
+    if "ssh_onstart" in _orch_txt:
+        ok("gpu_orchestrator.py — ssh_onstart fallback mode available (debug/fallback only)")
+    else:
+        err("gpu_orchestrator.py — ssh_onstart fallback mode missing")
+
+# 32i — Dockerfile.worker.fast has JSON ENTRYPOINT ["/entrypoint.sh"]
+if _fast_dockerfile.exists():
+    _fdf_ep = _fast_dockerfile.read_text(encoding="utf-8", errors="ignore")
+    if 'ENTRYPOINT ["/entrypoint.sh"]' in _fdf_ep:
+        ok('Dockerfile.worker.fast — JSON ENTRYPOINT ["/entrypoint.sh"] present (called by Vast entrypoint mode)')
+    else:
+        err('Dockerfile.worker.fast — must have JSON ENTRYPOINT ["/entrypoint.sh"]')
+else:
+    err("Dockerfile.worker.fast not found")
+
+# 32j — docs: commands_production_queue_gpu.md mentions VAST_LAUNCH_MODE=entrypoint
+_cmd_lm = _cmd_doc.read_text(encoding="utf-8", errors="ignore") if _cmd_doc.exists() else ""
+if "VAST_LAUNCH_MODE" in _cmd_lm and "entrypoint" in _cmd_lm.lower():
+    ok("commands doc — VAST_LAUNCH_MODE=entrypoint documented")
+else:
+    err("commands_production_queue_gpu.md — must document VAST_LAUNCH_MODE=entrypoint (production mode)")
+
+# 32k — docs: SSH mode override note present
+if "ssh" in _cmd_lm.lower() and ("override" in _cmd_lm.lower() or "overrides" in _cmd_lm.lower()):
+    ok("commands doc — SSH mode ENTRYPOINT override noted")
+else:
+    err("commands_production_queue_gpu.md — must note that SSH mode overrides Docker ENTRYPOINT")
+
 # ── Summary ────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 60)
 if WARNS:

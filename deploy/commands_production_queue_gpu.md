@@ -6,9 +6,9 @@
 
 1. VPS dispatcher (`gpu_dispatcher.py`) picks up a queued job.
 2. `gpu_orchestrator.py` (mode=`vast`) searches vast.ai for the cheapest matching GPU.
-3. Creates a vast.ai instance: `runtype=args`, image = `VAST_WORKER_IMAGE`.
-4. Env vars (secrets) passed via `env` dict over HTTPS — not embedded in `args_str`.
-5. `args_str` = `"bash -lc /entrypoint.sh"` — short command, no SSH daemon, no openssh-server.
+3. Creates a vast.ai instance: `runtype=entrypoint` (`VAST_LAUNCH_MODE=entrypoint`), image = `VAST_WORKER_IMAGE`.
+4. Env vars (secrets) passed via `docker_options` (`-e` flags, `--shm-size=8gb`) and `env` dict — never embedded in logs.
+5. Vast native **entrypoint mode** calls Docker `ENTRYPOINT` (`/entrypoint.sh`) directly. No SSH daemon, no openssh-server, no onstart.
 6. `worker_entrypoint.sh` (image ENTRYPOINT) runs inside the container:
    - validates env vars, writes `.env.local`
    - `prod_preflight_check.py --role worker`
@@ -25,6 +25,11 @@ Vast.ai GPU instances are external and cannot reach the private PostgreSQL
 server at `192.168.0.4`.  The worker uses `WORKER_BACKEND_MODE=api` —
 all job operations go through `BACKEND_API_URL` worker endpoints.
 No `DATABASE_URL` is passed to the GPU instance.
+
+> **Vast launch mode:** Use `VAST_LAUNCH_MODE=entrypoint` (default) — Vast native entrypoint
+> mode calls Docker `ENTRYPOINT` directly. **SSH mode and Jupyter mode override Docker
+> `ENTRYPOINT`** (Vast installs `openssh-server`); do NOT use for automated workers.
+> Use `VAST_LAUNCH_MODE=ssh_onstart` only for fallback/debug (`onstart` calls `/entrypoint.sh`).
 
 | Mode | GPU provider | Use case |
 |---|---|---|
@@ -106,6 +111,7 @@ Preferred locations: **US, EU (DE/NL/PL/FR/FI/SE), JP**.
 GPU_ORCHESTRATOR_MODE=vast \
 VAST_API_KEY=<your-key> \
 VAST_DRY_RUN=true \
+VAST_LAUNCH_MODE=entrypoint \
 VAST_IMAGE=nvidia/cuda:12.2.0-devel-ubuntu22.04 \
 VAST_WORKER_IMAGE=ghcr.io/samnesvoj/sonya-worker:fast \
 VAST_GPU_MIN_VRAM=12 \
@@ -129,6 +135,7 @@ AUTO_GPU_TRIGGER_ENABLED=true \
 GPU_ORCHESTRATOR_MODE=vast \
 VAST_API_KEY=<your-key> \
 VAST_DRY_RUN=false \
+VAST_LAUNCH_MODE=entrypoint \
 VAST_IMAGE=nvidia/cuda:12.2.0-devel-ubuntu22.04 \
 VAST_WORKER_IMAGE=ghcr.io/samnesvoj/sonya-worker:fast \
 VAST_GPU_MIN_VRAM=12 \
@@ -302,7 +309,10 @@ AUTO_GPU_TRIGGER_ENABLED=true
 GPU_ORCHESTRATOR_MODE=vast
 VAST_API_KEY=<your-vast-api-key>            # never commit
 VAST_IMAGE=nvidia/cuda:12.2.0-devel-ubuntu22.04
-VAST_WORKER_IMAGE=ghcr.io/samnesvoj/sonya-worker:latest   # pre-built image (private repo)
+VAST_WORKER_IMAGE=ghcr.io/samnesvoj/sonya-worker:fast     # pre-built image (private repo)
+VAST_LAUNCH_MODE=entrypoint                 # entrypoint (default) | ssh_onstart | args
+                                            # entrypoint = Vast native mode; Docker ENTRYPOINT called directly
+                                            # SSH mode overrides ENTRYPOINT — use only ssh_onstart for debug
 VAST_GPU_MIN_VRAM=12                        # 12 GB for RTX 3060; 24+ for heavier modes
 VAST_DISK_GB=50
 VAST_INSTANCE_LABEL_PREFIX=sonya-gpu
