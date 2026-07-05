@@ -278,6 +278,94 @@ python scripts/prod_preflight_check.py --role worker
 
 ---
 
+## Production startup SLA (Vast cold-start protection)
+
+Vast.ai cold start (image pull + boot) can take **4+ minutes** on a slow
+host. In production we cannot let one bad instance block the queue.
+
+**Policy:**
+
+- **240 sec max** (`VAST_STARTUP_TIMEOUT_SEC=240`) from `gpu_requested_at` to
+  `worker_started_at`. If the worker has not called back via
+  `/api/worker/status` within this window, the job is a **startup timeout**.
+- **Auto destroy** the stale Vast instance (`destroy_vast_instance()` in
+  `scripts/gpu_orchestrator.py`, `DELETE /instances/{contract_id}/`) — never
+  let a stuck instance keep billing indefinitely. Destroy failures are logged
+  as a warning but never block the job from being retried/failed.
+- **Retry another host** — up to `VAST_MAX_STARTUP_RETRIES=3` attempts total.
+  Each retry requeues the job as `status='queued'` so the next dispatcher
+  pass picks a fresh offer; after the cap is reached the job is permanently
+  `status='failed'` with `error='vast startup timeout after 240 sec'`.
+- **Bad host cooldown** — the offending `host_id` / `machine_id` / `ip` is
+  blacklisted for `VAST_SLOW_HOST_COOLDOWN_MIN=60` minutes in the
+  `vast_bad_hosts` table (migration `007_vast_bad_hosts.sql`). Offers from a
+  currently-blacklisted host are rejected during offer search with
+  `reason=slow_startup_blacklist` (`scripts/gpu_orchestrator.py`,
+  `_vast_search_offers`).
+- **Warm worker/pool recommended** for real speed — cold start + retry is a
+  *safety net*, not a performance fix. For latency-sensitive production
+  traffic, keep a small pool of pre-warmed vast.ai instances (or a
+  provider-side warm pool) instead of relying on cold dispatch alone.
+
+**Env vars:**
+
+```
+VAST_STARTUP_TIMEOUT_SEC=240        # max sec from gpu_requested_at to worker_started_at
+VAST_MAX_STARTUP_RETRIES=3          # max dispatch attempts before permanent fail
+VAST_SLOW_HOST_COOLDOWN_MIN=60      # blacklist cooldown for a slow host/machine/ip
+# Manual exclude lists (in addition to the automatic blacklist above):
+VAST_EXCLUDE_HOST_IDS=              # comma-separated host_id values, e.g. "12345,67890"
+VAST_EXCLUDE_MACHINE_IDS=           # comma-separated machine_id values
+VAST_EXCLUDE_INSTANCE_IPS=          # comma-separated IPs
+```
+
+**How it works:**
+
+1. `gpu_dispatcher.cleanup_stale_gpu_requests()` runs **before every dispatch
+   pass** (both the continuous loop and `--once`). It queries
+   `generation_jobs` for `status='gpu_requested'` rows where
+   `gpu_requested_at < NOW() - 240s` and `worker_started_at IS NULL`.
+2. For each stale job it reads `contract_id`, `offer_id`, `offer_gpu`,
+   `host_id`, `machine_id`, `offer_ip` out of `orchestrator_payload`, calls
+   `destroy_vast_instance(contract_id)`, and inserts a cooldown row into
+   `vast_bad_hosts`.
+3. `prod_job_store.mark_gpu_startup_timeout()` sets `error='vast startup
+   timeout after 240 sec'` and either requeues (`status='queued'`,
+   `orchestrator_error='startup timeout; retrying another offer'`) or
+   permanently fails the job, depending on `attempts` vs
+   `VAST_MAX_STARTUP_RETRIES`.
+4. On the next dispatch pass, `_vast_search_offers()` filters out any offer
+   matching a currently-blocked `host_id` / `machine_id` / `ip` — the retried
+   job lands on a different host automatically.
+
+### Database — Migration 007
+
+```bash
+# Apply (from repo root)
+psql "$DATABASE_URL" -f scripts/migrations/007_vast_bad_hosts.sql
+
+# Or via run_migrations.py (applies 001..007 in order)
+python scripts/run_migrations.py
+```
+
+### Inspect the slow-host blacklist
+
+```sql
+-- Currently-blocked hosts
+SELECT host_id, machine_id, ip, offer_id, reason, blocked_until
+FROM vast_bad_hosts
+WHERE blocked_until > now()
+ORDER BY blocked_until DESC;
+
+-- Jobs currently failing the startup SLA
+SELECT id, mode, attempts, max_attempts, gpu_status, error, orchestrator_error
+FROM generation_jobs
+WHERE gpu_status IN ('startup_timeout_retry', 'startup_timeout_failed')
+ORDER BY updated_at DESC;
+```
+
+---
+
 ## Debug Mode — diagnosing a Vast "Retrying in 1 second" loop
 
 If the Vast instance card shows **"Retrying in 1 second"**, the container is
@@ -376,6 +464,14 @@ GHCR_USERNAME=samnesvoj
 GHCR_TOKEN=<github-pat-read-packages>       # never commit
 # Debug-safe mode (diagnose "Retrying in 1 second" loops only — turn off after):
 VAST_DEBUG_SLEEP_ON_FAIL=false
+# Production startup SLA (see "Production startup SLA" section above):
+VAST_STARTUP_TIMEOUT_SEC=240
+VAST_MAX_STARTUP_RETRIES=3
+VAST_SLOW_HOST_COOLDOWN_MIN=60
+# Manual offer exclusion (optional; in addition to the automatic blacklist):
+# VAST_EXCLUDE_HOST_IDS=
+# VAST_EXCLUDE_MACHINE_IDS=
+# VAST_EXCLUDE_INSTANCE_IPS=
 SHUTDOWN_AFTER_JOB=true
 GPU_DISPATCH_INTERVAL_SECONDS=20
 MAX_ACTIVE_GPU_JOBS=1

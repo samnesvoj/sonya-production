@@ -1362,6 +1362,172 @@ if _cmd_doc.exists():
 else:
     err("deploy/commands_production_queue_gpu.md not found (already checked above)")
 
+# ── 34. Production startup SLA (Vast cold-start protection) ──────────────────
+print("\n[34] Production startup SLA (Vast cold-start protection)")
+
+# 34a — new env vars present in gpu_orchestrator.py
+if _orch.exists():
+    for _sla_var in ("VAST_STARTUP_TIMEOUT_SEC", "VAST_MAX_STARTUP_RETRIES", "VAST_SLOW_HOST_COOLDOWN_MIN"):
+        if _sla_var in _orch_txt:
+            ok(f"gpu_orchestrator.py — {_sla_var} config present")
+        else:
+            err(f"gpu_orchestrator.py — missing {_sla_var} config")
+    # Defaults must match the production policy (240s / 3 retries / 60 min)
+    if '"VAST_STARTUP_TIMEOUT_SEC", "240"' in _orch_txt:
+        ok("gpu_orchestrator.py — VAST_STARTUP_TIMEOUT_SEC defaults to 240")
+    else:
+        err("gpu_orchestrator.py — VAST_STARTUP_TIMEOUT_SEC must default to 240")
+    if '"VAST_MAX_STARTUP_RETRIES", "3"' in _orch_txt:
+        ok("gpu_orchestrator.py — VAST_MAX_STARTUP_RETRIES defaults to 3")
+    else:
+        err("gpu_orchestrator.py — VAST_MAX_STARTUP_RETRIES must default to 3")
+    if '"VAST_SLOW_HOST_COOLDOWN_MIN", "60"' in _orch_txt:
+        ok("gpu_orchestrator.py — VAST_SLOW_HOST_COOLDOWN_MIN defaults to 60")
+    else:
+        err("gpu_orchestrator.py — VAST_SLOW_HOST_COOLDOWN_MIN must default to 60")
+else:
+    err("gpu_orchestrator.py missing — cannot check startup SLA config")
+
+# 34b — destroy_vast_instance() present and never logs the API key value
+if _orch.exists():
+    if "def destroy_vast_instance" in _orch_txt:
+        ok("gpu_orchestrator.py — destroy_vast_instance() present")
+        _destroy_start = _orch_txt.find("def destroy_vast_instance")
+        _destroy_end = _orch_txt.find("\n\n\ndef ", _destroy_start)
+        _destroy_body = (
+            _orch_txt[_destroy_start:_destroy_end]
+            if _destroy_end != -1 else _orch_txt[_destroy_start:]
+        )
+        _logger_calls = re.findall(r"logger\.\w+\([^)]*\)", _destroy_body)
+        _leaked = any("_VAST_API_KEY" in call for call in _logger_calls)
+        if not _leaked:
+            ok("destroy_vast_instance() — VAST_API_KEY never passed to a logger call")
+        else:
+            err("destroy_vast_instance() — VAST_API_KEY must never be logged")
+    else:
+        err("gpu_orchestrator.py — destroy_vast_instance() missing")
+
+# 34c — automatic slow-host blacklist reject reason present + wired into offer search
+if _orch.exists():
+    if "slow_startup_blacklist" in _orch_txt:
+        ok("gpu_orchestrator.py — slow_startup_blacklist reject reason present")
+    else:
+        err("gpu_orchestrator.py — slow_startup_blacklist reject reason missing")
+    if "_offer_is_blacklisted" in _orch_txt and "_vast_search_offers" in _orch_txt:
+        ok("gpu_orchestrator.py — blacklist check wired into _vast_search_offers")
+    else:
+        err("gpu_orchestrator.py — blacklist check must be wired into _vast_search_offers")
+    for _excl_var in ("VAST_EXCLUDE_HOST_IDS", "VAST_EXCLUDE_MACHINE_IDS", "VAST_EXCLUDE_INSTANCE_IPS"):
+        if _excl_var in _orch_txt:
+            ok(f"gpu_orchestrator.py — {_excl_var} supported")
+        else:
+            err(f"gpu_orchestrator.py — missing {_excl_var}")
+
+# 34d — vast_bad_hosts.py helper module present with required functions
+_vbh = ROOT / "scripts" / "vast_bad_hosts.py"
+if _vbh.exists():
+    _vbh_txt = _vbh.read_text(encoding="utf-8", errors="ignore")
+    if "def add_bad_host" in _vbh_txt and "def get_active_bad_hosts" in _vbh_txt:
+        ok("scripts/vast_bad_hosts.py — add_bad_host / get_active_bad_hosts present")
+    else:
+        err("scripts/vast_bad_hosts.py — missing add_bad_host / get_active_bad_hosts")
+else:
+    err("scripts/vast_bad_hosts.py missing")
+
+# 34e — cleanup_stale_gpu_requests() present (gpu_dispatcher.py or a dedicated helper)
+_disp_txt = _disp.read_text(encoding="utf-8", errors="ignore") if _disp.exists() else ""
+_cleanup_owner = None
+if "def cleanup_stale_gpu_requests" in _disp_txt:
+    _cleanup_owner = "scripts/gpu_dispatcher.py"
+else:
+    for _hp in sorted((ROOT / "scripts").glob("*.py")):
+        if "def cleanup_stale_gpu_requests" in _hp.read_text(encoding="utf-8", errors="ignore"):
+            _cleanup_owner = str(_hp.relative_to(ROOT))
+            break
+if _cleanup_owner:
+    ok(f"cleanup_stale_gpu_requests() present in {_cleanup_owner}")
+else:
+    err("cleanup_stale_gpu_requests() not found in scripts/gpu_dispatcher.py or any scripts/*.py helper")
+
+# 34f — cleanup runs before dispatch in both run_loop() and run_once()
+if _disp.exists():
+    _loop_start = _disp_txt.find("def run_loop")
+    _loop_end   = _disp_txt.find("\ndef ", _loop_start + 1) if _loop_start != -1 else -1
+    _loop_body  = _disp_txt[_loop_start:_loop_end] if _loop_start != -1 and _loop_end != -1 else ""
+    _once_start = _disp_txt.find("def run_once")
+    _once_end   = _disp_txt.find("\ndef ", _once_start + 1) if _once_start != -1 else -1
+    _once_body  = _disp_txt[_once_start:_once_end] if _once_start != -1 and _once_end != -1 else ""
+    if "cleanup_stale_gpu_requests()" in _loop_body and "cleanup_stale_gpu_requests()" in _once_body:
+        ok("gpu_dispatcher.py — cleanup_stale_gpu_requests() called in run_loop() and run_once()")
+    else:
+        err("gpu_dispatcher.py — cleanup_stale_gpu_requests() must run before dispatch in run_loop() and run_once()")
+
+# 34g — migration 007 exists with all required vast_bad_hosts columns
+_mig007 = list(_mig_dir.glob("007_*.sql"))
+if _mig007:
+    ok(f"migration 007 exists — {_mig007[0].name}")
+    _mig007_txt = _mig007[0].read_text(encoding="utf-8", errors="ignore")
+    if "vast_bad_hosts" not in _mig007_txt:
+        err("migration 007 — must create the vast_bad_hosts table")
+    _required_cols = ["host_id", "machine_id", "ip", "offer_id", "reason", "blocked_until"]
+    _missing_cols = [c for c in _required_cols if c not in _mig007_txt]
+    if not _missing_cols:
+        ok("migration 007 — vast_bad_hosts has all required columns")
+    else:
+        err(f"migration 007 — vast_bad_hosts missing columns: {_missing_cols}")
+else:
+    err("migration 007 not found (scripts/migrations/007_vast_bad_hosts.sql)")
+
+# 34h — prod_job_store.py: startup-timeout DB helpers present
+_pjs = ROOT / "scripts" / "prod_job_store.py"
+if _pjs.exists():
+    _pjs_txt = _pjs.read_text(encoding="utf-8", errors="ignore")
+    if "def get_stale_gpu_requested_jobs" in _pjs_txt:
+        ok("prod_job_store.py — get_stale_gpu_requested_jobs() present")
+    else:
+        err("prod_job_store.py — get_stale_gpu_requested_jobs() missing")
+    if "def mark_gpu_startup_timeout" in _pjs_txt:
+        ok("prod_job_store.py — mark_gpu_startup_timeout() present")
+    else:
+        err("prod_job_store.py — mark_gpu_startup_timeout() missing")
+    if "gpu_requested_at" in _pjs_txt and "worker_started_at" in _pjs_txt:
+        ok("prod_job_store.py — uses gpu_requested_at / worker_started_at for timeout detection")
+    else:
+        err("prod_job_store.py — startup-timeout detection must use gpu_requested_at / worker_started_at")
+else:
+    err("scripts/prod_job_store.py missing")
+
+# 34i — no secrets logged anywhere in the new startup-SLA code path
+for _sla_file in (_orch, _disp, _vbh, _pjs):
+    if not _sla_file.exists():
+        continue
+    _sla_txt = _sla_file.read_text(encoding="utf-8", errors="ignore")
+    _sla_logger_calls = re.findall(r"logger\.\w+\([^)]*\)", _sla_txt)
+    _sla_leak = any(
+        any(secret in call for secret in ("VAST_API_KEY", "DATABASE_URL", "WORKER_SECRET"))
+        and "os.environ" not in call
+        for call in _sla_logger_calls
+    )
+    if not _sla_leak:
+        ok(f"{_sla_file.relative_to(ROOT)} — no secret values passed to logger calls")
+    else:
+        err(f"{_sla_file.relative_to(ROOT)} — a logger call appears to reference a secret variable")
+
+# 34j — docs: Production startup SLA documented in commands_production_queue_gpu.md
+if _cmd_doc.exists():
+    _cmd_sla = _cmd_doc.read_text(encoding="utf-8", errors="ignore")
+    _sla_doc_hits = [
+        kw for kw in ("VAST_STARTUP_TIMEOUT_SEC", "240", "auto destroy", "retry another host",
+                      "warm worker", "VAST_MAX_STARTUP_RETRIES", "VAST_SLOW_HOST_COOLDOWN_MIN")
+        if kw.lower() in _cmd_sla.lower()
+    ]
+    if "VAST_STARTUP_TIMEOUT_SEC" in _cmd_sla and "240" in _cmd_sla:
+        ok(f"commands doc — Production startup SLA documented ({len(_sla_doc_hits)} keywords found)")
+    else:
+        err("commands_production_queue_gpu.md — must document Production startup SLA (VAST_STARTUP_TIMEOUT_SEC=240)")
+else:
+    err("deploy/commands_production_queue_gpu.md not found")
+
 # ── Summary ────────────────────────────────────────────────────────────────────
 print("\n" + "=" * 60)
 if WARNS:

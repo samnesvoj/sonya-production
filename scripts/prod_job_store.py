@@ -25,6 +25,10 @@ Functions:
   requeue_stale_jobs     reset stuck jobs → queued
   add_job_file           register an S3 file with a job
   list_job_files         list all files for a job
+
+GPU dispatcher / Vast startup SLA (migration 006 + 007):
+  get_stale_gpu_requested_jobs  find jobs stuck past VAST_STARTUP_TIMEOUT_SEC
+  mark_gpu_startup_timeout      requeue (another offer) or fail a timed-out job
 """
 from __future__ import annotations
 
@@ -557,6 +561,134 @@ def mark_gpu_request_failed(job_id: str, error: str) -> None:
     finally:
         conn.close()
     logger.warning("[job_store] gpu_request_failed job_id=%s error=%.120s", job_id, error)
+
+
+def get_stale_gpu_requested_jobs(timeout_sec: int) -> List[Dict[str, Any]]:
+    """
+    Find jobs stuck in 'gpu_requested' past the production Vast startup SLA.
+
+    A job is a startup_timeout when:
+      status = 'gpu_requested'
+      gpu_requested_at < NOW() - timeout_sec seconds
+      worker_started_at IS NULL
+
+    Used by gpu_dispatcher.cleanup_stale_gpu_requests(), which is run before
+    every dispatch pass so a bad instance never blocks the queue for longer
+    than timeout_sec.
+    """
+    conn = _get_conn()
+    try:
+        return _rows(
+            conn,
+            """
+            SELECT *
+            FROM generation_jobs
+            WHERE status = 'gpu_requested'
+              AND worker_started_at IS NULL
+              AND gpu_requested_at IS NOT NULL
+              AND gpu_requested_at < NOW() - (%s || ' seconds')::INTERVAL
+            """,
+            (str(timeout_sec),),
+        )
+    finally:
+        conn.close()
+
+
+def mark_gpu_startup_timeout(
+    job_id: str,
+    error: str,
+    max_startup_retries: Optional[int] = None,
+) -> Dict[str, Any]:
+    """
+    Resolve a Vast startup-SLA timeout for one job.
+
+    attempts is NOT incremented here — it was already incremented by
+    lock_job_for_dispatch() at dispatch time, so it already reflects this
+    attempt.
+
+    Retry cap: LEAST(generation_jobs.max_attempts, max_startup_retries) when
+    max_startup_retries is given (VAST_MAX_STARTUP_RETRIES), otherwise falls
+    back to the job's own max_attempts column.
+
+      attempts <  cap  -> status='queued'  (next dispatcher pass retries a
+                          different offer/host), orchestrator_error=
+                          'startup timeout; retrying another offer'
+      attempts >= cap  -> status='failed', failed_at=NOW()
+
+    Returns the updated row so the caller can log the outcome without a
+    second query.
+    """
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                if max_startup_retries is not None:
+                    cur.execute(
+                        """
+                        UPDATE generation_jobs
+                        SET
+                            error              = %(error)s,
+                            orchestrator_error = CASE
+                                WHEN attempts >= LEAST(max_attempts, %(cap)s) THEN %(error)s
+                                ELSE 'startup timeout; retrying another offer'
+                            END,
+                            gpu_status = CASE
+                                WHEN attempts >= LEAST(max_attempts, %(cap)s) THEN 'startup_timeout_failed'
+                                ELSE 'startup_timeout_retry'
+                            END,
+                            status = CASE
+                                WHEN attempts >= LEAST(max_attempts, %(cap)s) THEN 'failed'
+                                ELSE 'queued'
+                            END,
+                            failed_at = CASE
+                                WHEN attempts >= LEAST(max_attempts, %(cap)s) THEN NOW()
+                                ELSE NULL
+                            END,
+                            locked_until = NULL,
+                            updated_at = NOW()
+                        WHERE id = %(job_id)s
+                        RETURNING *
+                        """,
+                        {"error": error[:2000], "cap": max_startup_retries, "job_id": job_id},
+                    )
+                else:
+                    cur.execute(
+                        """
+                        UPDATE generation_jobs
+                        SET
+                            error              = %(error)s,
+                            orchestrator_error = CASE
+                                WHEN attempts >= max_attempts THEN %(error)s
+                                ELSE 'startup timeout; retrying another offer'
+                            END,
+                            gpu_status = CASE
+                                WHEN attempts >= max_attempts THEN 'startup_timeout_failed'
+                                ELSE 'startup_timeout_retry'
+                            END,
+                            status = CASE
+                                WHEN attempts >= max_attempts THEN 'failed'
+                                ELSE 'queued'
+                            END,
+                            failed_at = CASE
+                                WHEN attempts >= max_attempts THEN NOW()
+                                ELSE NULL
+                            END,
+                            locked_until = NULL,
+                            updated_at = NOW()
+                        WHERE id = %(job_id)s
+                        RETURNING *
+                        """,
+                        {"error": error[:2000], "job_id": job_id},
+                    )
+                row = cur.fetchone()
+                result = dict(row) if row else {}
+    finally:
+        conn.close()
+    logger.warning(
+        "[job_store] gpu_startup_timeout job_id=%s new_status=%s attempts=%s/%s",
+        job_id, result.get("status"), result.get("attempts"), result.get("max_attempts"),
+    )
+    return result
 
 
 def mark_worker_started(job_id: str) -> None:

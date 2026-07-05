@@ -95,6 +95,30 @@ vast mode env vars  (production GPU provider)
   S3_BUCKET_NAME      S3_REGION           MODELS_S3_BUCKET
   OPENROUTER_API_KEY  GEMINI_API_KEY      ELEVENLABS_API_KEY  ELEVENLABS_VOICE_ID
   SHUTDOWN_AFTER_JOB
+
+  # Manual offer exclusion (comma-separated; in addition to the auto-blacklist below):
+  VAST_EXCLUDE_HOST_IDS       e.g. "12345,67890"
+  VAST_EXCLUDE_MACHINE_IDS    e.g. "111,222"
+  VAST_EXCLUDE_INSTANCE_IPS   e.g. "1.2.3.4,5.6.7.8"
+
+────────────────────────────────────────────────────────────────────────────────
+Production startup SLA (Vast cold-start protection)
+────────────────────────────────────────────────────────────────────────────────
+  Cold-starting a vast.ai instance (image pull + boot) can take 4+ minutes on
+  a slow host. In production we cannot wait indefinitely on one bad instance.
+
+  VAST_STARTUP_TIMEOUT_SEC     max seconds from gpu_requested_at to
+                                worker_started_at before the job is considered
+                                a startup timeout            (default 240)
+  VAST_MAX_STARTUP_RETRIES     max dispatch attempts before a startup-timeout
+                                job is permanently failed     (default 3)
+  VAST_SLOW_HOST_COOLDOWN_MIN  minutes a host/machine/ip that caused a startup
+                                timeout is blacklisted for    (default 60)
+
+  Enforcement lives in scripts/gpu_dispatcher.cleanup_stale_gpu_requests()
+  (run before every dispatch pass) and destroy_vast_instance() below.
+  Offers from blacklisted hosts are rejected with reason=slow_startup_blacklist
+  in _vast_search_offers(). See scripts/vast_bad_hosts.py + migration 007.
 """
 from __future__ import annotations
 
@@ -233,6 +257,22 @@ _VAST_REQUIRE_VERIFIED: bool = (
     os.environ.get("VAST_REQUIRE_VERIFIED", "true").lower() != "false"
 )
 _VAST_MIN_RELIABILITY: float = float(os.environ.get("VAST_MIN_RELIABILITY", "98"))
+
+# Manual per-offer exclusion lists (comma-separated host_id / machine_id / ip).
+# Applied in addition to the automatic slow-host blacklist (vast_bad_hosts table).
+_VAST_EXCLUDE_HOST_IDS: str = os.environ.get("VAST_EXCLUDE_HOST_IDS", "")
+_VAST_EXCLUDE_MACHINE_IDS: str = os.environ.get("VAST_EXCLUDE_MACHINE_IDS", "")
+_VAST_EXCLUDE_INSTANCE_IPS: str = os.environ.get("VAST_EXCLUDE_INSTANCE_IPS", "")
+
+_vast_exclude_host_ids = {v.strip() for v in _VAST_EXCLUDE_HOST_IDS.split(",") if v.strip()}
+_vast_exclude_machine_ids = {v.strip() for v in _VAST_EXCLUDE_MACHINE_IDS.split(",") if v.strip()}
+_vast_exclude_ips = {v.strip() for v in _VAST_EXCLUDE_INSTANCE_IPS.split(",") if v.strip()}
+
+# ── Production startup SLA (Vast cold-start protection) ───────────────────────
+# See module docstring "Production startup SLA" section for the full policy.
+VAST_STARTUP_TIMEOUT_SEC: int = int(os.environ.get("VAST_STARTUP_TIMEOUT_SEC", "240"))
+VAST_MAX_STARTUP_RETRIES: int = int(os.environ.get("VAST_MAX_STARTUP_RETRIES", "3"))
+VAST_SLOW_HOST_COOLDOWN_MIN: int = int(os.environ.get("VAST_SLOW_HOST_COOLDOWN_MIN", "60"))
 
 # Env vars forwarded to Timeweb GPU instances via cloud-init (may contain secrets)
 _TW_WORKER_ENV_VARS: List[str] = [
@@ -867,6 +907,65 @@ def _check_offer_verified(offer: Dict[str, Any]) -> Optional[bool]:
     return None  # unknown — caller decides based on reliability fallback
 
 
+def _get_offer_host_id(offer: Dict[str, Any]) -> str:
+    """Extract the vast.ai host id from an offer dict (multi-field, API-version tolerant)."""
+    for field in ("host_id", "hosting_id", "hostId"):
+        val = offer.get(field)
+        if val not in (None, ""):
+            return str(val)
+    return ""
+
+
+def _get_offer_machine_id(offer: Dict[str, Any]) -> str:
+    """Extract the vast.ai machine id from an offer dict (multi-field, API-version tolerant)."""
+    for field in ("machine_id", "machineId"):
+        val = offer.get(field)
+        if val not in (None, ""):
+            return str(val)
+    return ""
+
+
+def _get_offer_ip(offer: Dict[str, Any]) -> str:
+    """Extract the public IP of the offer's host, if present. Not a secret — safe to log."""
+    for field in ("public_ipaddr", "public_ip", "ipaddr", "ip"):
+        val = offer.get(field)
+        if isinstance(val, str) and val:
+            return val
+    return ""
+
+
+def _get_active_bad_hosts() -> List[Dict[str, Any]]:
+    """
+    Fetch the current slow-host blacklist (scripts/vast_bad_hosts.py, migration 007).
+
+    Local import: vast_bad_hosts requires DATABASE_URL/psycopg2, which is only
+    guaranteed available where the dispatcher runs (VPS), not inside the GPU
+    worker container. Fails open (returns []) on any error — a blacklist
+    outage must never block all offer search.
+    """
+    try:
+        from scripts.vast_bad_hosts import get_active_bad_hosts
+        return get_active_bad_hosts()
+    except Exception as exc:
+        logger.debug("vast_blacklist_unavailable exc=%s", exc)
+        return []
+
+
+def _offer_is_blacklisted(offer: Dict[str, Any], bad_hosts: List[Dict[str, Any]]) -> bool:
+    """True if the offer's host_id/machine_id/ip matches an active vast_bad_hosts row."""
+    host_id    = _get_offer_host_id(offer)
+    machine_id = _get_offer_machine_id(offer)
+    ip         = _get_offer_ip(offer)
+    for row in bad_hosts:
+        if host_id and row.get("host_id") and row["host_id"] == host_id:
+            return True
+        if machine_id and row.get("machine_id") and row["machine_id"] == machine_id:
+            return True
+        if ip and row.get("ip") and row["ip"] == ip:
+            return True
+    return False
+
+
 def _extract_offers_from_response(data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     Extract the list of GPU offers from a vast.ai API response.
@@ -930,11 +1029,48 @@ def _vast_search_offers(min_vram_gb: int, gpu_name: str) -> Optional[Dict[str, A
                 "vast_offer_first_keys keys=%s", list(offers[0].keys())[:15]
             )
 
+        # Slow-host blacklist (production startup SLA) — fetched once per search.
+        _bad_hosts = _get_active_bad_hosts()
+        if _bad_hosts:
+            logger.info("vast_blacklist_active count=%d", len(_bad_hosts))
+
         # ── Python-side filtering ─────────────────────────────────────────────
         filtered: List[Dict[str, Any]] = []
         for offer in offers:
             oid = offer.get("id", "?")
             gpu_label = _get_offer_gpu_name(offer)
+            host_id    = _get_offer_host_id(offer)
+            machine_id = _get_offer_machine_id(offer)
+            offer_ip   = _get_offer_ip(offer)
+
+            # Manual exclude lists (VAST_EXCLUDE_HOST_IDS / _MACHINE_IDS / _INSTANCE_IPS)
+            if host_id and host_id in _vast_exclude_host_ids:
+                logger.debug(
+                    "vast_offer_skip id=%s gpu=%r reason=exclude_host_id(%s)",
+                    oid, gpu_label, host_id,
+                )
+                continue
+            if machine_id and machine_id in _vast_exclude_machine_ids:
+                logger.debug(
+                    "vast_offer_skip id=%s gpu=%r reason=exclude_machine_id(%s)",
+                    oid, gpu_label, machine_id,
+                )
+                continue
+            if offer_ip and offer_ip in _vast_exclude_ips:
+                logger.debug(
+                    "vast_offer_skip id=%s gpu=%r reason=exclude_instance_ip",
+                    oid, gpu_label,
+                )
+                continue
+
+            # Automatic slow-host blacklist (production startup SLA — migration 007)
+            if _offer_is_blacklisted(offer, _bad_hosts):
+                logger.debug(
+                    "vast_offer_skip id=%s gpu=%r host_id=%s machine_id=%s "
+                    "reason=slow_startup_blacklist",
+                    oid, gpu_label, host_id, machine_id,
+                )
+                continue
 
             # VRAM check (field may be GB or MB)
             gpu_ram = offer.get("gpu_ram") or offer.get("gpu_ram_free_mb", 0)
@@ -1282,6 +1418,11 @@ def _trigger_vast(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
                 "offer_gpu": offer.get("gpu_name", ""),
                 "offer_vram_gb": offer.get("gpu_ram", ""),
                 "offer_dph": offer.get("dph_total", ""),
+                # Identifiers needed by cleanup_stale_gpu_requests() to destroy the
+                # instance and blacklist the host on a startup-SLA timeout.
+                "host_id": _get_offer_host_id(offer),
+                "machine_id": _get_offer_machine_id(offer),
+                "offer_ip": _get_offer_ip(offer),
                 "raw_response": sanitized_body,
             }
 
@@ -1300,6 +1441,55 @@ def _trigger_vast(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
 
 
 # ── Public API ─────────────────────────────────────────────────────────────────
+
+def destroy_vast_instance(contract_id: str) -> bool:
+    """
+    Destroy (cancel) a vast.ai instance by contract id — production startup SLA.
+
+    Called by gpu_dispatcher.cleanup_stale_gpu_requests() when a worker fails
+    to report in within VAST_STARTUP_TIMEOUT_SEC, so a single slow instance
+    never runs (and bills) indefinitely.
+
+    Never raises. Returns True on a confirmed HTTP-ok response, False
+    otherwise (including missing contract_id / VAST_API_KEY / network error).
+    On failure the caller logs a warning and proceeds with job retry/failure
+    regardless — a destroy failure must never block the job from moving on.
+
+    VAST_API_KEY is sent only as a query param to vast.ai; it is never logged.
+    """
+    if not contract_id:
+        logger.warning("vast_destroy_skip reason=missing_contract_id")
+        return False
+    if not _VAST_API_KEY:
+        logger.warning(
+            "vast_destroy_skip contract_id=%s reason=missing_api_key", contract_id
+        )
+        return False
+
+    try:
+        import requests  # type: ignore
+
+        resp = requests.delete(
+            f"{_VAST_API_BASE}/instances/{contract_id}/",
+            params={"api_key": _VAST_API_KEY},
+            timeout=30,
+        )
+        if resp.ok:
+            logger.info(
+                "vast_instance_destroyed contract_id=%s http=%d",
+                contract_id, resp.status_code,
+            )
+            return True
+
+        logger.warning(
+            "vast_destroy_failed contract_id=%s http=%d body=%s",
+            contract_id, resp.status_code, resp.text[:300],
+        )
+        return False
+    except Exception as exc:
+        logger.warning("vast_destroy_exception contract_id=%s exc=%s", contract_id, exc)
+        return False
+
 
 def trigger_gpu_for_job(
     job_id: str,
