@@ -69,14 +69,24 @@ vast mode env vars  (production GPU provider)
                               e.g. ghcr.io/samnesvoj/sonya-worker:fast
                               When set, Vast pulls and runs this image directly.
                               Repo stays private — no git clone needed.
-  VAST_LAUNCH_MODE            entrypoint (default) | ssh_onstart | args
-                              Launch mode for VAST_WORKER_IMAGE instances.
-                              entrypoint  = Vast native mode; Vast calls Docker ENTRYPOINT
-                                            directly. NO SSH, NO onstart, NO args wrapper.
-                                            Env vars via docker_options (-e flags) + env dict.
-                              ssh_onstart = SSH fallback (debug only); onstart calls
-                                            /entrypoint.sh. WARNING: SSH overrides ENTRYPOINT.
-                              args        = experimental; runtype=args + bash -lc wrapper.
+  VAST_LAUNCH_MODE            entrypoint (default) | ssh_onstart
+                              Human-readable launch mode for VAST_WORKER_IMAGE instances.
+                              IMPORTANT: the official Vast Create Instance API
+                              (PUT /api/v0/asks/{id}/) does NOT support runtype="entrypoint".
+                              Valid runtype values are: ssh, jupyter, args, ssh_proxy,
+                              ssh_direct, jupyter_proxy, jupyter_direct.
+                              entrypoint  = our production default; maps to Vast
+                                            api runtype="args". The image's ENTRYPOINT
+                                            (/entrypoint.sh) is preserved and run with no
+                                            extra args. NO SSH daemon, NO onstart.
+                                            Env vars via the Vast "env" field — a single
+                                            Docker-flag string, e.g. "-e KEY=value
+                                            --shm-size=8gb" (never logged).
+                              ssh_onstart = SSH fallback (debug only); runtype=ssh +
+                                            onstart calls /entrypoint.sh. WARNING: SSH
+                                            mode overrides the Docker ENTRYPOINT.
+                              (VAST_LAUNCH_MODE=args is accepted as an alias for
+                              entrypoint — both map to the same api runtype="args" path.)
   GHCR_USERNAME               GitHub username for ghcr.io login (optional)
   GHCR_TOKEN                  GitHub PAT with read:packages scope  (never logged)
 
@@ -187,13 +197,22 @@ _VAST_DRY_RUN           = os.environ.get("VAST_DRY_RUN", "false").lower() == "tr
 # instead of git-cloning the private repo. Required for private repositories.
 _VAST_WORKER_IMAGE      = os.environ.get("VAST_WORKER_IMAGE", "")  # e.g. ghcr.io/samnesvoj/sonya-worker:fast
 
-# Launch mode for VAST_WORKER_IMAGE instances.
-#   entrypoint  (default, production) — Vast native mode; Docker ENTRYPOINT called directly.
-#                                        NO SSH daemon, NO onstart, NO args wrapper.
-#                                        Env vars via docker_options (-e flags, never logged) + env dict.
-#   ssh_onstart (fallback/debug)       — SSH mode; onstart calls /entrypoint.sh.
+# Launch mode for VAST_WORKER_IMAGE instances (our human-readable name — see
+# _trigger_vast() for how each maps onto the real Vast api `runtype`).
+#   entrypoint  (default, production) — maps to api runtype="args". The image's
+#                                        Docker ENTRYPOINT is preserved and run with
+#                                        no extra args. NO SSH daemon, NO onstart.
+#                                        Env vars via the Vast `env` field — a single
+#                                        Docker-flag string (never logged).
+#   args        (alias of entrypoint)  — same production path; kept for backward
+#                                        compatibility with older configs.
+#   ssh_onstart (fallback/debug)       — api runtype="ssh"; onstart calls /entrypoint.sh.
 #                                        WARNING: SSH mode overrides Docker ENTRYPOINT.
-#   args        (experimental)         — runtype=args + bash -lc /entrypoint.sh.
+#
+# IMPORTANT: the official Vast Create Instance API does NOT support
+# runtype="entrypoint" — valid runtype values are: ssh, jupyter, args,
+# ssh_proxy, ssh_direct, jupyter_proxy, jupyter_direct. "entrypoint" here is
+# only our own config name; it is never sent to Vast as-is.
 _VAST_LAUNCH_MODE       = os.environ.get("VAST_LAUNCH_MODE", "entrypoint").lower()
 
 # Debug-safe mode: forwarded to the worker container. On any entrypoint
@@ -580,19 +599,30 @@ def _trigger_timeweb(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
 
 # ── Vast mode (production GPU provider) ───────────────────────────────────────
 #
+# Official Vast Create Instance API (PUT /api/v0/asks/{id}/) — confirmed against
+# https://docs.vast.ai/api-reference/instances/create-instance :
+#   • runtype   — enum: ssh | jupyter | args | ssh_proxy | ssh_direct |
+#                 jupyter_proxy | jupyter_direct.  NO "entrypoint" value exists.
+#                 If omitted, defaults to "ssh" unless args/args_str is set.
+#   • env       — a STRING in Docker-flag format, e.g. "-e KEY=value --shm-size=8gb".
+#                 NOT a JSON dict, NOT a "docker_options" field (that field does
+#                 not exist in the Vast API at all).
+#   • args_str  — string passed as arguments to the image ENTRYPOINT.
+#                 Only used with runtype="args".
+#
 # Two deployment paths:
 #
 #   Direct image (VAST_WORKER_IMAGE set — recommended, production):
 #     • Vast pulls the pre-built image directly.
-#     • VAST_LAUNCH_MODE=entrypoint (default, production):
-#         runtype=entrypoint — Vast calls Docker ENTRYPOINT (/entrypoint.sh) directly.
-#         Env vars via docker_options (-e flags, NEVER logged) and env dict (HTTPS).
-#         NO SSH daemon, NO openssh-server, NO onstart, NO git clone, NO docker pull/run.
+#     • VAST_LAUNCH_MODE=entrypoint (default, production; alias: args):
+#         api runtype="args" — the image's Docker ENTRYPOINT (/entrypoint.sh) is
+#         preserved and run with no extra args ("args": []).
+#         Env vars + --shm-size via the Vast "env" field (a Docker-flag string,
+#         NEVER logged). NO SSH daemon, NO openssh-server, NO onstart,
+#         NO git clone, NO docker pull/run.
 #     • VAST_LAUNCH_MODE=ssh_onstart (fallback/debug only):
-#         runtype=ssh + onstart="bash /entrypoint.sh".
+#         api runtype="ssh" + onstart="bash /entrypoint.sh".
 #         WARNING: SSH mode overrides Docker ENTRYPOINT (Vast installs openssh-server).
-#     • VAST_LAUNCH_MODE=args (experimental):
-#         runtype=args + args_str="bash -lc /entrypoint.sh" + env dict.
 #     • worker_entrypoint.sh (image ENTRYPOINT) handles the full job flow.
 #
 #   Git-clone fallback (VAST_WORKER_IMAGE not set — public repos only):
@@ -639,9 +669,14 @@ def _build_vast_env_dict(job_id: str, mode: str) -> Dict[str, str]:
     return env
 
 
-def _build_vast_docker_options(env_dict: Dict[str, str]) -> str:
+def _build_vast_env_string(env_dict: Dict[str, str]) -> str:
     """
-    Build a Docker run options string for Vast entrypoint mode.
+    Build the Vast API `env` field: a single Docker-flag-format string.
+
+    Per the official Vast Create Instance API (PUT /api/v0/asks/{id}/), `env`
+    is a STRING, not a JSON dict — e.g. "-e KEY=value --shm-size=8gb".
+    There is no separate `docker_options` field in the Vast API; this string
+    IS the `env` field value sent to Vast.
 
     Produces: --shm-size=8gb -e KEY="value" -e KEY2="value2" ...
 
@@ -655,12 +690,12 @@ def _build_vast_docker_options(env_dict: Dict[str, str]) -> str:
     return " ".join(parts)
 
 
-def _parse_docker_options_keys(docker_options: str) -> List[str]:
+def _parse_env_string_keys(env_string: str) -> List[str]:
     """
-    Extract env var NAMES referenced in a docker_options string (-e KEY="value").
+    Extract env var NAMES referenced in a Vast `env` docker-flag string (-e KEY="value").
     Used only for safe logging/debug dumps — values are NEVER extracted or returned.
     """
-    return sorted(set(re.findall(r'-e\s+([A-Za-z_][A-Za-z0-9_]*)=', docker_options)))
+    return sorted(set(re.findall(r'-e\s+([A-Za-z_][A-Za-z0-9_]*)=', env_string)))
 
 
 def _write_vast_payload_dump(
@@ -677,14 +712,16 @@ def _write_vast_payload_dump(
     Build and persist a sanitized debug dump of the Vast create payload.
 
     Used to diagnose "Retrying in 1 second" loops without ever exposing secrets:
-    secrets are NEVER written here — only key names (env_keys, docker_options_keys).
-    docker_options itself (which embeds real -e "value" pairs) is never dumped.
+    secrets are NEVER written here — only key names (env_keys) and a boolean
+    presence check (env_has_shm_size). The raw `env` field (a Docker-flag
+    string embedding real -e "value" pairs) is NEVER written to this dump.
 
     Written to VAST_DEBUG_PAYLOAD_DUMP_PATH (default /tmp/sonya_vast_last_payload.json).
     Best-effort: write failures (e.g. read-only filesystem, Windows dev box) are
     swallowed and logged at debug level only.
     """
-    docker_opts_raw = payload_fields.get("docker_options", "")
+    env_raw = payload_fields.get("env", "")
+    env_raw = env_raw if isinstance(env_raw, str) else ""
     dump: Dict[str, Any] = {
         "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
         "job_id": job_id,
@@ -692,12 +729,11 @@ def _write_vast_payload_dump(
         "label": instance_label,
         "image": effective_image,
         "deployment_mode": deployment_mode,
-        "runtype": payload_fields.get("runtype"),
-        "launch_mode": _VAST_LAUNCH_MODE,
-        "env_keys": sorted(env_dict.keys()),                 # key names only — no values
-        "docker_options_keys": _parse_docker_options_keys(docker_opts_raw),  # key names only
-        "docker_options_has_shm_size": "--shm-size" in docker_opts_raw,
-        "args_str": payload_fields.get("args_str", "(n/a)"),  # safe — no secrets in args_str
+        "api_runtype": payload_fields.get("runtype"),         # real Vast runtype sent (never "entrypoint")
+        "launch_mode": _VAST_LAUNCH_MODE,                     # our human-readable config name
+        "env_keys": sorted(env_dict.keys()),                  # key names only — no values
+        "env_has_shm_size": "--shm-size" in env_raw,          # presence check only, no raw string
+        "args": payload_fields.get("args", "(n/a)"),          # safe — empty list, no secrets
         "onstart_present": bool(payload_fields.get("onstart")),
         "dry_run": dry_run,
     }
@@ -1202,18 +1238,21 @@ def _trigger_vast(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
     Deployment paths
     ----------------
     Direct image  (VAST_WORKER_IMAGE set):
-        VAST_LAUNCH_MODE=entrypoint  (default, production):
-            runtype=entrypoint — Vast calls Docker ENTRYPOINT (/entrypoint.sh) directly.
+        VAST_LAUNCH_MODE=entrypoint  (default, production; alias: args):
+            api runtype="args" — the official Vast API has NO "entrypoint" runtype
+            (valid values: ssh, jupyter, args, ssh_proxy, ssh_direct, jupyter_proxy,
+            jupyter_direct). runtype="args" preserves the image's Docker ENTRYPOINT
+            (/entrypoint.sh) and runs it with no extra args ("args": []).
             NO SSH daemon, NO openssh-server, NO onstart.
-            Env vars via docker_options (-e flags, NEVER logged) + env dict (HTTPS).
+            Env vars + --shm-size via the Vast `env` field — a single Docker-flag
+            string (NEVER logged). No separate "docker_options" field is sent;
+            that field does not exist in the Vast API.
         VAST_LAUNCH_MODE=ssh_onstart  (fallback/debug only):
-            runtype=ssh + onstart="bash /entrypoint.sh".
+            api runtype="ssh" + onstart="bash /entrypoint.sh".
             WARNING: SSH mode overrides Docker ENTRYPOINT.  DO NOT use in production.
-        VAST_LAUNCH_MODE=args  (experimental):
-            runtype=args + args_str="bash -lc /entrypoint.sh" + env dict.
 
     Git-clone fallback  (VAST_WORKER_IMAGE not set — public repos / dev only):
-        runtype=ssh — used only for dev/debug, not production.
+        api runtype="ssh" — used only for dev/debug, not production.
         Boots bare CUDA image; onstart is a base64-encoded bash script that
         git-clones the repo and calls bootstrap_worker_once.sh.
     """
@@ -1237,45 +1276,35 @@ def _trigger_vast(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
         env_dict        = _build_vast_env_dict(job_id, mode)
         effective_image = _VAST_WORKER_IMAGE
 
-        if _VAST_LAUNCH_MODE == "entrypoint":
-            # ── Production: Vast native entrypoint mode ────────────────────────
-            # runtype=entrypoint — Vast calls Docker ENTRYPOINT (/entrypoint.sh) directly.
-            # NO SSH daemon, NO openssh-server installation, NO onstart script.
-            # Env vars via docker_options (-e flags) + env dict (belt-and-suspenders).
-            # docker_options contains secret values — NEVER log it.
-            _docker_opts    = _build_vast_docker_options(env_dict)  # NEVER log — has secrets
-            deployment_mode = "direct-image-entrypoint"
-            payload_fields: Dict[str, Any] = {
-                "runtype":        "entrypoint",
-                "docker_options": _docker_opts,  # NEVER log — contains secret -e values
-                "env":            env_dict,       # belt-and-suspenders; transmitted over HTTPS
-            }
-            env_forwarded_keys = sorted(env_dict.keys())
-
-        elif _VAST_LAUNCH_MODE == "ssh_onstart":
+        if _VAST_LAUNCH_MODE == "ssh_onstart":
             # ── Fallback / debug: SSH mode with onstart ────────────────────────
             # WARNING: SSH mode overrides Docker ENTRYPOINT (Vast installs openssh-server).
             # onstart calls /entrypoint.sh after SSH daemon starts.
             # DO NOT use for production automated workers.
+            _env_string     = _build_vast_env_string(env_dict)  # NEVER log — has secrets
             deployment_mode = "direct-image-ssh-onstart"
-            payload_fields = {
+            payload_fields: Dict[str, Any] = {
                 "runtype": "ssh",
                 "onstart": "bash /entrypoint.sh",
-                "env":     env_dict,
+                "env":     _env_string,  # Vast API: env is a Docker-flag STRING, not a dict
             }
             env_forwarded_keys = sorted(env_dict.keys())
 
         else:
-            # ── Experimental: args mode ────────────────────────────────────────
-            # runtype=args — Vast runs the container with an explicit bash command.
-            # args_str is safe to log — no secrets; env dict carries them separately.
-            # Kept as experimental fallback; not the primary production path.
+            # ── Production (default): VAST_LAUNCH_MODE=entrypoint or "args" ────
+            # api runtype="args" — the official Vast API has NO "entrypoint" runtype.
+            # runtype="args" preserves the image's Docker ENTRYPOINT (/entrypoint.sh)
+            # and runs it with no extra args ("args": []).
+            # NO SSH daemon, NO openssh-server installation, NO onstart script.
+            # Env vars + --shm-size via the Vast `env` field (a Docker-flag string).
+            # `env` contains secret values — NEVER log it. No "docker_options" field
+            # is sent — that field does not exist in the Vast API.
+            _env_string     = _build_vast_env_string(env_dict)  # NEVER log — has secrets
             deployment_mode = "direct-image-args"
-            _args_str       = "bash -lc /entrypoint.sh"
             payload_fields = {
-                "runtype":  "args",
-                "args_str": _args_str,
-                "env":      env_dict,  # secrets carried over HTTPS, not in args_str
+                "runtype": "args",
+                "env":     _env_string,  # Vast API: env is a Docker-flag STRING, not a dict
+                "args":    [],           # no extra args — image ENTRYPOINT runs as-is
             }
             env_forwarded_keys = sorted(env_dict.keys())
 
@@ -1295,18 +1324,16 @@ def _trigger_vast(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
         }
 
     # Safe for logging — no secret values.
-    # docker_options (entrypoint mode) is NEVER included here — it contains secret -e values.
+    # The `env` field (Docker-flag string with secret -e values) is NEVER included here.
     sanitized_config: Dict[str, Any] = {
         "provider":               "vast",
         "instance_label":         instance_label,
         "effective_image":        effective_image,
         "deployment_mode":        deployment_mode,
-        "launch_mode":            _VAST_LAUNCH_MODE,
-        "runtype":                payload_fields["runtype"],
-        # args_str safe to log only in args mode (no secrets there)
-        "args_str":               payload_fields.get("args_str", "(n/a)"),
-        # docker_options_used: True means docker_options with -e flags + --shm-size sent (not logged)
-        "docker_options_used":    _VAST_LAUNCH_MODE == "entrypoint" and bool(_VAST_WORKER_IMAGE),
+        "launch_mode":            _VAST_LAUNCH_MODE,           # our human-readable config name
+        "api_runtype":            payload_fields["runtype"],   # real Vast runtype (never "entrypoint")
+        # env_field_is_string: Vast API `env` is always a Docker-flag string, never a dict.
+        "env_field_is_string":    bool(_VAST_WORKER_IMAGE),
         "gpu_name_filter":        _VAST_GPU_NAME or "(any)",
         "gpu_include_regex":      _VAST_GPU_INCLUDE_REGEX or "(none)",
         "gpu_exclude_regex":      _VAST_GPU_EXCLUDE_REGEX or "(none)",
@@ -1370,17 +1397,19 @@ def _trigger_vast(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
 
     # ── Create instance ────────────────────────────────────────────────────────
     # Direct image (production):
-    #   runtype=args + args_str="bash -lc /entrypoint.sh" + env dict
+    #   runtype=args + env=<Docker-flag string> + args=[]
     #   → No SSH daemon, no openssh-server, no interactive wrapper.
-    #   → Container starts and runs the worker ENTRYPOINT as a one-shot job.
-    # Git-clone fallback (dev/debug):
+    #   → Container preserves the image ENTRYPOINT and runs it as a one-shot job.
+    # SSH fallback/debug (VAST_LAUNCH_MODE=ssh_onstart):
+    #   runtype=ssh + onstart="bash /entrypoint.sh" + env=<Docker-flag string>.
+    # Git-clone fallback (dev/debug, no VAST_WORKER_IMAGE):
     #   runtype=ssh + onstart=base64-wrapped bash script.
     instance_payload: Dict[str, Any] = {
         "client_id": "me",
         "image":     effective_image,
         "disk":      _VAST_DISK_GB,
         "label":     instance_label,
-        **payload_fields,   # runtype + (args_str+env | onstart) per deployment mode
+        **payload_fields,   # runtype + (env+args | env+onstart | onstart) per deployment mode
     }
     logger.info(
         "vast_create_instance job_id=%s ask_id=%s label=%s image=%s runtype=%s deployment=%s launch_mode=%s",

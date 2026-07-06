@@ -6,9 +6,20 @@
 
 1. VPS dispatcher (`gpu_dispatcher.py`) picks up a queued job.
 2. `gpu_orchestrator.py` (mode=`vast`) searches vast.ai for the cheapest matching GPU.
-3. Creates a vast.ai instance: `runtype=entrypoint` (`VAST_LAUNCH_MODE=entrypoint`), image = `VAST_WORKER_IMAGE`.
-4. Env vars (secrets) passed via `docker_options` (`-e` flags, `--shm-size=8gb`) and `env` dict — never embedded in logs.
-5. Vast native **entrypoint mode** calls Docker `ENTRYPOINT` (`/entrypoint.sh`) directly. No SSH daemon, no openssh-server, no onstart.
+3. Creates a vast.ai instance with the **official Vast Create Instance API** payload:
+   `runtype: "args"` (mapped from `VAST_LAUNCH_MODE=entrypoint`), image = `VAST_WORKER_IMAGE`.
+   > **Note:** the official Vast API (`PUT /api/v0/asks/{id}/`) does **NOT** support
+   > `runtype="entrypoint"` — valid values are `ssh`, `jupyter`, `args`, `ssh_proxy`,
+   > `ssh_direct`, `jupyter_proxy`, `jupyter_direct`. `VAST_LAUNCH_MODE=entrypoint` is
+   > only our own human-readable config name; internally it always maps to
+   > `runtype: "args"`.
+4. Env vars (secrets) + `--shm-size=8gb` passed via the Vast `env` field — a single
+   Docker-flag **string** (e.g. `"-e KEY=value --shm-size=8gb"`), never a dict, and
+   never embedded in logs. There is **no** `docker_options` field in the Vast API —
+   that name is only used internally as a helper-function name, never sent as a
+   payload field.
+5. `runtype: "args"` **preserves** the image's Docker `ENTRYPOINT` (`/entrypoint.sh`)
+   and runs it with no extra args (`"args": []`). No SSH daemon, no openssh-server, no onstart.
 6. `worker_entrypoint.sh` (image ENTRYPOINT) runs inside the container:
    - validates env vars, writes `.env.local`
    - `prod_preflight_check.py --role worker`
@@ -26,10 +37,14 @@ server at `192.168.0.4`.  The worker uses `WORKER_BACKEND_MODE=api` —
 all job operations go through `BACKEND_API_URL` worker endpoints.
 No `DATABASE_URL` is passed to the GPU instance.
 
-> **Vast launch mode:** Use `VAST_LAUNCH_MODE=entrypoint` (default) — Vast native entrypoint
-> mode calls Docker `ENTRYPOINT` directly. **SSH mode and Jupyter mode override Docker
-> `ENTRYPOINT`** (Vast installs `openssh-server`); do NOT use for automated workers.
-> Use `VAST_LAUNCH_MODE=ssh_onstart` only for fallback/debug (`onstart` calls `/entrypoint.sh`).
+> **Vast launch mode:** Use `VAST_LAUNCH_MODE=entrypoint` (default) — maps to the
+> official Vast api `runtype: "args"`, which **preserves** the image's Docker
+> `ENTRYPOINT` and runs it directly with no extra args. **SSH mode and Jupyter mode
+> override Docker `ENTRYPOINT`** (Vast installs `openssh-server`); do NOT use for
+> automated workers. Use `VAST_LAUNCH_MODE=ssh_onstart` only for fallback/debug
+> (api `runtype: "ssh"`; `onstart` calls `/entrypoint.sh`).
+> There is **no `runtype="entrypoint"`** value in the official Vast API — only
+> `ssh`, `jupyter`, `args`, `ssh_proxy`, `ssh_direct`, `jupyter_proxy`, `jupyter_direct`.
 
 | Mode | GPU provider | Use case |
 |---|---|---|
@@ -393,7 +408,7 @@ AUTO_GPU_TRIGGER_ENABLED=true \
 What happens:
 
 1. `gpu_orchestrator.py` forwards `VAST_DEBUG_SLEEP_ON_FAIL=true` to the worker
-   container's env (via `docker_options` / `env` dict).
+   container via the Vast `env` field (a Docker-flag string, never logged).
 2. `worker_entrypoint.sh` prints an early startup banner as the FIRST lines
    of the log (date, pwd, whoami, python version, env presence yes/no for
    `S3_BUCKET`, `S3_BUCKET_NAME`, `WORKER_SECRET` — never the raw values).
@@ -402,8 +417,9 @@ What happens:
    giving you time to open the Vast instance log/console before it retries
    or is destroyed.
 4. A sanitized dump of the create payload is written to
-   `/tmp/sonya_vast_last_payload.json` on the VPS (image, runtype, launch_mode,
-   label, offer, env/docker_options KEY NAMES only — secrets are never written).
+   `/tmp/sonya_vast_last_payload.json` on the VPS (image, api_runtype, launch_mode,
+   label, offer, env KEY NAMES + `env_has_shm_size` boolean only — secrets and the
+   raw env string are never written).
 
 **Turn `VAST_DEBUG_SLEEP_ON_FAIL` back OFF (default `false`) once the failure
 has been diagnosed** — leaving it on in production wastes billable GPU time
@@ -443,9 +459,11 @@ GPU_ORCHESTRATOR_MODE=vast
 VAST_API_KEY=<your-vast-api-key>            # never commit
 VAST_IMAGE=nvidia/cuda:12.2.0-devel-ubuntu22.04
 VAST_WORKER_IMAGE=ghcr.io/samnesvoj/sonya-worker:fast     # pre-built image (private repo)
-VAST_LAUNCH_MODE=entrypoint                 # entrypoint (default) | ssh_onstart | args
-                                            # entrypoint = Vast native mode; Docker ENTRYPOINT called directly
+VAST_LAUNCH_MODE=entrypoint                 # entrypoint (default) | ssh_onstart
+                                            # entrypoint = maps to official api runtype="args";
+                                            #              Docker ENTRYPOINT is preserved and run as-is
                                             # SSH mode overrides ENTRYPOINT — use only ssh_onstart for debug
+                                            # NOTE: runtype="entrypoint" does not exist in the Vast API
 VAST_GPU_MIN_VRAM=12                        # 12 GB for RTX 3060; 24+ for heavier modes
 VAST_DISK_GB=50
 VAST_INSTANCE_LABEL_PREFIX=sonya-gpu

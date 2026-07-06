@@ -689,14 +689,21 @@ if _orch.exists():
         err("gpu_orchestrator.py — startup script must include 'set +x'")
 
 # ── Section 27 — vast.ai direct image mode ─────────────────────────────────────
-# Production path: VPS dispatcher → vast.ai direct image (runtype=args)
+# Production path: VPS dispatcher → vast.ai direct image (api runtype=args)
 # → worker_entrypoint → backend worker API → S3 → instance shutdown/destroy
+#
+# Official Vast Create Instance API (PUT /api/v0/asks/{id}/) — confirmed against
+# https://docs.vast.ai/api-reference/instances/create-instance :
+#   - runtype enum: ssh | jupyter | args | ssh_proxy | ssh_direct | jupyter_proxy |
+#     jupyter_direct.  There is NO "entrypoint" runtype value.
+#   - `env` is a STRING in Docker-flag format (e.g. "-e KEY=value --shm-size=8gb"),
+#     NOT a JSON dict, and there is NO "docker_options" field in the Vast API.
 #
 # Key invariants:
 #   - VAST_WORKER_IMAGE is used as the `image` field
-#   - runtype=args (NOT ssh) — no SSH daemon, no openssh-server installation
-#   - args_str = "bash -lc /entrypoint.sh" — short command, no secrets
-#   - env vars (secrets) in `env` dict (HTTPS to vast.ai API, not in script)
+#   - production payload uses api runtype="args" (NOT ssh, NOT "entrypoint")
+#   - env vars + --shm-size passed via the `env` field as a Docker-flag STRING
+#   - no separate `docker_options` field sent to the Vast API
 #   - No Docker-in-Docker, no git clone
 
 print("\n-- 27. vast.ai direct image mode --")
@@ -715,43 +722,39 @@ if _orch.exists():
     else:
         err("gpu_orchestrator.py — direct image mode must use VAST_WORKER_IMAGE as the image field")
 
-# 27c — env dict passed to Vast (not embedded in script)
+# 27c — env field built as a Docker-flag STRING (not a JSON dict) for the Vast API
 if _orch.exists():
-    if '"env"' in _orch_txt and "env_dict" in _orch_txt and "payload_fields" in _orch_txt:
-        ok("gpu_orchestrator.py — env dict used for direct image secrets (not in args_str)")
+    if "_build_vast_env_string" in _orch_txt and "env_dict" in _orch_txt and "payload_fields" in _orch_txt:
+        ok("gpu_orchestrator.py — env field built as Docker-flag string (matches official Vast API schema)")
     else:
-        err("gpu_orchestrator.py — direct image mode must pass env vars via env dict field")
+        err("gpu_orchestrator.py — must build the Vast `env` field as a Docker-flag string via _build_vast_env_string")
 
-# 27d — runtype=args used for direct image (NOT runtype=ssh)
+# 27d — runtype=args used for direct image production path (NOT runtype=ssh, NOT runtype=entrypoint)
 if _orch.exists():
-    has_args_mode = '"runtype":  "args"' in _orch_txt or '"runtype": "args"' in _orch_txt
+    has_args_mode = '"runtype": "args"' in _orch_txt
     if has_args_mode:
-        ok("gpu_orchestrator.py — runtype=args used for direct image mode (no SSH wrapper)")
+        ok("gpu_orchestrator.py — runtype=\"args\" used for direct image production mode (official Vast enum value)")
     else:
-        err("gpu_orchestrator.py — direct image mode must use runtype=args, not runtype=ssh")
+        err("gpu_orchestrator.py — production direct image mode must use runtype=\"args\" (official Vast API value)")
 
-# 27e — args_str contains entrypoint command (not a multiline script, no secrets)
+# 27e — "args" field present as an empty list (image ENTRYPOINT runs with no extra args)
 if _orch.exists():
-    has_entrypoint_cmd = (
-        '"bash -lc /entrypoint.sh"' in _orch_txt
-        or "'bash -lc /entrypoint.sh'" in _orch_txt
-        or '"args_str"' in _orch_txt
-    )
-    if has_entrypoint_cmd:
-        ok("gpu_orchestrator.py — args_str contains entrypoint command (bash -lc /entrypoint.sh)")
+    has_empty_args_field = _re.search(r'"args":\s*\[\]', _orch_txt) is not None
+    if has_empty_args_field:
+        ok("gpu_orchestrator.py — \"args\": [] passed for production runtype=args (ENTRYPOINT runs as-is)")
     else:
-        err("gpu_orchestrator.py — args_str must be 'bash -lc /entrypoint.sh' for direct image mode")
+        err("gpu_orchestrator.py — production runtype=args payload must include \"args\": []")
 
-# 27f_ssh — direct image path must NOT use runtype=ssh (ssh installs openssh-server)
-# The presence of "runtype=ssh" is fine only in the git-clone fallback path.
-# The critical check: "direct-image" deployment_mode must be paired with runtype=args.
+# 27f_ssh — direct image production path must NOT use runtype=ssh or runtype=entrypoint
+# The presence of "runtype=ssh" is fine only in the ssh_onstart fallback / git-clone fallback paths.
+# The critical check: "direct-image-args" deployment_mode must be paired with runtype=args.
 if _orch.exists():
-    # Check that deployment_mode direct-image-args and runtype=args appear together
-    has_direct_args = "direct-image-args" in _orch_txt and '"runtype":  "args"' in _orch_txt
-    if has_direct_args:
-        ok("gpu_orchestrator.py — direct-image-args uses runtype=args (no SSH wrapper)")
+    has_direct_args = "direct-image-args" in _orch_txt and '"runtype": "args"' in _orch_txt
+    has_no_entrypoint_runtype = '"runtype": "entrypoint"' not in _orch_txt and '"runtype":        "entrypoint"' not in _orch_txt
+    if has_direct_args and has_no_entrypoint_runtype:
+        ok("gpu_orchestrator.py — direct-image-args uses runtype=args; runtype=\"entrypoint\" never sent (correct)")
     else:
-        err("gpu_orchestrator.py — direct image deployment_mode must be paired with runtype=args")
+        err("gpu_orchestrator.py — direct image deployment_mode must be paired with runtype=args, never runtype=\"entrypoint\"")
 
 # 27g (was 27e) — Docker-in-Docker absent from orchestrator bash commands
 if _orch.exists():
@@ -764,13 +767,18 @@ if _orch.exists():
     else:
         err("gpu_orchestrator.py — docker pull/run/login found as bash commands — remove Docker-in-Docker")
 
-# 27f — env_dict key names logged, not values
+# 27f — env_dict key names logged, not values; no "docker_options" field sent to Vast API
 if _orch.exists():
     # sanitized_config should log env_vars_forwarded (list of key names), not env_dict values
     if "env_vars_forwarded" in _orch_txt:
         ok("gpu_orchestrator.py — sanitized_config logs env var names only (no secret values)")
     else:
         err("gpu_orchestrator.py — sanitized_config must log env_vars_forwarded (key names), not values")
+    _docker_options_as_key = _re.search(r'["\']docker_options["\']\s*:', _orch_txt)
+    if not _docker_options_as_key:
+        ok("gpu_orchestrator.py — no \"docker_options\" field sent to the Vast API (field does not exist upstream)")
+    else:
+        err("gpu_orchestrator.py — \"docker_options\" must never be sent as a Vast API payload field")
 
 # 27g — worker_entrypoint.sh is the ENTRYPOINT in Dockerfile (Vast runs it directly)
 if _dockerfile.exists() and _entrypoint.exists():
@@ -1138,14 +1146,25 @@ if _cmds_fast.exists():
 else:
     err("commands_production_queue_gpu.md not found")
 
-# ── Section 32 — Vast entrypoint launch mode ───────────────────────────────────
-# The official Vast documentation defines three launch modes: entrypoint, ssh, jupyter.
-# Production automated workers must use entrypoint mode:
-#   - Vast calls Docker ENTRYPOINT (/entrypoint.sh) directly.
+# ── Section 32 — Vast production launch mode (official API: runtype=args) ─────
+# Confirmed against the official Vast Create Instance API OpenAPI schema
+# (https://docs.vast.ai/api-reference/instances/create-instance):
+#   - runtype enum: ssh | jupyter | args | ssh_proxy | ssh_direct | jupyter_proxy |
+#     jupyter_direct.  There is NO "entrypoint" runtype value — sending
+#     runtype="entrypoint" is an invalid API call.
+#   - `env` is a STRING in Docker-flag format, NOT a JSON dict, and there is NO
+#     "docker_options" field in the Vast API schema.
+#   - `args` (array) / `args_str` (string) are passed to the image ENTRYPOINT
+#     when runtype="args" — the image's own ENTRYPOINT is preserved.
+#
+# Production automated workers use VAST_LAUNCH_MODE=entrypoint (our own
+# human-readable config name) which maps to api runtype="args":
+#   - The image's Docker ENTRYPOINT (/entrypoint.sh) is preserved and run
+#     with no extra args ("args": []).
 #   - SSH mode overrides ENTRYPOINT (Vast installs openssh-server) — NOT for production.
-#   - ssh_onstart is only a fallback/debug option.
+#   - ssh_onstart is only a fallback/debug option (api runtype="ssh").
 
-print("\n-- 32. Vast entrypoint launch mode --")
+print("\n-- 32. Vast production launch mode (official API: runtype=args) --")
 
 # 32a — VAST_LAUNCH_MODE config present
 if _orch.exists():
@@ -1156,56 +1175,73 @@ if _orch.exists():
 else:
     err("gpu_orchestrator.py not found (already checked above)")
 
-# 32b — default launch mode is entrypoint
+# 32b — default launch mode is entrypoint (our config name)
 if _orch.exists():
-    if '"entrypoint"' in _orch_txt and "VAST_LAUNCH_MODE" in _orch_txt:
+    if '"VAST_LAUNCH_MODE", "entrypoint"' in _orch_txt:
         ok("gpu_orchestrator.py — default VAST_LAUNCH_MODE=entrypoint")
     else:
         err("gpu_orchestrator.py — VAST_LAUNCH_MODE must default to \"entrypoint\"")
 
-# 32c — entrypoint mode uses runtype=entrypoint (not ssh or args as primary)
+# 32c — production payload NEVER uses the invalid runtype="entrypoint"
 if _orch.exists():
-    if '"runtype": "entrypoint"' in _orch_txt or '"runtype":        "entrypoint"' in _orch_txt:
-        ok("gpu_orchestrator.py — entrypoint launch mode uses runtype=entrypoint")
+    _has_invalid_entrypoint_runtype = (
+        '"runtype": "entrypoint"' in _orch_txt
+        or '"runtype":        "entrypoint"' in _orch_txt
+        or '"runtype":  "entrypoint"' in _orch_txt
+    )
+    if not _has_invalid_entrypoint_runtype:
+        ok("gpu_orchestrator.py — never sends runtype=\"entrypoint\" (invalid Vast API value)")
     else:
-        err("gpu_orchestrator.py — entrypoint launch mode must use runtype=entrypoint per Vast docs")
+        err("gpu_orchestrator.py — must NOT send runtype=\"entrypoint\"; official Vast API has no such value")
 
-# 32d — entrypoint mode does NOT use onstart
+# 32c2 — production launch mode maps to api runtype="args"
 if _orch.exists():
-    _ep_idx = _orch_txt.find("direct-image-entrypoint")
+    if '"runtype": "args"' in _orch_txt and "direct-image-args" in _orch_txt:
+        ok("gpu_orchestrator.py — VAST_LAUNCH_MODE=entrypoint maps to api runtype=\"args\" (official value)")
+    else:
+        err("gpu_orchestrator.py — production launch mode must map to api runtype=\"args\"")
+
+# 32d — production (args) path does NOT use onstart
+if _orch.exists():
+    _ep_idx = _orch_txt.find("direct-image-args")
     if _ep_idx != -1:
         _ep_block = _orch_txt[_ep_idx:_ep_idx + 400]
         if "onstart" not in _ep_block:
-            ok("gpu_orchestrator.py — entrypoint mode does not use onstart")
+            ok("gpu_orchestrator.py — production args mode does not use onstart")
         else:
-            err("gpu_orchestrator.py — entrypoint mode must NOT use onstart (only ssh_onstart fallback)")
+            err("gpu_orchestrator.py — production args mode must NOT use onstart (only ssh_onstart fallback)")
     else:
-        err("gpu_orchestrator.py — direct-image-entrypoint deployment_mode not found")
+        err("gpu_orchestrator.py — direct-image-args deployment_mode not found")
 
-# 32e — docker_options include --shm-size (required for GPU workers)
+# 32e — env field (Docker-flag string) includes --shm-size (required for GPU workers)
 if _orch.exists():
     if "shm-size" in _orch_txt:
-        ok("gpu_orchestrator.py — docker_options include --shm-size")
+        ok("gpu_orchestrator.py — env field includes --shm-size")
     else:
-        err("gpu_orchestrator.py — entrypoint mode must include --shm-size in docker_options")
+        err("gpu_orchestrator.py — production mode must include --shm-size in the env field")
 
-# 32f — _build_vast_docker_options helper present
+# 32f — _build_vast_env_string helper present (builds the Vast `env` Docker-flag string)
 if _orch.exists():
-    if "_build_vast_docker_options" in _orch_txt:
-        ok("gpu_orchestrator.py — _build_vast_docker_options helper present")
+    if "_build_vast_env_string" in _orch_txt:
+        ok("gpu_orchestrator.py — _build_vast_env_string helper present")
     else:
-        err("gpu_orchestrator.py — missing _build_vast_docker_options (builds -e flags for entrypoint mode)")
+        err("gpu_orchestrator.py — missing _build_vast_env_string (builds the `env` field for the Vast API)")
 
-# 32g — docker_options string NEVER passed to logger (secrets protection)
+# 32g — env string NEVER passed to logger (secrets protection); no docker_options field exists
 if _orch.exists():
     _bad_opts_log = _re.search(
-        r'logger\.\w+\([^)]*\bdocker_opt[^)]*\)',
+        r'logger\.\w+\([^)]*\b(_env_string|docker_opt)[^)]*\)',
         _orch_txt,
     )
     if not _bad_opts_log:
-        ok("gpu_orchestrator.py — docker_options not passed to logger (secret -e values safe)")
+        ok("gpu_orchestrator.py — env string not passed to logger (secret -e values safe)")
     else:
-        err("gpu_orchestrator.py — docker_options must NOT be logged (contains secret -e values)")
+        err("gpu_orchestrator.py — env string must NOT be logged (contains secret -e values)")
+    _docker_options_as_key2 = _re.search(r'["\']docker_options["\']\s*:', _orch_txt)
+    if not _docker_options_as_key2:
+        ok("gpu_orchestrator.py — \"docker_options\" is not a real Vast API field and is never sent")
+    else:
+        err("gpu_orchestrator.py — \"docker_options\" must never be sent to the Vast API")
 
 # 32h — ssh_onstart fallback still available (as debug/fallback path)
 if _orch.exists():
@@ -1218,7 +1254,7 @@ if _orch.exists():
 if _fast_dockerfile.exists():
     _fdf_ep = _fast_dockerfile.read_text(encoding="utf-8", errors="ignore")
     if 'ENTRYPOINT ["/entrypoint.sh"]' in _fdf_ep:
-        ok('Dockerfile.worker.fast — JSON ENTRYPOINT ["/entrypoint.sh"] present (called by Vast entrypoint mode)')
+        ok('Dockerfile.worker.fast — JSON ENTRYPOINT ["/entrypoint.sh"] present (preserved by runtype=args)')
     else:
         err('Dockerfile.worker.fast — must have JSON ENTRYPOINT ["/entrypoint.sh"]')
 else:
@@ -1236,6 +1272,12 @@ if "ssh" in _cmd_lm.lower() and ("override" in _cmd_lm.lower() or "overrides" in
     ok("commands doc — SSH mode ENTRYPOINT override noted")
 else:
     err("commands_production_queue_gpu.md — must note that SSH mode overrides Docker ENTRYPOINT")
+
+# 32l — docs: production runtype=args + no invalid runtype=entrypoint documented
+if 'runtype="args"' in _cmd_lm or 'runtype: "args"' in _cmd_lm:
+    ok("commands doc — production api runtype=args documented")
+else:
+    err("commands_production_queue_gpu.md — must document that production maps to api runtype=args")
 
 # ── Section 33 — Vast worker debug-safe mode ───────────────────────────────────
 # Diagnoses "Retrying in 1 second" retry loops without losing the container log
@@ -1331,22 +1373,22 @@ if _orch.exists():
     else:
         err("gpu_orchestrator.py — payload dump must default to /tmp/sonya_vast_last_payload.json")
 
-# 33k — dump includes image/runtype/launch_mode/label/offer, key-names only for env/docker_options
+# 33k — dump includes image/api_runtype/launch_mode/label/offer, key-names + presence-check only for env
 if _orch.exists():
     _dump_start = _orch_txt.find("def _write_vast_payload_dump")
     _dump_end = _orch_txt.find("\n\n\ndef ", _dump_start) if _dump_start != -1 else -1
     _dump_body = _orch_txt[_dump_start:_dump_end] if _dump_start != -1 and _dump_end != -1 else _orch_txt[_dump_start:]
-    _required_dump_fields = ["env_keys", "docker_options_keys", "runtype", "launch_mode", "label", "image"]
+    _required_dump_fields = ["env_keys", "env_has_shm_size", "api_runtype", "launch_mode", "label", "image"]
     _missing_fields = [f for f in _required_dump_fields if f'"{f}"' not in _dump_body]
     if not _missing_fields:
-        ok("gpu_orchestrator.py — payload dump includes image/runtype/launch_mode/label/env+docker keys")
+        ok("gpu_orchestrator.py — payload dump includes image/api_runtype/launch_mode/label/env_keys/env_has_shm_size")
     else:
         err(f"gpu_orchestrator.py — payload dump missing fields: {_missing_fields}")
-    _raw_docker_options_key = _re.search(r'"docker_options"\s*:', _dump_body)
-    if "docker_opts_raw" in _dump_body and not _raw_docker_options_key:
-        ok("gpu_orchestrator.py — raw docker_options (with secret values) never written to dump")
+    _raw_env_key = _re.search(r'"env"\s*:', _dump_body)
+    if "env_raw" in _dump_body and not _raw_env_key:
+        ok("gpu_orchestrator.py — raw env string (with secret -e values) never written to dump")
     else:
-        err("gpu_orchestrator.py — dump must never include raw docker_options (secret -e values)")
+        err("gpu_orchestrator.py — dump must never include the raw env field (secret -e values)")
 
 # 33l — docs document debug mode + reminder to turn off
 if _cmd_doc.exists():
