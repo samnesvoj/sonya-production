@@ -55,14 +55,22 @@ VPS Dispatcher (systemd) ◀─poll─────────────┘
 gpu_orchestrator.trigger_gpu_for_job()  [GPU_ORCHESTRATOR_MODE=vast]
     │  GET  https://console.vast.ai/api/v0/bundles/ — find cheapest GPU offer
     │  PUT  https://console.vast.ai/api/v0/asks/{id}/ — create instance
-    │      image:    ghcr.io/samnesvoj/sonya-worker:latest  (VAST_WORKER_IMAGE)
-    │      runtype:  args  ← NOT ssh (ssh installs openssh-server, wraps entrypoint)
-    │      args_str: "bash -lc /entrypoint.sh"  (short, no secrets)
-    │      env:      {JOB_ID, MODE, BACKEND_API_URL, WORKER_SECRET, S3_*, …}
-    │                (secrets sent over HTTPS to vast.ai API, not in args_str)
+    │      image:    ghcr.io/samnesvoj/sonya-worker:fast  (VAST_WORKER_IMAGE)
+    │      runtype:  "args"  ← official Vast API value; NOT ssh, NOT "entrypoint"
+    │                (the Vast API has no runtype="entrypoint" — VAST_LAUNCH_MODE=entrypoint
+    │                is only our own config name, mapped internally to runtype="args")
+    │      args:     []  (no extra args — image ENTRYPOINT runs as-is)
+    │      env:      "-e JOB_ID=... -e MODE=... -e BACKEND_API_URL=... -e WORKER_SECRET=...
+    │                 -e S3_*=..."
+    │                (a single Docker-flag STRING of plain "-e KEY=value" pairs
+    │                per the official Vast Create Instance API schema — NOT a
+    │                JSON dict; secrets sent over HTTPS to vast.ai, never logged.
+    │                2026-07: --shm-size and quoted -e values were removed after
+    │                Vast rejected them with {"error":"invalid_args","msg":
+    │                "invalid env arguments"}. Keys with empty values are skipped.)
     ▼
-GPU Instance (ephemeral, vast.ai) — runs ghcr.io/samnesvoj/sonya-worker:latest
-    │  runtype=args: Vast runs container directly as one-shot job
+GPU Instance (ephemeral, vast.ai) — runs ghcr.io/samnesvoj/sonya-worker:fast
+    │  runtype=args: Vast preserves the image ENTRYPOINT and runs it as a one-shot job
     │  NO openssh-server, NO SSH daemon, NO interactive wrapper
     │  Vast pulls the pre-built image directly (no git clone, no Docker-in-Docker)
     │  worker_entrypoint.sh  (image ENTRYPOINT)
@@ -88,9 +96,18 @@ Instance destroyed / billing stops
 
 ### SSH mode — debugging only
 
-`runtype=ssh` is used **only** in the git-clone fallback (no `VAST_WORKER_IMAGE`).
-It installs openssh-server, tmux, and sudo — not suitable for production jobs.
-Use `runtype=args` (the default when `VAST_WORKER_IMAGE` is set) for production.
+`runtype=ssh` is used **only** in the git-clone fallback (no `VAST_WORKER_IMAGE`)
+and in the `VAST_LAUNCH_MODE=ssh_onstart` fallback/debug path. It installs
+openssh-server, tmux, and sudo — not suitable for production jobs.
+Use `runtype=args` (the default when `VAST_WORKER_IMAGE` is set, i.e.
+`VAST_LAUNCH_MODE=entrypoint`) for production.
+
+> **Official Vast API confirmation:** the `PUT /api/v0/asks/{id}/` endpoint's
+> `runtype` field accepts only `ssh`, `jupyter`, `args`, `ssh_proxy`, `ssh_direct`,
+> `jupyter_proxy`, `jupyter_direct` — there is no `"entrypoint"` value. The `env`
+> field is a Docker-flag-format **string**, not a JSON object, and there is no
+> `docker_options` field. See
+> [docs.vast.ai/api-reference/instances/create-instance](https://docs.vast.ai/api-reference/instances/create-instance).
 
 ### Fallback: git-clone mode (public repos / dev only)
 
@@ -176,7 +193,13 @@ MAX_ACTIVE_GPU_JOBS=1
 BACKEND_API_URL=https://sonya-e.com
 DATABASE_URL=postgresql://...             # VPS-only — NOT forwarded to GPU instance
 
-# Forwarded to GPU instance via startup script (no DATABASE_URL):
+# Forwarded to the GPU instance via the Vast `env` field (no DATABASE_URL).
+# gpu_orchestrator.py builds these into a single Docker-flag STRING of plain
+# "-e KEY=value" pairs for the Vast API — e.g.
+# "-e WORKER_SECRET=... -e S3_ENDPOINT_URL=..." (never a JSON dict, never
+# logged). No --shm-size and no quoted values — Vast rejects both with
+# {"error": "invalid_args", "msg": "invalid env arguments"}. Empty/unset
+# optional vars below are simply skipped, never sent as "-e KEY=".
 WORKER_SECRET=<hmac-secret>
 S3_ENDPOINT_URL=...
 S3_ACCESS_KEY_ID=...

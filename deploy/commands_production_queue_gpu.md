@@ -13,11 +13,17 @@
    > `ssh_direct`, `jupyter_proxy`, `jupyter_direct`. `VAST_LAUNCH_MODE=entrypoint` is
    > only our own human-readable config name; internally it always maps to
    > `runtype: "args"`.
-4. Env vars (secrets) + `--shm-size=8gb` passed via the Vast `env` field — a single
-   Docker-flag **string** (e.g. `"-e KEY=value --shm-size=8gb"`), never a dict, and
-   never embedded in logs. There is **no** `docker_options` field in the Vast API —
-   that name is only used internally as a helper-function name, never sent as a
-   payload field.
+4. Env vars (secrets) passed via the Vast `env` field — a single Docker-flag
+   **string** of plain `-e KEY=value` pairs only (e.g. `"-e KEY=value -e KEY2=value2"`),
+   never a dict, and never embedded in logs. There is **no** `docker_options` field
+   in the Vast API — that name is only used internally as a helper-function name,
+   never sent as a payload field.
+   > **2026-07 incident:** Vast rejected create-instance calls with
+   > `{"success": false, "error": "invalid_args", "msg": "invalid env arguments"}`
+   > when the `env` string included `--shm-size=8gb` and quoted `-e KEY="value"`
+   > pairs. For the Create Instance API, `env` is now kept to **plain
+   > `-e KEY=value` pairs only** — no `--shm-size`, no quoting. Keys with an
+   > empty/falsy value are skipped entirely (never emit a bare `-e KEY=`).
 5. `runtype: "args"` **preserves** the image's Docker `ENTRYPOINT` (`/entrypoint.sh`)
    and runs it with no extra args (`"args": []`). No SSH daemon, no openssh-server, no onstart.
 6. `worker_entrypoint.sh` (image ENTRYPOINT) runs inside the container:
@@ -418,8 +424,9 @@ What happens:
    or is destroyed.
 4. A sanitized dump of the create payload is written to
    `/tmp/sonya_vast_last_payload.json` on the VPS (image, api_runtype, launch_mode,
-   label, offer, env KEY NAMES + `env_has_shm_size` boolean only — secrets and the
-   raw env string are never written).
+   label, offer, env KEY NAMES, `env_has_shm_size` (always `false`), and
+   `skipped_empty_env_keys` (names of optional vars omitted because they were
+   empty) — secrets and the raw env string are never written).
 
 **Turn `VAST_DEBUG_SLEEP_ON_FAIL` back OFF (default `false`) once the failure
 has been diagnosed** — leaving it on in production wastes billable GPU time

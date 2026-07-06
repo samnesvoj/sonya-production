@@ -696,13 +696,21 @@ if _orch.exists():
 # https://docs.vast.ai/api-reference/instances/create-instance :
 #   - runtype enum: ssh | jupyter | args | ssh_proxy | ssh_direct | jupyter_proxy |
 #     jupyter_direct.  There is NO "entrypoint" runtype value.
-#   - `env` is a STRING in Docker-flag format (e.g. "-e KEY=value --shm-size=8gb"),
+#   - `env` is a STRING in Docker-flag format (e.g. "-e KEY=value -e KEY2=value2"),
 #     NOT a JSON dict, and there is NO "docker_options" field in the Vast API.
+#
+# 2026-07 incident: Vast rejected create-instance calls with
+#   {"success": false, "error": "invalid_args", "msg": "invalid env arguments"}
+# when the env string included --shm-size and quoted -e values. The env string
+# now contains ONLY plain "-e KEY=value" pairs (no --shm-size, no quotes, no
+# empty-value keys).
 #
 # Key invariants:
 #   - VAST_WORKER_IMAGE is used as the `image` field
 #   - production payload uses api runtype="args" (NOT ssh, NOT "entrypoint")
-#   - env vars + --shm-size passed via the `env` field as a Docker-flag STRING
+#   - env vars passed via the `env` field as a Docker-flag STRING of plain
+#     "-e KEY=value" pairs only — no --shm-size, no quoting
+#   - keys with empty/falsy values are skipped, never emitted as "-e KEY="
 #   - no separate `docker_options` field sent to the Vast API
 #   - No Docker-in-Docker, no git clone
 
@@ -1213,12 +1221,41 @@ if _orch.exists():
     else:
         err("gpu_orchestrator.py — direct-image-args deployment_mode not found")
 
-# 32e — env field (Docker-flag string) includes --shm-size (required for GPU workers)
+# 32e — env field (Docker-flag string) does NOT include --shm-size
+# 2026-07 incident: Vast rejected create-instance calls with
+# {"error": "invalid_args", "msg": "invalid env arguments"} when --shm-size
+# was present in the env string. It must never be emitted into the payload.
 if _orch.exists():
-    if "shm-size" in _orch_txt:
-        ok("gpu_orchestrator.py — env field includes --shm-size")
+    _env_builder_idx = _orch_txt.find("def _build_vast_env_string")
+    _env_builder_block = _orch_txt[_env_builder_idx:_env_builder_idx + 2200] if _env_builder_idx != -1 else ""
+    _shm_in_parts = _re.search(r'parts\s*[:=].*shm-size', _env_builder_block)
+    if _env_builder_idx != -1 and not _shm_in_parts:
+        ok("gpu_orchestrator.py — env field never emits --shm-size (Vast rejected it as invalid_args)")
     else:
-        err("gpu_orchestrator.py — production mode must include --shm-size in the env field")
+        err("gpu_orchestrator.py — env field must NOT include --shm-size (Vast returned invalid_args/invalid env arguments)")
+
+# 32e2 — env field never quotes -e values (Vast rejected quoted -e "value" pairs)
+if _orch.exists():
+    _quoted_e_flag = _re.search(r'-e\s*\{[^}]+\}=["\\]', _env_builder_block) or ('-e {k}="' in _env_builder_block)
+    if _env_builder_idx != -1 and not _quoted_e_flag:
+        ok("gpu_orchestrator.py — env field uses plain -e KEY=value (no quoting)")
+    else:
+        err("gpu_orchestrator.py — env field must NOT quote -e values (Vast rejected quoted env args)")
+
+# 32e3 — env builder skips keys with empty/falsy values (never emits bare -e KEY=)
+if _orch.exists():
+    _skips_empty = "if not v" in _env_builder_block or "if val" in _env_builder_block
+    if _env_builder_idx != -1 and _skips_empty:
+        ok("gpu_orchestrator.py — env builder skips empty/falsy values (never emits bare -e KEY=)")
+    else:
+        err("gpu_orchestrator.py — env builder must skip empty/falsy values, never emit bare -e KEY=")
+
+# 32e4 — skipped_empty_env_keys is tracked and surfaced (safe, key names only) for debugging
+if _orch.exists():
+    if "skipped_empty_env_keys" in _orch_txt:
+        ok("gpu_orchestrator.py — skipped_empty_env_keys tracked for safe debug visibility")
+    else:
+        err("gpu_orchestrator.py — missing skipped_empty_env_keys tracking (key names only, no values)")
 
 # 32f — _build_vast_env_string helper present (builds the Vast `env` Docker-flag string)
 if _orch.exists():
@@ -1378,10 +1415,13 @@ if _orch.exists():
     _dump_start = _orch_txt.find("def _write_vast_payload_dump")
     _dump_end = _orch_txt.find("\n\n\ndef ", _dump_start) if _dump_start != -1 else -1
     _dump_body = _orch_txt[_dump_start:_dump_end] if _dump_start != -1 and _dump_end != -1 else _orch_txt[_dump_start:]
-    _required_dump_fields = ["env_keys", "env_has_shm_size", "api_runtype", "launch_mode", "label", "image"]
+    _required_dump_fields = [
+        "env_keys", "env_has_shm_size", "skipped_empty_env_keys",
+        "api_runtype", "launch_mode", "label", "image",
+    ]
     _missing_fields = [f for f in _required_dump_fields if f'"{f}"' not in _dump_body]
     if not _missing_fields:
-        ok("gpu_orchestrator.py — payload dump includes image/api_runtype/launch_mode/label/env_keys/env_has_shm_size")
+        ok("gpu_orchestrator.py — payload dump includes image/api_runtype/launch_mode/label/env_keys/env_has_shm_size/skipped_empty_env_keys")
     else:
         err(f"gpu_orchestrator.py — payload dump missing fields: {_missing_fields}")
     _raw_env_key = _re.search(r'"env"\s*:', _dump_body)
