@@ -79,12 +79,14 @@ vast mode env vars  (production GPU provider)
                                             api runtype="args". The image's ENTRYPOINT
                                             (/entrypoint.sh) is preserved and run with no
                                             extra args. NO SSH daemon, NO onstart.
-                                            Env vars via the Vast "env" field — a single
-                                            Docker-flag string of "-e KEY=value" pairs
-                                            only (never logged). NO --shm-size or other
-                                            bare docker flags — Vast rejected those with
+                                            Env vars via the Vast "env" field — a JSON
+                                            dict of KEY: value pairs (never logged), per
+                                            the official Vast API (a Docker-flag STRING
+                                            is only valid for templates, not instance
+                                            creation — Vast rejected a string env with
                                             {"error":"invalid_args","msg":"invalid env
-                                            arguments"} (2026-07 incident).
+                                            arguments"}, 2026-07 incident). No --shm-size
+                                            key — not part of the env dict schema.
                               ssh_onstart = SSH fallback (debug only); runtype=ssh +
                                             onstart calls /entrypoint.sh. WARNING: SSH
                                             mode overrides the Docker ENTRYPOINT.
@@ -205,8 +207,8 @@ _VAST_WORKER_IMAGE      = os.environ.get("VAST_WORKER_IMAGE", "")  # e.g. ghcr.i
 #   entrypoint  (default, production) — maps to api runtype="args". The image's
 #                                        Docker ENTRYPOINT is preserved and run with
 #                                        no extra args. NO SSH daemon, NO onstart.
-#                                        Env vars via the Vast `env` field — a single
-#                                        Docker-flag string (never logged).
+#                                        Env vars via the Vast `env` field — a JSON
+#                                        dict of KEY: value pairs (never logged).
 #   args        (alias of entrypoint)  — same production path; kept for backward
 #                                        compatibility with older configs.
 #   ssh_onstart (fallback/debug)       — api runtype="ssh"; onstart calls /entrypoint.sh.
@@ -607,15 +609,22 @@ def _trigger_timeweb(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
 #   • runtype   — enum: ssh | jupyter | args | ssh_proxy | ssh_direct |
 #                 jupyter_proxy | jupyter_direct.  NO "entrypoint" value exists.
 #                 If omitted, defaults to "ssh" unless args/args_str is set.
-#   • env       — a STRING in Docker-flag format, e.g. "-e HF_TOKEN=... -e
-#                 MODEL_ID=... -p 8000:8000". NOT a JSON dict, NOT a
-#                 "docker_options" field (that field does not exist in the
-#                 Vast API at all).
-#                 2026-07 incident: Vast rejected create-instance calls with
-#                 {"error":"invalid_args","msg":"invalid env arguments"} when
-#                 the env string included --shm-size and quoted -e values.
-#                 The env string now contains ONLY plain "-e KEY=value" pairs
-#                 (no --shm-size, no quotes, no empty-value keys).
+#   • env       — for INSTANCE CREATION this is a JSON OBJECT (dict), e.g.
+#                 {"HF_TOKEN": "...", "MODEL_ID": "...", "-p 8000:8000": "1"}.
+#                 NOT a Docker-flag string (that format is ONLY used for
+#                 TEMPLATE creation/storage, never for direct instance
+#                 creation via PUT /api/v0/asks/{id}/). There is NO
+#                 "docker_options" field in the Vast API at all.
+#                 2026-07 incident #1: Vast rejected create-instance calls
+#                 with {"error":"invalid_args","msg":"invalid env arguments"}
+#                 when env was sent as a Docker-flag STRING (even after
+#                 removing --shm-size/quoting). Per the official docs
+#                 ("My environment variables aren't taking effect" — Common
+#                 Pitfalls, docs.vast.ai/api-reference/creating-instances-with-api):
+#                   Correct: {"VAR1": "value1", "VAR2": "value2"}
+#                   Wrong:   "-e VAR1=value1 -e VAR2=value2"
+#                 `env` is now sent as a plain dict; only None/empty values
+#                 are skipped, never quoted/escaped, no --shm-size key.
 #   • args_str  — string passed as arguments to the image ENTRYPOINT.
 #                 Only used with runtype="args".
 #
@@ -626,8 +635,8 @@ def _trigger_timeweb(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
 #     • VAST_LAUNCH_MODE=entrypoint (default, production; alias: args):
 #         api runtype="args" — the image's Docker ENTRYPOINT (/entrypoint.sh) is
 #         preserved and run with no extra args ("args": []).
-#         Env vars via the Vast "env" field — plain "-e KEY=value" pairs only
-#         (NEVER logged; no --shm-size, no quoting). NO SSH daemon, NO
+#         Env vars via the Vast "env" field — a JSON dict of KEY: value pairs
+#         (NEVER logged; no Docker-flag string, no --shm-size). NO SSH daemon, NO
 #         openssh-server, NO onstart, NO git clone, NO docker pull/run.
 #     • VAST_LAUNCH_MODE=ssh_onstart (fallback/debug only):
 #         api runtype="ssh" + onstart="bash /entrypoint.sh".
@@ -679,54 +688,46 @@ def _build_vast_env_dict(job_id: str, mode: str) -> Dict[str, str]:
     return env
 
 
-def _build_vast_env_string(env_dict: Dict[str, str]) -> Tuple[str, List[str]]:
+def _build_vast_env_payload(env_dict: Dict[str, str]) -> Tuple[Dict[str, str], List[str]]:
     """
-    Build the Vast API `env` field: a single Docker-flag-format string.
+    Build the Vast API `env` field for the Create Instance endpoint.
 
-    Per the official Vast Create Instance API (PUT /api/v0/asks/{id}/), `env`
-    is a STRING, not a JSON dict — "Environment variables and port mappings in
-    Docker flag format", e.g. "-e HF_TOKEN=... -e MODEL_ID=... -p 8000:8000".
-    There is no separate `docker_options` field in the Vast API; this string
-    IS the `env` field value sent to Vast.
+    Per the official docs ("Environment Variables and Ports" +
+    "My environment variables aren't taking effect" — Common Pitfalls,
+    docs.vast.ai/api-reference/creating-instances-with-api), for INSTANCE
+    CREATION the `env` field must be a JSON OBJECT (dict), e.g.
+    {"HF_TOKEN": "...", "MODEL_ID": "...", "-p 8000:8000": "1"} — NOT a
+    Docker-flag string:
+        Correct: {"VAR1": "value1", "VAR2": "value2"}
+        Wrong:   "-e VAR1=value1 -e VAR2=value2"
+    The Docker-flag STRING format is ONLY used when creating/storing
+    TEMPLATES — never for direct instance creation via PUT /api/v0/asks/{id}/.
 
-    2026-07 incident: Vast rejected create-instance calls with
+    2026-07 incident #1: Vast rejected create-instance calls with
     {"success": false, "error": "invalid_args", "msg": "invalid env arguments"}
-    when the env string included `--shm-size=8gb` and quoted values
-    (`-e KEY="value"`). Until Vast's exact accepted syntax is reconfirmed:
-      - `--shm-size` (or any other bare docker flag) is NEVER emitted here —
-        only `-e KEY=value` pairs.
-      - values are never wrapped in quotes — plain `-e KEY=value` only.
-      - keys with an empty/falsy value are skipped entirely (never emit a
-        bare `-e KEY=` with no value).
-      - a value containing whitespace triggers a WARNING (key name only,
-        never the value) since an unquoted value with spaces would break
-        Vast's `-e KEY=value` parsing; the value is still forwarded so a
-        single unexpected space never silently drops a required var.
+    when `env` was sent as a Docker-flag string (even plain, unquoted, with no
+    --shm-size). Switching `env` to a plain dict resolved it.
 
-    Produces: -e KEY=value -e KEY2=value2 ...
+    Rules:
+      - keys with a None/empty value are skipped entirely (never send an
+        empty-string value for a var that wasn't actually configured).
+      - values are sent as-is — never quoted, escaped, or shell-formatted;
+        the dict IS the JSON payload value, so whitespace in a value is fine.
+      - no `--shm-size` (or any other bare docker flag) key — there is no
+        such field in the Vast Create Instance API schema.
 
-    Returns (env_string, skipped_empty_keys).
-    IMPORTANT: NEVER pass env_string to logger — it embeds secret values.
+    Returns (env_payload, skipped_empty_keys).
+    IMPORTANT: NEVER pass env_payload to logger — it embeds secret values.
     skipped_empty_keys (key names only) is safe to log.
     """
-    parts: List[str] = []
+    payload: Dict[str, str] = {}
     skipped: List[str] = []
     for k, v in env_dict.items():
-        if not v:
+        if v is None or v == "":
             skipped.append(k)
             continue
-        if any(ch.isspace() for ch in v):
-            logger.warning("vast_env_value_has_whitespace key=%s", k)
-        parts.append(f"-e {k}={v}")
-    return " ".join(parts), sorted(skipped)
-
-
-def _parse_env_string_keys(env_string: str) -> List[str]:
-    """
-    Extract env var NAMES referenced in a Vast `env` docker-flag string (-e KEY="value").
-    Used only for safe logging/debug dumps — values are NEVER extracted or returned.
-    """
-    return sorted(set(re.findall(r'-e\s+([A-Za-z_][A-Za-z0-9_]*)=', env_string)))
+        payload[k] = v
+    return payload, sorted(skipped)
 
 
 def _write_vast_payload_dump(
@@ -746,15 +747,15 @@ def _write_vast_payload_dump(
     Used to diagnose "invalid env arguments" / "Retrying in 1 second" failures
     without ever exposing secrets: secrets are NEVER written here — only key
     names (env_keys, skipped_empty_env_keys) and a boolean presence check
-    (env_has_shm_size). The raw `env` field (a Docker-flag string embedding
-    real -e value pairs) is NEVER written to this dump.
+    (env_has_shm_size). The raw `env` field — a JSON dict embedding real
+    secret values — is NEVER written to this dump.
 
     Written to VAST_DEBUG_PAYLOAD_DUMP_PATH (default /tmp/sonya_vast_last_payload.json).
     Best-effort: write failures (e.g. read-only filesystem, Windows dev box) are
     swallowed and logged at debug level only.
     """
-    env_raw = payload_fields.get("env", "")
-    env_raw = env_raw if isinstance(env_raw, str) else ""
+    env_sent = payload_fields.get("env", {})
+    env_sent = env_sent if isinstance(env_sent, dict) else {}
     dump: Dict[str, Any] = {
         "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
         "job_id": job_id,
@@ -765,7 +766,10 @@ def _write_vast_payload_dump(
         "api_runtype": payload_fields.get("runtype"),         # real Vast runtype sent (never "entrypoint")
         "launch_mode": _VAST_LAUNCH_MODE,                     # our human-readable config name
         "env_keys": sorted(env_dict.keys()),                  # key names only — no values
-        "env_has_shm_size": "--shm-size" in env_raw,          # must be False — Vast rejected it (invalid_args)
+        # env_has_shm_size: there is no --shm-size field in the Vast env schema
+        # (env is a JSON dict of KEY: value pairs); kept as an explicit False
+        # so it's obvious in the dump that shared-memory sizing is not sent.
+        "env_has_shm_size": any("shm-size" in str(k) for k in env_sent),
         "skipped_empty_env_keys": sorted(skipped_empty_env_keys or []),  # keys omitted (empty), no values
         "args": payload_fields.get("args", "(n/a)"),          # safe — empty list, no secrets
         "onstart_present": bool(payload_fields.get("onstart")),
@@ -1278,9 +1282,11 @@ def _trigger_vast(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
             jupyter_direct). runtype="args" preserves the image's Docker ENTRYPOINT
             (/entrypoint.sh) and runs it with no extra args ("args": []).
             NO SSH daemon, NO openssh-server, NO onstart.
-            Env vars via the Vast `env` field — plain "-e KEY=value" pairs only
-            (NEVER logged; no --shm-size, no quoting — Vast rejected both with
-            {"error":"invalid_args","msg":"invalid env arguments"}). No separate
+            Env vars via the Vast `env` field — a JSON dict of KEY: value pairs
+            (NEVER logged). Sending `env` as a Docker-flag string instead of a
+            dict caused Vast to reject the call with {"error":"invalid_args",
+            "msg":"invalid env arguments"} — the dict format is required for
+            instance creation (string format is template-only). No separate
             "docker_options" field is sent; that field does not exist in the Vast API.
         VAST_LAUNCH_MODE=ssh_onstart  (fallback/debug only):
             api runtype="ssh" + onstart="bash /entrypoint.sh".
@@ -1318,12 +1324,12 @@ def _trigger_vast(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
             # WARNING: SSH mode overrides Docker ENTRYPOINT (Vast installs openssh-server).
             # onstart calls /entrypoint.sh after SSH daemon starts.
             # DO NOT use for production automated workers.
-            _env_string, skipped_empty_env_keys = _build_vast_env_string(env_dict)  # NEVER log — has secrets
+            _env_payload, skipped_empty_env_keys = _build_vast_env_payload(env_dict)  # NEVER log — has secrets
             deployment_mode = "direct-image-ssh-onstart"
             payload_fields: Dict[str, Any] = {
                 "runtype": "ssh",
                 "onstart": "bash /entrypoint.sh",
-                "env":     _env_string,  # Vast API: env is a Docker-flag STRING, not a dict
+                "env":     _env_payload,  # Vast API: env is a JSON dict for instance creation, not a string
             }
             env_forwarded_keys = sorted(env_dict.keys())
 
@@ -1333,17 +1339,17 @@ def _trigger_vast(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
             # runtype="args" preserves the image's Docker ENTRYPOINT (/entrypoint.sh)
             # and runs it with no extra args ("args": []).
             # NO SSH daemon, NO openssh-server installation, NO onstart script.
-            # Env vars via the Vast `env` field — ONLY `-e KEY=value` pairs, no
-            # --shm-size and no quoting (Vast rejected both with "invalid env
-            # arguments" — see _build_vast_env_string for the 2026-07 incident).
-            # `env` contains secret values — NEVER log it. No "docker_options" field
-            # is sent — that field does not exist in the Vast API.
-            _env_string, skipped_empty_env_keys = _build_vast_env_string(env_dict)  # NEVER log — has secrets
+            # Env vars via the Vast `env` field — a JSON dict of KEY: value pairs
+            # (Vast rejected a Docker-flag STRING with "invalid env arguments" —
+            # see _build_vast_env_payload for the 2026-07 incident). `env` contains
+            # secret values — NEVER log it. No "docker_options" field is sent —
+            # that field does not exist in the Vast API.
+            _env_payload, skipped_empty_env_keys = _build_vast_env_payload(env_dict)  # NEVER log — has secrets
             deployment_mode = "direct-image-args"
             payload_fields = {
                 "runtype": "args",
-                "env":     _env_string,  # Vast API: env is a Docker-flag STRING, not a dict
-                "args":    [],           # no extra args — image ENTRYPOINT runs as-is
+                "env":     _env_payload,  # Vast API: env is a JSON dict for instance creation, not a string
+                "args":    [],            # no extra args — image ENTRYPOINT runs as-is
             }
             env_forwarded_keys = sorted(env_dict.keys())
 
@@ -1363,7 +1369,7 @@ def _trigger_vast(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
         }
 
     # Safe for logging — no secret values.
-    # The `env` field (Docker-flag string with secret -e values) is NEVER included here.
+    # The `env` field (a JSON dict with secret values) is NEVER included here.
     sanitized_config: Dict[str, Any] = {
         "provider":               "vast",
         "instance_label":         instance_label,
@@ -1371,9 +1377,10 @@ def _trigger_vast(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
         "deployment_mode":        deployment_mode,
         "launch_mode":            _VAST_LAUNCH_MODE,           # our human-readable config name
         "api_runtype":            payload_fields["runtype"],   # real Vast runtype (never "entrypoint")
-        # env_field_is_string: Vast API `env` is always a Docker-flag string, never a dict.
-        "env_field_is_string":    bool(_VAST_WORKER_IMAGE),
-        "env_has_shm_size":       False,  # never sent — Vast rejected it (invalid_args, 2026-07)
+        # env_field_is_dict: for instance creation, Vast API `env` must be a JSON
+        # dict (not a Docker-flag string) — see _build_vast_env_payload.
+        "env_field_is_dict":      isinstance(payload_fields.get("env"), dict),
+        "env_has_shm_size":       False,  # no such field in the env dict schema
         "skipped_empty_env_keys": sorted(skipped_empty_env_keys),  # key names only, no values
         "gpu_name_filter":        _VAST_GPU_NAME or "(any)",
         "gpu_include_regex":      _VAST_GPU_INCLUDE_REGEX or "(none)",
@@ -1439,11 +1446,11 @@ def _trigger_vast(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
 
     # ── Create instance ────────────────────────────────────────────────────────
     # Direct image (production):
-    #   runtype=args + env=<Docker-flag string> + args=[]
+    #   runtype=args + env=<JSON dict> + args=[]
     #   → No SSH daemon, no openssh-server, no interactive wrapper.
     #   → Container preserves the image ENTRYPOINT and runs it as a one-shot job.
     # SSH fallback/debug (VAST_LAUNCH_MODE=ssh_onstart):
-    #   runtype=ssh + onstart="bash /entrypoint.sh" + env=<Docker-flag string>.
+    #   runtype=ssh + onstart="bash /entrypoint.sh" + env=<JSON dict>.
     # Git-clone fallback (dev/debug, no VAST_WORKER_IMAGE):
     #   runtype=ssh + onstart=base64-wrapped bash script.
     instance_payload: Dict[str, Any] = {

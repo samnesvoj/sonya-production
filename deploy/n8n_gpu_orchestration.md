@@ -60,14 +60,16 @@ gpu_orchestrator.trigger_gpu_for_job()  [GPU_ORCHESTRATOR_MODE=vast]
     │                (the Vast API has no runtype="entrypoint" — VAST_LAUNCH_MODE=entrypoint
     │                is only our own config name, mapped internally to runtype="args")
     │      args:     []  (no extra args — image ENTRYPOINT runs as-is)
-    │      env:      "-e JOB_ID=... -e MODE=... -e BACKEND_API_URL=... -e WORKER_SECRET=...
-    │                 -e S3_*=..."
-    │                (a single Docker-flag STRING of plain "-e KEY=value" pairs
-    │                per the official Vast Create Instance API schema — NOT a
-    │                JSON dict; secrets sent over HTTPS to vast.ai, never logged.
-    │                2026-07: --shm-size and quoted -e values were removed after
-    │                Vast rejected them with {"error":"invalid_args","msg":
-    │                "invalid env arguments"}. Keys with empty values are skipped.)
+    │      env:      {"JOB_ID": "...", "MODE": "...", "BACKEND_API_URL": "...",
+    │                 "WORKER_SECRET": "...", "S3_...": "..."}
+    │                (a JSON OBJECT / dict — NOT a Docker-flag string — per the
+    │                official Vast Create Instance API schema; secrets sent over
+    │                HTTPS to vast.ai, never logged.
+    │                2026-07: sending `env` as a Docker-flag string caused Vast
+    │                to reject the call with {"error":"invalid_args","msg":
+    │                "invalid env arguments"} — the dict format is required for
+    │                instance creation (string format is template-only). Keys
+    │                with empty/None values are skipped.)
     ▼
 GPU Instance (ephemeral, vast.ai) — runs ghcr.io/samnesvoj/sonya-worker:fast
     │  runtype=args: Vast preserves the image ENTRYPOINT and runs it as a one-shot job
@@ -105,9 +107,11 @@ Use `runtype=args` (the default when `VAST_WORKER_IMAGE` is set, i.e.
 > **Official Vast API confirmation:** the `PUT /api/v0/asks/{id}/` endpoint's
 > `runtype` field accepts only `ssh`, `jupyter`, `args`, `ssh_proxy`, `ssh_direct`,
 > `jupyter_proxy`, `jupyter_direct` — there is no `"entrypoint"` value. The `env`
-> field is a Docker-flag-format **string**, not a JSON object, and there is no
-> `docker_options` field. See
-> [docs.vast.ai/api-reference/instances/create-instance](https://docs.vast.ai/api-reference/instances/create-instance).
+> field must be a **JSON object (dict)** for instance creation, e.g.
+> `{"VAR1": "value1"}` — a Docker-flag-format string (`"-e VAR1=value1"`) is
+> only valid for template creation and is rejected on direct instance
+> creation. There is no `docker_options` field. See
+> [docs.vast.ai/api-reference/creating-instances-with-api](https://docs.vast.ai/api-reference/creating-instances-with-api).
 
 ### Fallback: git-clone mode (public repos / dev only)
 
@@ -194,12 +198,12 @@ BACKEND_API_URL=https://sonya-e.com
 DATABASE_URL=postgresql://...             # VPS-only — NOT forwarded to GPU instance
 
 # Forwarded to the GPU instance via the Vast `env` field (no DATABASE_URL).
-# gpu_orchestrator.py builds these into a single Docker-flag STRING of plain
-# "-e KEY=value" pairs for the Vast API — e.g.
-# "-e WORKER_SECRET=... -e S3_ENDPOINT_URL=..." (never a JSON dict, never
-# logged). No --shm-size and no quoted values — Vast rejects both with
-# {"error": "invalid_args", "msg": "invalid env arguments"}. Empty/unset
-# optional vars below are simply skipped, never sent as "-e KEY=".
+# gpu_orchestrator.py builds these into a JSON dict for the Vast API — e.g.
+# {"WORKER_SECRET": "...", "S3_ENDPOINT_URL": "..."} (never logged). `env`
+# MUST be a dict for instance creation — a Docker-flag string (e.g.
+# "-e WORKER_SECRET=...") is rejected with {"error": "invalid_args", "msg":
+# "invalid env arguments"} (string format is template-only). Empty/unset
+# optional vars below are simply skipped, never sent as "KEY": "".
 WORKER_SECRET=<hmac-secret>
 S3_ENDPOINT_URL=...
 S3_ACCESS_KEY_ID=...

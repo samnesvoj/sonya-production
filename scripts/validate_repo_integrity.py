@@ -696,21 +696,27 @@ if _orch.exists():
 # https://docs.vast.ai/api-reference/instances/create-instance :
 #   - runtype enum: ssh | jupyter | args | ssh_proxy | ssh_direct | jupyter_proxy |
 #     jupyter_direct.  There is NO "entrypoint" runtype value.
-#   - `env` is a STRING in Docker-flag format (e.g. "-e KEY=value -e KEY2=value2"),
-#     NOT a JSON dict, and there is NO "docker_options" field in the Vast API.
+#   - `env` field for INSTANCE CREATION is a JSON OBJECT (dict), e.g.
+#     {"KEY": "value", "-p 8000:8000": "1"} — NOT a Docker-flag string.
+#     The Docker-flag STRING format (e.g. "-e KEY=value") is ONLY valid for
+#     TEMPLATE creation, never for direct instance creation. There is NO
+#     "docker_options" field in the Vast API.
 #
-# 2026-07 incident: Vast rejected create-instance calls with
+# 2026-07 incident #1: Vast rejected create-instance calls with
 #   {"success": false, "error": "invalid_args", "msg": "invalid env arguments"}
-# when the env string included --shm-size and quoted -e values. The env string
-# now contains ONLY plain "-e KEY=value" pairs (no --shm-size, no quotes, no
-# empty-value keys).
+# when `env` was sent as a Docker-flag STRING (even after removing --shm-size
+# and quoting). Per the official docs ("My environment variables aren't
+# taking effect" — Common Pitfalls):
+#   Correct: {"VAR1": "value1", "VAR2": "value2"}
+#   Wrong:   "-e VAR1=value1 -e VAR2=value2"
+# `env` is now sent as a plain JSON dict.
 #
 # Key invariants:
 #   - VAST_WORKER_IMAGE is used as the `image` field
 #   - production payload uses api runtype="args" (NOT ssh, NOT "entrypoint")
-#   - env vars passed via the `env` field as a Docker-flag STRING of plain
-#     "-e KEY=value" pairs only — no --shm-size, no quoting
-#   - keys with empty/falsy values are skipped, never emitted as "-e KEY="
+#   - env vars passed via the `env` field as a JSON dict (never a string)
+#   - keys with None/empty values are skipped, never sent as "KEY": ""
+#   - no --shm-size key — not part of the env dict schema
 #   - no separate `docker_options` field sent to the Vast API
 #   - No Docker-in-Docker, no git clone
 
@@ -730,12 +736,19 @@ if _orch.exists():
     else:
         err("gpu_orchestrator.py — direct image mode must use VAST_WORKER_IMAGE as the image field")
 
-# 27c — env field built as a Docker-flag STRING (not a JSON dict) for the Vast API
+# 27c — env field built as a JSON DICT (not a Docker-flag string) for the Vast API
 if _orch.exists():
-    if "_build_vast_env_string" in _orch_txt and "env_dict" in _orch_txt and "payload_fields" in _orch_txt:
-        ok("gpu_orchestrator.py — env field built as Docker-flag string (matches official Vast API schema)")
+    if "_build_vast_env_payload" in _orch_txt and "env_dict" in _orch_txt and "payload_fields" in _orch_txt:
+        ok("gpu_orchestrator.py — env field built as a JSON dict (matches official Vast API instance-creation schema)")
     else:
-        err("gpu_orchestrator.py — must build the Vast `env` field as a Docker-flag string via _build_vast_env_string")
+        err("gpu_orchestrator.py — must build the Vast `env` field as a dict via _build_vast_env_payload")
+
+# 27c2 — env field is NEVER a Docker-flag string (that format is template-only, rejected on instance creation)
+if _orch.exists():
+    if "_build_vast_env_string" not in _orch_txt:
+        ok("gpu_orchestrator.py — no leftover _build_vast_env_string (Docker-flag string builder removed)")
+    else:
+        err("gpu_orchestrator.py — _build_vast_env_string must not exist; Vast rejects string env on instance creation")
 
 # 27d — runtype=args used for direct image production path (NOT runtype=ssh, NOT runtype=entrypoint)
 if _orch.exists():
@@ -1160,8 +1173,9 @@ else:
 #   - runtype enum: ssh | jupyter | args | ssh_proxy | ssh_direct | jupyter_proxy |
 #     jupyter_direct.  There is NO "entrypoint" runtype value — sending
 #     runtype="entrypoint" is an invalid API call.
-#   - `env` is a STRING in Docker-flag format, NOT a JSON dict, and there is NO
-#     "docker_options" field in the Vast API schema.
+#   - `env` for INSTANCE CREATION is a JSON OBJECT (dict), NOT a Docker-flag
+#     string (that format is template-only), and there is NO "docker_options"
+#     field in the Vast API schema.
 #   - `args` (array) / `args_str` (string) are passed to the image ENTRYPOINT
 #     when runtype="args" — the image's own ENTRYPOINT is preserved.
 #
@@ -1221,34 +1235,34 @@ if _orch.exists():
     else:
         err("gpu_orchestrator.py — direct-image-args deployment_mode not found")
 
-# 32e — env field (Docker-flag string) does NOT include --shm-size
-# 2026-07 incident: Vast rejected create-instance calls with
-# {"error": "invalid_args", "msg": "invalid env arguments"} when --shm-size
-# was present in the env string. It must never be emitted into the payload.
+# 32e — env field is a JSON DICT, never a Docker-flag string (2026-07 incident #1:
+# Vast rejected create-instance calls with {"error":"invalid_args","msg":
+# "invalid env arguments"} when env was sent as a string).
 if _orch.exists():
-    _env_builder_idx = _orch_txt.find("def _build_vast_env_string")
+    _env_builder_idx = _orch_txt.find("def _build_vast_env_payload")
     _env_builder_block = _orch_txt[_env_builder_idx:_env_builder_idx + 2200] if _env_builder_idx != -1 else ""
-    _shm_in_parts = _re.search(r'parts\s*[:=].*shm-size', _env_builder_block)
-    if _env_builder_idx != -1 and not _shm_in_parts:
-        ok("gpu_orchestrator.py — env field never emits --shm-size (Vast rejected it as invalid_args)")
+    if _env_builder_idx != -1 and "payload[k] = v" in _env_builder_block:
+        ok("gpu_orchestrator.py — env field built as a JSON dict, not a Docker-flag string")
     else:
-        err("gpu_orchestrator.py — env field must NOT include --shm-size (Vast returned invalid_args/invalid env arguments)")
+        err("gpu_orchestrator.py — env field must be built as a dict via _build_vast_env_payload")
 
-# 32e2 — env field never quotes -e values (Vast rejected quoted -e "value" pairs)
+# 32e2 — env field never includes a bare --shm-size docker flag as an actual dict key
+# (mentions of "--shm-size" in the docstring explaining WHY it's excluded are fine;
+# only a real key assignment like env["--shm-size"] / payload["--shm-size"] is a violation)
 if _orch.exists():
-    _quoted_e_flag = _re.search(r'-e\s*\{[^}]+\}=["\\]', _env_builder_block) or ('-e {k}="' in _env_builder_block)
-    if _env_builder_idx != -1 and not _quoted_e_flag:
-        ok("gpu_orchestrator.py — env field uses plain -e KEY=value (no quoting)")
+    _shm_key_assignment = _re.search(r'\[\s*["\']--shm-size', _env_builder_block)
+    if _env_builder_idx != -1 and not _shm_key_assignment:
+        ok("gpu_orchestrator.py — env dict builder never emits a --shm-size key")
     else:
-        err("gpu_orchestrator.py — env field must NOT quote -e values (Vast rejected quoted env args)")
+        err("gpu_orchestrator.py — env dict builder must not emit a --shm-size key (not part of the Vast env schema)")
 
-# 32e3 — env builder skips keys with empty/falsy values (never emits bare -e KEY=)
+# 32e3 — env builder skips keys with None/empty values (never sends "KEY": "")
 if _orch.exists():
-    _skips_empty = "if not v" in _env_builder_block or "if val" in _env_builder_block
+    _skips_empty = "v is None or v ==" in _env_builder_block or "if not v" in _env_builder_block
     if _env_builder_idx != -1 and _skips_empty:
-        ok("gpu_orchestrator.py — env builder skips empty/falsy values (never emits bare -e KEY=)")
+        ok("gpu_orchestrator.py — env builder skips None/empty values (never sends \"KEY\": \"\")")
     else:
-        err("gpu_orchestrator.py — env builder must skip empty/falsy values, never emit bare -e KEY=")
+        err("gpu_orchestrator.py — env builder must skip None/empty values, never send \"KEY\": \"\"")
 
 # 32e4 — skipped_empty_env_keys is tracked and surfaced (safe, key names only) for debugging
 if _orch.exists():
@@ -1257,23 +1271,23 @@ if _orch.exists():
     else:
         err("gpu_orchestrator.py — missing skipped_empty_env_keys tracking (key names only, no values)")
 
-# 32f — _build_vast_env_string helper present (builds the Vast `env` Docker-flag string)
+# 32f — _build_vast_env_payload helper present (builds the Vast `env` JSON dict)
 if _orch.exists():
-    if "_build_vast_env_string" in _orch_txt:
-        ok("gpu_orchestrator.py — _build_vast_env_string helper present")
+    if "_build_vast_env_payload" in _orch_txt:
+        ok("gpu_orchestrator.py — _build_vast_env_payload helper present")
     else:
-        err("gpu_orchestrator.py — missing _build_vast_env_string (builds the `env` field for the Vast API)")
+        err("gpu_orchestrator.py — missing _build_vast_env_payload (builds the `env` dict field for the Vast API)")
 
-# 32g — env string NEVER passed to logger (secrets protection); no docker_options field exists
+# 32g — env payload NEVER passed to logger (secrets protection); no docker_options field exists
 if _orch.exists():
     _bad_opts_log = _re.search(
-        r'logger\.\w+\([^)]*\b(_env_string|docker_opt)[^)]*\)',
+        r'logger\.\w+\([^)]*\b(_env_payload|_env_string|docker_opt)[^)]*\)',
         _orch_txt,
     )
     if not _bad_opts_log:
-        ok("gpu_orchestrator.py — env string not passed to logger (secret -e values safe)")
+        ok("gpu_orchestrator.py — env payload not passed to logger (secret values safe)")
     else:
-        err("gpu_orchestrator.py — env string must NOT be logged (contains secret -e values)")
+        err("gpu_orchestrator.py — env payload must NOT be logged (contains secret values)")
     _docker_options_as_key2 = _re.search(r'["\']docker_options["\']\s*:', _orch_txt)
     if not _docker_options_as_key2:
         ok("gpu_orchestrator.py — \"docker_options\" is not a real Vast API field and is never sent")
@@ -1424,11 +1438,11 @@ if _orch.exists():
         ok("gpu_orchestrator.py — payload dump includes image/api_runtype/launch_mode/label/env_keys/env_has_shm_size/skipped_empty_env_keys")
     else:
         err(f"gpu_orchestrator.py — payload dump missing fields: {_missing_fields}")
-    _raw_env_key = _re.search(r'"env"\s*:', _dump_body)
-    if "env_raw" in _dump_body and not _raw_env_key:
-        ok("gpu_orchestrator.py — raw env string (with secret -e values) never written to dump")
+    _raw_env_key = _re.search(r'dump\s*(?:\[|=|:)\s*\{?[^}]*"env"\s*:', _dump_body) or _re.search(r'"env"\s*:\s*env_sent', _dump_body)
+    if "env_sent" in _dump_body and not _raw_env_key:
+        ok("gpu_orchestrator.py — raw env dict (with secret values) never written to dump")
     else:
-        err("gpu_orchestrator.py — dump must never include the raw env field (secret -e values)")
+        err("gpu_orchestrator.py — dump must never include the raw env field (secret values)")
 
 # 33l — docs document debug mode + reminder to turn off
 if _cmd_doc.exists():

@@ -13,17 +13,20 @@
    > `ssh_direct`, `jupyter_proxy`, `jupyter_direct`. `VAST_LAUNCH_MODE=entrypoint` is
    > only our own human-readable config name; internally it always maps to
    > `runtype: "args"`.
-4. Env vars (secrets) passed via the Vast `env` field — a single Docker-flag
-   **string** of plain `-e KEY=value` pairs only (e.g. `"-e KEY=value -e KEY2=value2"`),
-   never a dict, and never embedded in logs. There is **no** `docker_options` field
-   in the Vast API — that name is only used internally as a helper-function name,
-   never sent as a payload field.
+4. Env vars (secrets) passed via the Vast `env` field — a **JSON object (dict)**
+   of `{"KEY": "value"}` pairs (e.g. `{"JOB_ID": "...", "WORKER_SECRET": "..."}`),
+   never embedded in logs. There is **no** `docker_options` field in the Vast
+   API — that name is only used internally as a helper-function name, never
+   sent as a payload field.
    > **2026-07 incident:** Vast rejected create-instance calls with
    > `{"success": false, "error": "invalid_args", "msg": "invalid env arguments"}`
-   > when the `env` string included `--shm-size=8gb` and quoted `-e KEY="value"`
-   > pairs. For the Create Instance API, `env` is now kept to **plain
-   > `-e KEY=value` pairs only** — no `--shm-size`, no quoting. Keys with an
-   > empty/falsy value are skipped entirely (never emit a bare `-e KEY=`).
+   > when `env` was sent as a **Docker-flag string** (e.g. `"-e KEY=value"`).
+   > Per the official docs (docs.vast.ai/api-reference/creating-instances-with-api,
+   > "My environment variables aren't taking effect"): the Docker-flag string
+   > format is **only valid for template creation** — direct instance creation
+   > (`PUT /api/v0/asks/{id}/`) requires `env` as a **plain JSON dict**:
+   > correct `{"VAR1": "value1"}`, wrong `"-e VAR1=value1"`. Keys with a
+   > None/empty value are skipped entirely (never sent as `"KEY": ""`).
 5. `runtype: "args"` **preserves** the image's Docker `ENTRYPOINT` (`/entrypoint.sh`)
    and runs it with no extra args (`"args": []`). No SSH daemon, no openssh-server, no onstart.
 6. `worker_entrypoint.sh` (image ENTRYPOINT) runs inside the container:
@@ -414,7 +417,7 @@ AUTO_GPU_TRIGGER_ENABLED=true \
 What happens:
 
 1. `gpu_orchestrator.py` forwards `VAST_DEBUG_SLEEP_ON_FAIL=true` to the worker
-   container via the Vast `env` field (a Docker-flag string, never logged).
+   container via the Vast `env` field (a JSON dict, never logged).
 2. `worker_entrypoint.sh` prints an early startup banner as the FIRST lines
    of the log (date, pwd, whoami, python version, env presence yes/no for
    `S3_BUCKET`, `S3_BUCKET_NAME`, `WORKER_SECRET` — never the raw values).
