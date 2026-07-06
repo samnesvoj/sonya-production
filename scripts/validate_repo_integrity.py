@@ -758,13 +758,19 @@ if _orch.exists():
     else:
         err("gpu_orchestrator.py — production direct image mode must use runtype=\"args\" (official Vast API value)")
 
-# 27e — "args" field present as an empty list (image ENTRYPOINT runs with no extra args)
+# 27e — production runtype=args payload omits args/args_str unless explicit
+# entrypoint args are configured (Vast's Create Instance schema has no "args"
+# list field at all — only `args_str`, a string — so sending "args": [] was
+# never a valid field; the image ENTRYPOINT/CMD is preserved by omitting it).
 if _orch.exists():
-    has_empty_args_field = _re.search(r'"args":\s*\[\]', _orch_txt) is not None
-    if has_empty_args_field:
-        ok("gpu_orchestrator.py — \"args\": [] passed for production runtype=args (ENTRYPOINT runs as-is)")
+    _args_prod_idx = _orch_txt.find("direct-image-args")
+    _args_prod_block = _orch_txt[_args_prod_idx:_args_prod_idx + 900] if _args_prod_idx != -1 else ""
+    _sends_empty_args_list = _re.search(r'"args":\s*\[\]', _args_prod_block) is not None
+    _conditionally_sends_args_str = "VAST_ARGS_STR" in _args_prod_block and '"args_str"' in _args_prod_block
+    if _args_prod_idx != -1 and not _sends_empty_args_list and _conditionally_sends_args_str:
+        ok("gpu_orchestrator.py — production runtype=args omits args/args_str unless VAST_ARGS_STR is explicitly configured")
     else:
-        err("gpu_orchestrator.py — production runtype=args payload must include \"args\": []")
+        err("gpu_orchestrator.py — production runtype=args must omit args/args_str by default (no \"args\": [])")
 
 # 27f_ssh — direct image production path must NOT use runtype=ssh or runtype=entrypoint
 # The presence of "runtype=ssh" is fine only in the ssh_onstart fallback / git-clone fallback paths.
@@ -1181,10 +1187,14 @@ else:
 #
 # Production automated workers use VAST_LAUNCH_MODE=entrypoint (our own
 # human-readable config name) which maps to api runtype="args":
-#   - The image's Docker ENTRYPOINT (/entrypoint.sh) is preserved and run
-#     with no extra args ("args": []).
+#   - The image's Docker ENTRYPOINT (/entrypoint.sh) is preserved and run as-is.
+#   - `args`/`args_str`/`onstart`/`docker_options` are all omitted by default
+#     (Vast's schema has no "args" list field, only `args_str` — a string —
+#     and there's nothing to pass since worker_entrypoint.sh reads everything
+#     it needs from `env`).
 #   - SSH mode overrides ENTRYPOINT (Vast installs openssh-server) — NOT for production.
-#   - ssh_onstart is only a fallback/debug option (api runtype="ssh").
+#   - ssh_onstart is only a fallback/debug option (api runtype="ssh"), never
+#     used in the production flow (VAST_LAUNCH_MODE defaults to "entrypoint").
 
 print("\n-- 32. Vast production launch mode (official API: runtype=args) --")
 

@@ -27,8 +27,13 @@
    > (`PUT /api/v0/asks/{id}/`) requires `env` as a **plain JSON dict**:
    > correct `{"VAR1": "value1"}`, wrong `"-e VAR1=value1"`. Keys with a
    > None/empty value are skipped entirely (never sent as `"KEY": ""`).
-5. `runtype: "args"` **preserves** the image's Docker `ENTRYPOINT` (`/entrypoint.sh`)
-   and runs it with no extra args (`"args": []`). No SSH daemon, no openssh-server, no onstart.
+5. `runtype: "args"` **preserves** the image's Docker `ENTRYPOINT` (`/entrypoint.sh`) and
+   runs it as-is. `args` / `args_str` / `onstart` / `docker_options` are **all omitted**
+   from the payload — the official Vast schema has no `"args"` list field at all (only
+   `args_str`, a string), and there is nothing to pass since `worker_entrypoint.sh` reads
+   everything it needs from `env`. No SSH daemon, no openssh-server, no onstart.
+   (Optional: set `VAST_ARGS_STR` only if a specific worker image genuinely needs extra
+   ENTRYPOINT arguments — otherwise leave unset.)
 6. `worker_entrypoint.sh` (image ENTRYPOINT) runs inside the container:
    - validates env vars, writes `.env.local`
    - `prod_preflight_check.py --role worker`

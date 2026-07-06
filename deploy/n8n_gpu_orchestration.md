@@ -59,7 +59,9 @@ gpu_orchestrator.trigger_gpu_for_job()  [GPU_ORCHESTRATOR_MODE=vast]
     │      runtype:  "args"  ← official Vast API value; NOT ssh, NOT "entrypoint"
     │                (the Vast API has no runtype="entrypoint" — VAST_LAUNCH_MODE=entrypoint
     │                is only our own config name, mapped internally to runtype="args")
-    │      args:     []  (no extra args — image ENTRYPOINT runs as-is)
+    │      (args/args_str/onstart/docker_options: ALL OMITTED — the official Vast
+    │       schema has no "args" list field, only `args_str` (string); nothing to
+    │       pass since worker_entrypoint.sh reads everything from `env`)
     │      env:      {"JOB_ID": "...", "MODE": "...", "BACKEND_API_URL": "...",
     │                 "WORKER_SECRET": "...", "S3_...": "..."}
     │                (a JSON OBJECT / dict — NOT a Docker-flag string — per the
