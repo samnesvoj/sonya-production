@@ -13,12 +13,31 @@
 # DATABASE_URL is NOT required — WORKER_BACKEND_MODE=api.
 #
 # Required env vars:
-#   JOB_ID              UUID of the job to process
-#   MODE                mode name (default: trailer_film_breaker)
 #   BACKEND_API_URL     https://sonya-e.com/api/worker
 #   WORKER_SECRET       HMAC secret for worker API calls
 #   S3_ENDPOINT_URL, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY,
 #   S3_BUCKET_NAME, S3_REGION, MODELS_S3_BUCKET
+#   JOB_ID              UUID of the job to process — REQUIRED ONLY when
+#                        WORKER_LOOP is not "true" (single-job mode)
+#   MODE                mode name (default: trailer_film_breaker) — only used
+#                        in single-job mode; ignored when WORKER_LOOP=true
+#                        (mode is decided per claimed job)
+#
+# Worker mode (WORKER_LOOP env var):
+#   WORKER_LOOP=false (default) — single-job / ephemeral mode. Vast launches
+#     one instance per job with JOB_ID set; the entrypoint downloads models
+#     for MODE, runs gpu_worker.py --once --job-id, then the container exits
+#     and Vast destroys/recycles the instance.
+#   WORKER_LOOP=true — persistent mode. Vast (or any host) starts the
+#     container once with NO JOB_ID; the entrypoint skips model_downloader
+#     (mode varies per job) and execs gpu_worker.py --poll, which claims jobs
+#     from the backend queue itself and downloads models per claimed job.
+#     Extra vars for this mode:
+#       WORKER_IDLE_SLEEP_SEC  seconds between poll attempts when idle
+#                              (default: 15; bridged to gpu_worker.py's own
+#                              WORKER_POLL_INTERVAL)
+#       WORKER_ID              worker identifier reported to the backend
+#                              (default: gpu-persistent-$HOSTNAME)
 #
 # Debug-safe mode (diagnosing Vast "Retrying in 1 second" loops):
 #   VAST_DEBUG_SLEEP_ON_FAIL=true → on any failure, print diagnostics and
@@ -33,7 +52,9 @@
 #   mode_running) so the backend sees activity even if preflight or model
 #   download hangs/fails before gpu_worker.py makes its own first call.
 #   Best-effort only: failures are logged and swallowed (`|| true`), never
-#   fail the entrypoint, and never print secret values.
+#   fail the entrypoint, and never print secret values. It is job-scoped:
+#   when JOB_ID is empty (persistent mode, before a job is claimed) it logs
+#   a skip line instead of calling the API.
 
 set -uo pipefail
 
@@ -43,6 +64,14 @@ mkdir -p "${LOG_DIR}"
 exec > >(tee -a "${LOG_FILE}") 2>&1
 
 VAST_DEBUG_SLEEP_ON_FAIL="${VAST_DEBUG_SLEEP_ON_FAIL:-false}"
+
+# ── Worker mode config ─────────────────────────────────────────────────────────
+WORKER_LOOP="${WORKER_LOOP:-false}"
+WORKER_IDLE_SLEEP_SEC="${WORKER_IDLE_SLEEP_SEC:-15}"
+WORKER_ID="${WORKER_ID:-gpu-persistent-${HOSTNAME:-worker}}"
+# Bridge to gpu_worker.py's own poll-interval env var so WORKER_IDLE_SLEEP_SEC
+# actually controls the idle sleep between poll attempts in --poll mode.
+export WORKER_POLL_INTERVAL="${WORKER_POLL_INTERVAL:-${WORKER_IDLE_SLEEP_SEC}}"
 
 _present() { [[ -n "${1:-}" ]] && echo "yes" || echo "no"; }
 _pyver()   { python --version 2>&1 || python3 --version 2>&1 || echo "python not found"; }
@@ -57,6 +86,8 @@ _pyver
 echo "WORKER_BACKEND_MODE=${WORKER_BACKEND_MODE:-api}"
 echo "BACKEND_API_URL=${BACKEND_API_URL:-<not set>}"
 echo "JOB_ID=${JOB_ID:-<not set>}"
+echo "WORKER_LOOP=${WORKER_LOOP}"
+echo "WORKER_ID=${WORKER_ID}"
 echo "S3_BUCKET present: $(_present "${S3_BUCKET:-}")"
 echo "S3_BUCKET_NAME present: $(_present "${S3_BUCKET_NAME:-}")"
 echo "WORKER_SECRET present: $(_present "${WORKER_SECRET:-}")"
@@ -97,9 +128,16 @@ log "JOB_ID=${JOB_ID:-<not set>}"
 log "MODE=${MODE:-trailer_film_breaker}"
 log "BACKEND_API_URL=${BACKEND_API_URL:-<not set>}"
 log "WORKER_BACKEND_MODE=${WORKER_BACKEND_MODE:-api}"
+log "WORKER_LOOP=${WORKER_LOOP} WORKER_ID=${WORKER_ID} WORKER_IDLE_SLEEP_SEC=${WORKER_IDLE_SLEEP_SEC}"
 
 # ── Required env validation ────────────────────────────────────────────────────
-: "${JOB_ID:?JOB_ID env var is required}"
+# JOB_ID is only required in single-job mode (WORKER_LOOP != true). Persistent
+# workers (WORKER_LOOP=true) have no JOB_ID at container startup — they claim
+# jobs themselves via gpu_worker.py --poll. All other vars are always required.
+if [[ "${WORKER_LOOP,,}" != "true" ]]; then
+    : "${JOB_ID:?JOB_ID env var is required when WORKER_LOOP is not true}"
+fi
+JOB_ID="${JOB_ID:-}"
 : "${BACKEND_API_URL:?BACKEND_API_URL env var is required}"
 : "${WORKER_SECRET:?WORKER_SECRET env var is required}"
 : "${S3_ENDPOINT_URL:?S3_ENDPOINT_URL env var is required}"
@@ -121,6 +159,10 @@ worker_status() {
     local status="$1"
     local progress="${2:-0}"
     local message="${3:-}"
+    if [[ -z "${JOB_ID:-}" ]]; then
+        echo "[worker_entrypoint] status_callback_skip reason=no_job_id status=${status}"
+        return 0
+    fi
     python - <<PY || true
 import json, os, urllib.request
 base = os.environ["BACKEND_API_URL"].rstrip("/")
@@ -175,7 +217,7 @@ log "Writing ${ENV_LOCAL}..."
     echo "S3_REGION=${S3_REGION}"
     echo "MODELS_S3_BUCKET=${MODELS_S3_BUCKET}"
     echo "WORKER_SECRET=${WORKER_SECRET}"
-    echo "WORKER_ID=${WORKER_ID:-gpu-docker-${JOB_ID:0:8}}"
+    echo "WORKER_ID=${WORKER_ID}"
     echo "AUTO_GPU_TRIGGER_ENABLED=false"
     # Optional keys (injected only when set)
     [[ -n "${OPENROUTER_API_KEY:-}" ]]  && echo "OPENROUTER_API_KEY=${OPENROUTER_API_KEY}"
@@ -194,20 +236,30 @@ python "${WORKDIR}/scripts/prod_preflight_check.py" --role worker \
     || fail "Pre-flight check failed."
 log "Pre-flight check passed."
 
-# ── Model download ─────────────────────────────────────────────────────────────
-worker_status "model_downloading" 15 "model download started"
-log "Downloading models for MODE=${MODE}..."
-python "${WORKDIR}/scripts/model_downloader.py" --mode "${MODE}" \
-    || fail "Model download failed for MODE=${MODE}."
-log "Models ready."
+if [[ "${WORKER_LOOP,,}" == "true" ]]; then
+    # ── Persistent poll mode ─────────────────────────────────────────────────
+    # Mode is only known once a job is claimed, so model_downloader must NOT
+    # run here — gpu_worker.py already downloads models per claimed job
+    # (ensure_models_for_mode) before running each mode, exactly as in
+    # --once mode. No JOB_ID exists yet, so worker_status() above only ever
+    # logged a status_callback_skip for this instance until now.
+    log "WORKER_LOOP=true — starting persistent poll mode (worker_id=${WORKER_ID}, idle_sleep=${WORKER_IDLE_SLEEP_SEC}s)..."
+    exec python "${WORKDIR}/scripts/gpu_worker.py" --poll --worker-id "${WORKER_ID}"
+else
+    # ── Single-job mode (legacy Vast direct-image launch) ────────────────────
+    : "${JOB_ID:?JOB_ID env var is required when WORKER_LOOP is not true}"
 
-# ── Run worker (exactly once) ──────────────────────────────────────────────────
-worker_status "mode_running" 30 "gpu_worker starting"
-log "Starting gpu_worker.py --once --job-id ${JOB_ID}..."
-python "${WORKDIR}/scripts/gpu_worker.py" \
-    --once \
-    --job-id "${JOB_ID}"
+    # ── Model download ───────────────────────────────────────────────────────
+    worker_status "model_downloading" 15 "model download started"
+    log "Downloading models for MODE=${MODE}..."
+    python "${WORKDIR}/scripts/model_downloader.py" --mode "${MODE}" \
+        || fail "Model download failed for MODE=${MODE}."
+    log "Models ready."
 
-EXIT_CODE=$?
-log "gpu_worker.py exited with code ${EXIT_CODE}."
-exit "${EXIT_CODE}"
+    # ── Run worker (exactly once) ────────────────────────────────────────────
+    worker_status "mode_running" 30 "gpu_worker starting"
+    log "Starting gpu_worker.py --once --job-id ${JOB_ID}..."
+    exec python "${WORKDIR}/scripts/gpu_worker.py" \
+        --once \
+        --job-id "${JOB_ID}"
+fi

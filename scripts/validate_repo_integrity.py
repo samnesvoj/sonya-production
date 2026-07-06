@@ -1463,13 +1463,16 @@ if _entrypoint.exists():
         err(f"worker_entrypoint.sh — missing heartbeat call(s): {_missing_calls}")
 
     # 33p — heartbeat calls are ordered before their corresponding stage (preflight/model
-    # download/gpu_worker), so the backend hears about a stage before it can hang there
+    # download/gpu_worker --once), so the backend hears about a stage before it can hang
+    # there. Uses `--job-id "${JOB_ID}"` (not just "gpu_worker.py") to identify the
+    # single-job invocation specifically, since WORKER_LOOP=true mode also invokes
+    # gpu_worker.py (with --poll) earlier in the file.
     _preflight_hb_idx = _ep_dbg.find('worker_status "preflight_running"')
     _preflight_call_idx = _ep_dbg.find("${WORKDIR}/scripts/prod_preflight_check.py")
     _model_hb_idx = _ep_dbg.find('worker_status "model_downloading"')
     _model_call_idx = _ep_dbg.find("${WORKDIR}/scripts/model_downloader.py")
     _mode_hb_idx = _ep_dbg.find('worker_status "mode_running"')
-    _mode_call_idx = _ep_dbg.find("${WORKDIR}/scripts/gpu_worker.py")
+    _mode_call_idx = _ep_dbg.find('--job-id "${JOB_ID}"')
     _ordered = (
         -1 not in (_preflight_hb_idx, _preflight_call_idx, _model_hb_idx, _model_call_idx, _mode_hb_idx, _mode_call_idx)
         and _preflight_hb_idx < _preflight_call_idx
@@ -1480,6 +1483,78 @@ if _entrypoint.exists():
         ok("worker_entrypoint.sh — each heartbeat call precedes its corresponding pipeline stage")
     else:
         err("worker_entrypoint.sh — heartbeat calls must precede preflight/model_downloader/gpu_worker respectively")
+
+    # 33q — persistent-worker support: WORKER_LOOP=true branch exists
+    if _re.search(r'if\s*\[\[\s*"\$\{WORKER_LOOP,,\}"\s*==\s*"true"\s*\]\]', _ep_dbg):
+        ok("worker_entrypoint.sh — has WORKER_LOOP=true branch (persistent worker mode)")
+    else:
+        err('worker_entrypoint.sh — missing `if [[ "${WORKER_LOOP,,}" == "true" ]]` branch')
+
+    # 33r — WORKER_LOOP=true path runs gpu_worker.py --poll --worker-id (not --once)
+    if "--poll" in _ep_dbg and "--worker-id" in _ep_dbg:
+        ok("worker_entrypoint.sh — WORKER_LOOP=true path runs gpu_worker.py --poll --worker-id")
+    else:
+        err("worker_entrypoint.sh — WORKER_LOOP=true path must run gpu_worker.py --poll --worker-id")
+
+    # 33s — JOB_ID is not unconditionally required: its `:?` requirement must be guarded
+    # by (i.e. appear after) a WORKER_LOOP check within the validation section, so
+    # persistent workers (no JOB_ID at container startup) don't crash on boot.
+    _reqval_idx = _ep_dbg.find("# ── Required env validation")
+    _search_from = _reqval_idx if _reqval_idx != -1 else 0
+    _jobid_req_idx = _ep_dbg.find(': "${JOB_ID:?', _search_from)
+    _loop_guard_idx = _ep_dbg.find("WORKER_LOOP", _search_from)
+    if _jobid_req_idx != -1 and _loop_guard_idx != -1 and _loop_guard_idx < _jobid_req_idx:
+        ok("worker_entrypoint.sh — JOB_ID requirement is guarded by WORKER_LOOP (not required in persistent mode)")
+    else:
+        err("worker_entrypoint.sh — JOB_ID must only be required when WORKER_LOOP is not true")
+
+    # 33t — vars that must remain unconditionally required regardless of WORKER_LOOP
+    _always_required = ("BACKEND_API_URL", "WORKER_SECRET", "S3_ENDPOINT_URL",
+                         "S3_ACCESS_KEY_ID", "S3_SECRET_ACCESS_KEY", "S3_BUCKET_NAME",
+                         "S3_REGION", "MODELS_S3_BUCKET")
+    _missing_always = [v for v in _always_required if (': "${' + v + ':?') not in _ep_dbg]
+    if not _missing_always:
+        ok("worker_entrypoint.sh — BACKEND_API_URL/WORKER_SECRET/S3_*/MODELS_S3_BUCKET always required")
+    else:
+        err(f"worker_entrypoint.sh — missing unconditional requirement for: {_missing_always}")
+
+    # 33u — --once --job-id path preserved for non-loop (single-job) mode
+    if "--once" in _ep_dbg and '--job-id "${JOB_ID}"' in _ep_dbg:
+        ok("worker_entrypoint.sh — --once --job-id path preserved for non-loop mode")
+    else:
+        err("worker_entrypoint.sh — must keep --once --job-id path for WORKER_LOOP=false mode")
+
+    # 33v — model_downloader must NOT run before a job is claimed in loop mode (mode
+    # varies per job): the WORKER_LOOP=true branch must exec straight into --poll.
+    _loop_branch_match = _re.search(
+        r'if\s*\[\[\s*"\$\{WORKER_LOOP,,\}"\s*==\s*"true"\s*\]\];\s*then(.*?)else',
+        _ep_dbg, _re.DOTALL,
+    )
+    _loop_branch_text = _loop_branch_match.group(1) if _loop_branch_match else ""
+    if _loop_branch_match and "model_downloader.py" not in _loop_branch_text:
+        ok("worker_entrypoint.sh — WORKER_LOOP=true branch skips model_downloader.py (mode varies per job)")
+    else:
+        err("worker_entrypoint.sh — WORKER_LOOP=true branch must not call model_downloader.py before a job is claimed")
+
+    # 33w — worker_status() is job-scoped: it must skip the API call (never crash, never
+    # call the backend) when JOB_ID is empty, since persistent workers have no JOB_ID
+    # until a job is claimed
+    if _heartbeat_idx != -1:
+        _skip_text_idx = _heartbeat_block.find("status_callback_skip")
+        _python_call_idx = _heartbeat_block.find("python -")
+        _skip_guard_ok = (
+            "status_callback_skip" in _heartbeat_block
+            and "no_job_id" in _heartbeat_block
+            and _skip_text_idx != -1
+            and _python_call_idx != -1
+            and _skip_text_idx < _python_call_idx
+        )
+        if _skip_guard_ok:
+            ok("worker_entrypoint.sh — worker_status() skips the API call (no crash) when JOB_ID is empty")
+        else:
+            err("worker_entrypoint.sh — worker_status() must skip the API call (not crash) when JOB_ID is empty")
+    else:
+        err("worker_entrypoint.sh — cannot verify worker_status() job-scoping (function not found)")
 else:
     err("deploy/docker/worker_entrypoint.sh not found (already checked above)")
 
