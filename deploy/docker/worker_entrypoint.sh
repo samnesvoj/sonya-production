@@ -26,6 +26,14 @@
 #   the vast.ai console before the instance is destroyed/retried.
 #   Default: false (production — exits immediately with the original code).
 #   Turn OFF again once the failure has been diagnosed.
+#
+# Early backend heartbeat (worker_status()):
+#   Posts POST /api/worker/jobs/{JOB_ID}/status to BACKEND_API_URL at each
+#   stage (worker_started → preflight_running → model_downloading →
+#   mode_running) so the backend sees activity even if preflight or model
+#   download hangs/fails before gpu_worker.py makes its own first call.
+#   Best-effort only: failures are logged and swallowed (`|| true`), never
+#   fail the entrypoint, and never print secret values.
 
 set -uo pipefail
 
@@ -101,6 +109,47 @@ log "WORKER_BACKEND_MODE=${WORKER_BACKEND_MODE:-api}"
 : "${S3_REGION:?S3_REGION env var is required}"
 : "${MODELS_S3_BUCKET:?MODELS_S3_BUCKET env var is required}"
 
+# ── Early backend heartbeat ────────────────────────────────────────────────────
+# Posts a best-effort status update to the backend worker API as soon as the
+# entrypoint reaches each stage. This is diagnostic only: if preflight or
+# model download hangs/fails before gpu_worker.py ever starts, the backend
+# still sees SOMETHING (previously it saw nothing until gpu_worker.py itself
+# made its first call). Never fails the entrypoint (`|| true` + internal
+# try/except) and never prints secret values — only the HTTP status code and
+# the status string being reported.
+worker_status() {
+    local status="$1"
+    local progress="${2:-0}"
+    local message="${3:-}"
+    python - <<PY || true
+import json, os, urllib.request
+base = os.environ["BACKEND_API_URL"].rstrip("/")
+job_id = os.environ["JOB_ID"]
+secret = os.environ["WORKER_SECRET"]
+payload = json.dumps({
+    "status": "$status",
+    "progress": int("$progress"),
+    "message": "$message",
+}).encode("utf-8")
+req = urllib.request.Request(
+    f"{base}/api/worker/jobs/{job_id}/status",
+    data=payload,
+    headers={
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {secret}",
+    },
+    method="POST",
+)
+try:
+    with urllib.request.urlopen(req, timeout=15) as r:
+        print("[worker_entrypoint] status_callback", r.status, "$status")
+except Exception as e:
+    print("[worker_entrypoint] status_callback_failed", "$status", repr(e))
+PY
+}
+
+worker_status "worker_started" 1 "entrypoint started"
+
 MODE="${MODE:-trailer_film_breaker}"
 WORKER_BACKEND_MODE="${WORKER_BACKEND_MODE:-api}"
 WORKDIR="/opt/sonya"
@@ -139,18 +188,21 @@ chmod 600 "${ENV_LOCAL}"
 log ".env.local written (mode 600)."
 
 # ── Pre-flight check ───────────────────────────────────────────────────────────
+worker_status "preflight_running" 5 "preflight started"
 log "Running pre-flight check (worker role)..."
 python "${WORKDIR}/scripts/prod_preflight_check.py" --role worker \
     || fail "Pre-flight check failed."
 log "Pre-flight check passed."
 
 # ── Model download ─────────────────────────────────────────────────────────────
+worker_status "model_downloading" 15 "model download started"
 log "Downloading models for MODE=${MODE}..."
 python "${WORKDIR}/scripts/model_downloader.py" --mode "${MODE}" \
     || fail "Model download failed for MODE=${MODE}."
 log "Models ready."
 
 # ── Run worker (exactly once) ──────────────────────────────────────────────────
+worker_status "mode_running" 30 "gpu_worker starting"
 log "Starting gpu_worker.py --once --job-id ${JOB_ID}..."
 python "${WORKDIR}/scripts/gpu_worker.py" \
     --once \

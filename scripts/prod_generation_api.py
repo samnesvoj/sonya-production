@@ -407,9 +407,9 @@ async def worker_update_status(
 ):
     _VALID_STATUSES = {
         "queued", "claimed", "gpu_requested", "gpu_booting", "worker_started",
-        "downloading", "model_downloading", "mode_running", "analyzing", "yolo",
-        "scripting", "tts", "subtitles", "assembling", "uploading_result",
-        "completed", "failed", "cancelled",
+        "preflight_running", "downloading", "model_downloading", "mode_running",
+        "analyzing", "yolo", "scripting", "tts", "subtitles", "assembling",
+        "uploading_result", "completed", "failed", "cancelled",
     }
     if body.status not in _VALID_STATUSES:
         raise HTTPException(status_code=400, detail={"error": "invalid_status"})

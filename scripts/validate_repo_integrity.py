@@ -148,10 +148,32 @@ if not old_status_found: ok("No old statuses (pending/processing/done) found")
 # ── 9. New statuses present ───────────────────────────────────────────────────
 print("\n[9] New status constants in prod_job_store.py")
 store_text = (ROOT / "scripts/prod_job_store.py").read_text(encoding="utf-8", errors="ignore")
-for s in ("queued", "claimed", "completed", "failed",
-          "downloading", "model_downloading", "mode_running", "uploading_result"):
+for s in ("queued", "claimed", "completed", "failed", "worker_started",
+          "preflight_running", "downloading", "model_downloading",
+          "mode_running", "uploading_result"):
     if s in store_text: ok(f"status: {s}")
     else: err(f"Missing status constant: {s}")
+
+# 9a — preflight_running is in the backend's accepted worker-status whitelist and
+# in prod_job_store's active-status list (early entrypoint heartbeat feature —
+# otherwise POST /api/worker/jobs/{id}/status with status=preflight_running
+# always fails with invalid_status, and a job stuck in preflight would never be
+# picked up by the stale-job watchdog).
+_gen_api_text = (ROOT / "scripts/prod_generation_api.py").read_text(encoding="utf-8", errors="ignore") \
+    if (ROOT / "scripts/prod_generation_api.py").exists() else ""
+if '"preflight_running"' in _gen_api_text:
+    ok("prod_generation_api.py — worker_update_status accepts status=preflight_running")
+else:
+    err("prod_generation_api.py — _VALID_STATUSES must include \"preflight_running\" (early heartbeat)")
+if "JOB_STATUS_PREFLIGHT_RUNNING" in store_text and "_ACTIVE_STATUSES" in store_text:
+    _active_block_idx = store_text.find("_ACTIVE_STATUSES")
+    _active_block = store_text[_active_block_idx:_active_block_idx + 400]
+    if "JOB_STATUS_PREFLIGHT_RUNNING" in _active_block:
+        ok("prod_job_store.py — JOB_STATUS_PREFLIGHT_RUNNING included in _ACTIVE_STATUSES (stale-job watchdog coverage)")
+    else:
+        err("prod_job_store.py — JOB_STATUS_PREFLIGHT_RUNNING must be included in _ACTIVE_STATUSES")
+else:
+    err("prod_job_store.py — missing JOB_STATUS_PREFLIGHT_RUNNING constant")
 
 # ── 10. S3 key patterns ────────────────────────────────────────────────────────
 print("\n[10] S3 key patterns")
@@ -1402,6 +1424,62 @@ if _entrypoint.exists():
         ok("worker_entrypoint.sh — no secret values interpolated in banner/trap section")
     else:
         err(f"worker_entrypoint.sh — secret value(s) interpolated in banner/trap section: {_leaked}")
+
+    # 33m — early backend heartbeat: worker_status() helper present, never fails the
+    # entrypoint (`|| true`), and reads secrets from os.environ (never bash-interpolates
+    # WORKER_SECRET into a printed/logged string).
+    if "worker_status()" in _ep_dbg and "PY || true" in _ep_dbg:
+        ok("worker_entrypoint.sh — worker_status() heartbeat helper present, never fails the entrypoint")
+    else:
+        err("worker_entrypoint.sh — missing worker_status() heartbeat helper (must end its heredoc with `|| true`)")
+
+    _heartbeat_def_match = _re.search(r'worker_status\(\)\s*\{', _ep_dbg)
+    _heartbeat_idx = _heartbeat_def_match.start() if _heartbeat_def_match else -1
+    _heartbeat_block = _ep_dbg[_heartbeat_idx:_heartbeat_idx + 1800] if _heartbeat_idx != -1 else ""
+    if '/api/worker/jobs/{job_id}/status' in _heartbeat_block and "WORKER_SECRET" in _heartbeat_block:
+        ok("worker_entrypoint.sh — worker_status() posts to /api/worker/jobs/{job_id}/status with Bearer auth")
+    else:
+        err("worker_entrypoint.sh — worker_status() must POST to /api/worker/jobs/{job_id}/status with WORKER_SECRET auth")
+
+    # 33n — worker_status() never prints the secret value itself (only os.environ lookups
+    # and the HTTP status code / status string are printed)
+    _prints_secret_value = _re.search(r'print\([^)]*\bsecret\b[^)]*\)', _heartbeat_block, _re.IGNORECASE)
+    if _heartbeat_idx != -1 and not _prints_secret_value:
+        ok("worker_entrypoint.sh — worker_status() never prints the WORKER_SECRET value")
+    else:
+        err("worker_entrypoint.sh — worker_status() must never print the WORKER_SECRET value")
+
+    # 33o — heartbeat is called at all four pipeline stages
+    _heartbeat_calls = [
+        'worker_status "worker_started"',
+        'worker_status "preflight_running"',
+        'worker_status "model_downloading"',
+        'worker_status "mode_running"',
+    ]
+    _missing_calls = [c for c in _heartbeat_calls if c not in _ep_dbg]
+    if not _missing_calls:
+        ok("worker_entrypoint.sh — heartbeat called at worker_started/preflight_running/model_downloading/mode_running")
+    else:
+        err(f"worker_entrypoint.sh — missing heartbeat call(s): {_missing_calls}")
+
+    # 33p — heartbeat calls are ordered before their corresponding stage (preflight/model
+    # download/gpu_worker), so the backend hears about a stage before it can hang there
+    _preflight_hb_idx = _ep_dbg.find('worker_status "preflight_running"')
+    _preflight_call_idx = _ep_dbg.find("${WORKDIR}/scripts/prod_preflight_check.py")
+    _model_hb_idx = _ep_dbg.find('worker_status "model_downloading"')
+    _model_call_idx = _ep_dbg.find("${WORKDIR}/scripts/model_downloader.py")
+    _mode_hb_idx = _ep_dbg.find('worker_status "mode_running"')
+    _mode_call_idx = _ep_dbg.find("${WORKDIR}/scripts/gpu_worker.py")
+    _ordered = (
+        -1 not in (_preflight_hb_idx, _preflight_call_idx, _model_hb_idx, _model_call_idx, _mode_hb_idx, _mode_call_idx)
+        and _preflight_hb_idx < _preflight_call_idx
+        and _model_hb_idx < _model_call_idx
+        and _mode_hb_idx < _mode_call_idx
+    )
+    if _ordered:
+        ok("worker_entrypoint.sh — each heartbeat call precedes its corresponding pipeline stage")
+    else:
+        err("worker_entrypoint.sh — heartbeat calls must precede preflight/model_downloader/gpu_worker respectively")
 else:
     err("deploy/docker/worker_entrypoint.sh not found (already checked above)")
 
