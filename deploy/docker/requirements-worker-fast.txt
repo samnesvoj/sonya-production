@@ -3,10 +3,20 @@
 # Runtime dependencies for the fast worker image (sonya-worker:fast).
 #
 # Excluded intentionally (backend-only / dev tools):
-#   fastapi, uvicorn, python-multipart  — API server only
+#   uvicorn, python-multipart          — API server entrypoint only
 #   psycopg2, asyncpg, alembic         — DB layer (worker uses backend API)
 #   pytest, black, mypy, flake8        — dev / CI only
 #   jupyter, notebook, ipykernel       — not needed on GPU worker
+#
+# fastapi IS required here even though the worker never runs an API server:
+# gpu_worker.py imports scripts/security.py (for new_trace_id / trace-id
+# correlation), and scripts/security.py does `from fastapi import Header,
+# HTTPException, Request, status` at module import time. Without fastapi
+# installed, the worker crashes on startup with
+# ModuleNotFoundError: No module named 'fastapi' — even in WORKER_LOOP=true
+# persistent-worker mode. Only the fastapi package itself is needed (no ASGI
+# server); uvicorn/python-multipart remain excluded since nothing in the
+# worker actually serves requests.
 #
 # torch + torchvision are pinned and installed BEFORE this file in the
 # Dockerfile so the CUDA wheel is used; they are omitted here to prevent
@@ -18,6 +28,10 @@ python-dotenv
 pyyaml
 requests
 pydantic
+# required transitively: scripts/security.py imports fastapi at module load
+# time (Header/HTTPException/Request/status), even though the worker doesn't
+# run an API server. See header comment above for the full explanation.
+fastapi
 
 # ── S3 storage ────────────────────────────────────────────────────────────────
 boto3

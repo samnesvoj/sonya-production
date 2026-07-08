@@ -1118,10 +1118,13 @@ else:
     err("deploy/docker/Dockerfile.worker.fast not found")
 
 # 31i — fast requirements file exists and excludes backend-only deps
+# NOTE: fastapi is NOT in this forbidden list — see 31i2 below. It is a
+# required transitive dependency of scripts/security.py (imported by
+# gpu_worker.py), not an "API server only" package in this image.
 if _fast_reqs.exists():
     ok("deploy/docker/requirements-worker-fast.txt exists")
     _frq = _fast_reqs.read_text(encoding="utf-8", errors="ignore")
-    _backend_only = ["fastapi", "uvicorn", "psycopg2", "alembic", "pytest",
+    _backend_only = ["uvicorn", "psycopg2", "alembic", "pytest",
                      "jupyter", "notebook", "ipykernel"]
     # Only flag if uncommented (not on a comment line)
     _found_backend = []
@@ -1134,7 +1137,7 @@ if _fast_reqs.exists():
                 _found_backend.append(_pkg)
                 break
     if not _found_backend:
-        ok("requirements-worker-fast.txt — excludes backend-only deps (fastapi/uvicorn/psycopg2/pytest/jupyter)")
+        ok("requirements-worker-fast.txt — excludes backend-only deps (uvicorn/psycopg2/pytest/jupyter)")
     else:
         err(f"requirements-worker-fast.txt — must not include: {_found_backend}")
 
@@ -1144,6 +1147,56 @@ if _fast_reqs.exists():
         err("requirements-worker-fast.txt — prefer opencv-python-headless over opencv-python")
 else:
     err("deploy/docker/requirements-worker-fast.txt not found")
+
+# 31i2 — fastapi (or an equivalent dependency source) must be installed in the
+# fast worker image, since scripts/security.py — imported by gpu_worker.py via
+# `from scripts.security import new_trace_id` — does
+# `from fastapi import Header, HTTPException, Request, status` at module
+# import time. Without it, the worker crashes on startup with
+# ModuleNotFoundError: No module named 'fastapi' (including in WORKER_LOOP=true
+# persistent-worker mode, which never sets JOB_ID). Accept fastapi listed
+# directly in requirements-worker-fast.txt, OR a -r include of another
+# requirements file (e.g. requirements-base.txt) that itself lists fastapi.
+print("\n-- 31i2. fast worker image installs fastapi (scripts/security.py dependency) --")
+_fastapi_satisfied = False
+_fastapi_source = None
+if _fast_reqs.exists():
+    for _line in _frq.splitlines():
+        _stripped = _line.strip()
+        if _stripped.startswith("#") or not _stripped:
+            continue
+        if _stripped == "fastapi" or _stripped.startswith("fastapi=") \
+                or _stripped.startswith("fastapi>") or _stripped.startswith("fastapi<") \
+                or _stripped.startswith("fastapi["):
+            _fastapi_satisfied = True
+            _fastapi_source = "deploy/docker/requirements-worker-fast.txt"
+            break
+        if _stripped.startswith("-r "):
+            _included = _stripped[3:].strip()
+            _included_path = (_fast_reqs.parent / _included).resolve()
+            if not _included_path.exists():
+                _included_path = (ROOT / _included).resolve()
+            if _included_path.exists():
+                _included_text = _included_path.read_text(encoding="utf-8", errors="ignore")
+                if any(
+                    l.strip() == "fastapi" or l.strip().startswith("fastapi=")
+                    or l.strip().startswith("fastapi>") or l.strip().startswith("fastapi<")
+                    or l.strip().startswith("fastapi[")
+                    for l in _included_text.splitlines()
+                    if not l.strip().startswith("#")
+                ):
+                    _fastapi_satisfied = True
+                    _fastapi_source = f"{_included} (via -r include)"
+                    break
+if _fastapi_satisfied:
+    ok(f"fast worker image installs fastapi — source: {_fastapi_source}")
+else:
+    err(
+        "deploy/docker/requirements-worker-fast.txt does not install fastapi (directly or via "
+        "-r include) — gpu_worker.py imports scripts/security.py, which imports fastapi at "
+        "module load time; the worker will crash with ModuleNotFoundError: No module named "
+        "'fastapi' even in WORKER_LOOP=true persistent-worker mode"
+    )
 
 # 31j — GitHub Actions workflow exists and pushes :fast
 if _fast_workflow.exists():
