@@ -27,6 +27,7 @@ from typing import Optional
 
 from fastapi import HTTPException, Request, status
 
+from scripts.auth_security import SESSION_COOKIE_NAME, hash_session_token
 from scripts.security import new_trace_id
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,18 @@ def _pg_check(key: str, limit: int, window_seconds: int) -> bool:
         return _mem_check(key, limit, window_seconds)
 
 
+def check_rate_limit(key: str, limit: int, window_seconds: int) -> bool:
+    """
+    Public sliding-window rate-limit check, usable outside the FastAPI
+    dependency (e.g. keyed by email/IP parsed from a request body).
+    Returns True if the call is allowed, False if the limit is exceeded.
+    Respects RATE_LIMIT_ENABLED (always returns True when disabled).
+    """
+    if not _RATE_LIMIT_ENABLED:
+        return True
+    return _pg_check(key, limit, window_seconds)
+
+
 # ── FastAPI dependency class ————————————————————————————————————————————————————
 
 class RateLimiter:
@@ -99,7 +112,11 @@ class RateLimiter:
         key_prefix:      Prefix for rate limit key (e.g. "upload", "api")
         limit:           Max requests per window
         window_seconds:  Window size in seconds
-        key_by:          "ip" or "user" — what to rate-limit by
+        key_by:          "ip", "user" (legacy X-User-Id header — DO NOT use
+                          for browser-facing endpoints, it is not a trusted
+                          identity), or "session" (keys by the sonya_session
+                          cookie's token hash — falls back to IP if no
+                          cookie is present).
     """
 
     def __init__(
@@ -118,7 +135,12 @@ class RateLimiter:
         if not _RATE_LIMIT_ENABLED:
             return
 
-        if self.key_by == "user":
+        if self.key_by == "session":
+            token = request.cookies.get(SESSION_COOKIE_NAME)
+            identifier = hash_session_token(token) if token else (
+                request.client.host if request.client else "unknown"
+            )
+        elif self.key_by == "user":
             identifier = request.headers.get("x-user-id", "anonymous")
         else:
             identifier = request.client.host if request.client else "unknown"

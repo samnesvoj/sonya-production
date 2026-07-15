@@ -59,3 +59,9 @@ pip install -r requirements-backend.txt
 python scripts/run_migrations.py
 systemctl restart sonya-api
 ```
+
+## Auth/users layer (passwordless email login)
+
+See `deploy/AUTH_DEPLOYMENT.md` for the full migration steps, required env
+vars (`AUTH_SECRET`, `SMTP_*`), and curl smoke tests for
+`/api/auth/*` and `/api/billing/subscription-status`.

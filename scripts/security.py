@@ -21,6 +21,9 @@ from typing import Optional
 
 from fastapi import Header, HTTPException, Request, status
 
+from scripts import auth_store
+from scripts.auth_security import SESSION_COOKIE_NAME, hash_session_token
+
 logger = logging.getLogger(__name__)
 
 # ── WORKER_SECRET —————————————————————————————————————————————————————————————
@@ -98,6 +101,11 @@ def get_user_id(request: Request) -> str:
     Extract user_id from request.
     Reads X-User-Id header (set by upstream auth gateway / API proxy).
     Raises HTTP 401 if missing.
+
+    NOTE: This is legacy/internal use only (e.g. trusted server-to-server
+    callers). Browser-facing endpoints must NEVER trust this header — use
+    get_current_user() instead, which resolves identity from the
+    sonya_session cookie against the sessions table.
     """
     user_id = request.headers.get("x-user-id", "").strip()
     if not user_id:
@@ -106,6 +114,83 @@ def get_user_id(request: Request) -> str:
             detail={"error": "unauthorized", "trace_id": new_trace_id()},
         )
     return user_id
+
+
+# ── Cookie-session auth (browser-facing) —————————————————————————————————————————
+
+def get_session_token(request: Request) -> Optional[str]:
+    """Read the raw opaque session token from the sonya_session cookie, if present."""
+    token = request.cookies.get(SESSION_COOKIE_NAME)
+    return token.strip() if token else None
+
+
+def get_current_user(request: Request) -> dict:
+    """
+    FastAPI dependency: resolve the authenticated user from the sonya_session
+    cookie. This is the ONLY trusted identity source for browser-facing
+    endpoints — the X-User-Id header is never consulted here.
+
+    Raises HTTP 401 if there is no cookie, the session is unknown/expired/
+    revoked, or the referenced user no longer exists.
+    """
+    trace_id = new_trace_id()
+    token = get_session_token(request)
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "unauthorized", "trace_id": trace_id},
+        )
+
+    token_hash = hash_session_token(token)
+    session = auth_store.get_active_session_by_token_hash(token_hash)
+    if not session:
+        logger.info("[security] session_invalid_or_expired trace_id=%s", trace_id)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "unauthorized", "trace_id": trace_id},
+        )
+
+    user = auth_store.get_user_by_id(session["user_id"])
+    if not user:
+        logger.warning("[security] session_user_missing user_id=%s trace_id=%s",
+                        session["user_id"], trace_id)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"error": "unauthorized", "trace_id": trace_id},
+        )
+
+    return user
+
+
+# ── Origin / Host sanity check ————————————————————————————————————————————————
+
+def verify_browser_origin(request: Request) -> None:
+    """
+    FastAPI dependency for cookie-authenticated, state-changing browser
+    endpoints. SameSite=Lax on the session cookie already blocks most
+    cross-site cookie-bearing requests, but this adds a defense-in-depth
+    check: if an Origin header is present, it must match an allowed origin.
+
+    Requests with no Origin header (e.g. same-origin fetches in some
+    browsers, non-browser API clients) are allowed through — the cookie
+    itself is the primary defense; this only rejects requests that
+    positively claim to originate from a disallowed site.
+    """
+    origin = request.headers.get("origin")
+    if not origin:
+        return
+
+    allowed = set(get_allowed_origins())
+    if "*" in allowed:
+        return
+
+    if origin.rstrip("/") not in {o.rstrip("/") for o in allowed}:
+        trace_id = new_trace_id()
+        logger.warning("[security] origin_rejected origin=%s trace_id=%s", origin, trace_id)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"error": "forbidden_origin", "trace_id": trace_id},
+        )
 
 
 # ── Safe error responses ———————————————————————————————————————————————————————

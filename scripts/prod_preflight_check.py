@@ -29,11 +29,16 @@ import sys
 # ── Required env var groups ────────────────────────────────────────────────────
 
 # Backend (VPS API server) — requires DATABASE_URL
+# NOTE: SMTP_* vars are intentionally NOT required here — the API must still
+# boot without them; /api/auth/request-code fails clearly with 503
+# email_not_configured at request time instead (see scripts/email_sender.py).
 REQUIRED_BACKEND: list[str] = [
     "DATABASE_URL",
     "S3_ACCESS_KEY_ID",
     "S3_SECRET_ACCESS_KEY",
     "WORKER_SECRET",
+    "AUTH_SECRET",
+    "CORS_ORIGINS",
 ]
 
 # Worker in db-mode (legacy, VPS-internal worker with DB access)

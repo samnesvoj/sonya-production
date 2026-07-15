@@ -3,7 +3,9 @@ prod_generation_api.py
 ======================
 Full production FastAPI for SONYA generation pipeline.
 
-Public endpoints (require X-User-Id header from auth gateway):
+Browser endpoints (identity resolved from the sonya_session HttpOnly
+cookie -- see scripts/security.py::get_current_user -- the X-User-Id
+header is never trusted for these):
   GET  /health
   GET  /api/health
   POST /api/generation/jobs
@@ -12,14 +14,22 @@ Public endpoints (require X-User-Id header from auth gateway):
   GET  /api/generation/jobs/{job_id}/result-url
   GET  /api/generation/jobs          (list user jobs)
 
-Worker-internal endpoints (require Authorization: Bearer WORKER_SECRET):
+Auth + billing endpoints (see scripts/auth_routes.py):
+  GET  /api/auth/me
+  POST /api/auth/request-code
+  POST /api/auth/verify-code
+  POST /api/auth/logout
+  GET  /api/billing/subscription-status
+
+Worker-internal endpoints (require Authorization: Bearer WORKER_SECRET --
+unchanged, never cookie/session based):
   POST /api/worker/claim
   POST /api/worker/jobs/{job_id}/status
   POST /api/worker/jobs/{job_id}/complete
   POST /api/worker/jobs/{job_id}/fail
   POST /api/worker/jobs/{job_id}/files
 
-File upload only — no URL-based video fetching via any external tool.
+File upload only -- no URL-based video fetching via any external tool.
 """
 from __future__ import annotations
 
@@ -58,18 +68,21 @@ from scripts.prod_s3_storage import (
     generate_presigned_get_url,
     upload_bytes,
 )
+from scripts.auth_routes import router as auth_router
 from scripts.quota_guard import check_user_quota
 from scripts.rate_limiter import RateLimiter
 from scripts.security import (
     assert_job_owner,
     get_allowed_origins,
-    get_user_id,
+    get_current_user,
     new_trace_id,
     safe_error,
+    verify_browser_origin,
     verify_worker_secret,
 )
 
-# ── Priority table (server-side, from X-User-Plan header) ──────────────────────
+# ── Priority table (server-side, from the authenticated user's plan_type in
+# Postgres -- never from a client-supplied header) ──────────────────────────
 _PLAN_PRIORITY: dict[str, int] = {
     "admin":   1000,
     "pro":      500,
@@ -79,9 +92,9 @@ _PLAN_PRIORITY: dict[str, int] = {
 }
 
 
-def _resolve_priority(request: Request) -> tuple[int, str]:
-    """Return (priority, plan) from X-User-Plan header. Always server-assigned."""
-    plan = (request.headers.get("X-User-Plan") or "unknown").lower().strip()
+def _resolve_priority(user: dict) -> tuple[int, str]:
+    """Return (priority, plan) from the authenticated user's DB record."""
+    plan = (user.get("plan_type") or "unknown").lower().strip()
     if plan not in _PLAN_PRIORITY:
         plan = "unknown"
     return _PLAN_PRIORITY[plan], plan
@@ -106,12 +119,27 @@ app = FastAPI(
     redoc_url=None,
 )
 
+_cors_origins = get_allowed_origins()
+if "*" in _cors_origins:
+    # Session auth relies on cookies -> allow_credentials=True below. Browsers
+    # refuse "*" + credentials anyway, but we fail fast here rather than ship
+    # a CORS config that silently doesn't work / is unsafe if it did.
+    raise RuntimeError(
+        "CORS_ORIGINS='*' cannot be combined with cookie-based session auth "
+        "(allow_credentials=True). Set explicit origins, e.g. "
+        "CORS_ORIGINS=https://sonya-e.com,https://www.sonya-e.com"
+    )
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=get_allowed_origins(),
+    allow_origins=_cors_origins,
+    allow_credentials=True,  # required so the browser sends/receives the sonya_session cookie
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-User-Id", "X-Request-Id"],
 )
+
+# Auth + billing endpoints (see scripts/auth_routes.py)
+app.include_router(auth_router)
 
 # ── Mode registry ——————————————————————————————————————————————————————————————
 
@@ -126,8 +154,8 @@ ALLOWED_MODES = {
 
 # ── Rate limiters ——————————————————————————————————————————————————————————————
 
-_upload_limiter = RateLimiter(key_prefix="upload", limit=20, window_seconds=3600, key_by="user")
-_api_limiter    = RateLimiter(key_prefix="api",    limit=120, window_seconds=60,   key_by="user")
+_upload_limiter = RateLimiter(key_prefix="upload", limit=20, window_seconds=3600, key_by="session")
+_api_limiter    = RateLimiter(key_prefix="api",    limit=120, window_seconds=60,   key_by="session")
 
 # ── Pydantic models ————————————————————————————————————————————————————————————
 
@@ -188,13 +216,16 @@ async def create_generation_job(
     mode: str = Form(...),
     file: UploadFile = File(...),
     params: Optional[str] = Form(None),
+    user: dict = Depends(get_current_user),
+    _origin: None = Depends(verify_browser_origin),
     _rl: None = Depends(_upload_limiter),
 ):
-    user_id  = get_user_id(request)
+    user_id  = str(user["id"])
     trace_id = new_trace_id()
 
-    # Priority assigned server-side — clients cannot override
-    priority, plan = _resolve_priority(request)
+    # Priority assigned server-side, from the authenticated user's plan_type
+    # in Postgres -- clients cannot override this.
+    priority, plan = _resolve_priority(user)
 
     # Mode validation
     if mode not in ALLOWED_MODES:
@@ -304,12 +335,14 @@ async def create_trailer_job(
     request: Request,
     file: UploadFile = File(...),
     params: Optional[str] = Form(None),
+    user: dict = Depends(get_current_user),
+    _origin: None = Depends(verify_browser_origin),
     _rl: None = Depends(_upload_limiter),
 ):
     """Alias: mode=trailer_film_breaker."""
     return await create_generation_job(
         request=request, mode="trailer_film_breaker",
-        file=file, params=params, _rl=None,
+        file=file, params=params, user=user, _origin=None, _rl=None,
     )
 
 
@@ -319,9 +352,10 @@ async def create_trailer_job(
 async def get_generation_job(
     request: Request,
     job_id: str,
+    user: dict = Depends(get_current_user),
     _rl: None = Depends(_api_limiter),
 ):
-    user_id = get_user_id(request)
+    user_id = str(user["id"])
     job = get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail={"error": "not_found", "trace_id": new_trace_id()})
@@ -336,8 +370,9 @@ async def get_result_url(
     request: Request,
     job_id: str,
     expires: int = Query(default=3600, ge=60, le=86400),
+    user: dict = Depends(get_current_user),
 ):
-    user_id = get_user_id(request)
+    user_id = str(user["id"])
     job = get_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail={"error": "not_found", "trace_id": new_trace_id()})
@@ -368,9 +403,10 @@ async def list_jobs(
     limit: int  = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     status_filter: Optional[str] = Query(default=None, alias="status"),
+    user: dict = Depends(get_current_user),
     _rl: None = Depends(_api_limiter),
 ):
-    user_id = get_user_id(request)
+    user_id = str(user["id"])
     jobs = list_user_jobs(user_id, limit=limit, offset=offset, status=status_filter)
     return {"jobs": jobs, "count": len(jobs)}
 
