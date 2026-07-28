@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<!--
+  TODO: финально проверить текст с юристом перед запуском
+  TODO: уточнить точные имена cookie на стороне backend (api.sonya-e.com)
+  TODO: добавить новые cookie при подключении аналитики/маркетинговых пикселей
+-->
+<html lang="ru" data-theme="light">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<meta name="robots" content="index, follow">
+	<title>Политика использования cookies · SONYA</title>
+	<meta name="description" content="Какие cookies использует сервис SONYA и для чего.">
+
+	<link rel="preconnect" href="https://fonts.googleapis.com">
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Unbounded:wght@200;300;400;500;600&display=swap" rel="stylesheet">
+
+	<link rel="stylesheet" href="_legal.css?v=20260507">
+
+	<script>
+		(function () {
+			const t = localStorage.getItem('theme');
+			document.documentElement.setAttribute('data-theme', t || 'light');
+		})();
+	</script>
+</head>
+
+<body>
+	<div class="legal-bg" aria-hidden="true"></div>
+
+	<header class="legal-header">
+		<a class="legal-back" href="/">← На главную</a>
+		<span class="legal-brand">SONYA</span>
+	</header>
+
+	<article class="legal-article">
+		<span class="legal-eyebrow">Документ · 04</span>
+		<h1>Политика использования cookies</h1>
+		<p class="legal-meta">Дата обновления: 7 мая 2026 · Редакция 1.0</p>
+
+		<div class="legal-callout">
+			Сервис SONYA использует минимально необходимый набор cookies. Все они
+			являются <strong>техническими и обязательными</strong> для работы сервиса —
+			в первую очередь для авторизации Пользователя и сохранения настроек темы.
+			Маркетинговые и рекламные cookies не используются.
+		</div>
+
+		<h2 data-num="01">Что такое cookies</h2>
+		<p>
+			Cookies — это небольшие текстовые файлы, которые сайт сохраняет в браузере
+			Пользователя для последующего распознавания этого браузера при повторных
+			запросах. Cookies не содержат исполняемого кода и не могут самостоятельно
+			получать доступ к данным на устройстве Пользователя за пределами назначенной
+			веб-страницы.
+		</p>
+
+		<h2 data-num="02">Какие cookies использует SONYA</h2>
+
+		<h3>2.1. Сессионная cookie авторизации (обязательная)</h3>
+		<ul>
+			<li><strong>Назначение:</strong> идентификация залогиненного Пользователя при работе с API.</li>
+			<li><strong>Откуда устанавливается:</strong> backend сервиса <code>api.sonya-e.com</code> — после успешной верификации одноразового кода.</li>
+			<li><strong>Флаги безопасности:</strong> <code>HttpOnly</code> (недоступна из JavaScript), <code>Secure</code> (передаётся только по HTTPS), <code>SameSite</code>.</li>
+			<li><strong>Срок жизни:</strong> до 30 дней, либо до явного выхода Пользователя.</li>
+			<li><strong>Без неё:</strong> авторизация невозможна, использование сервиса недоступно.</li>
+		</ul>
+
+		<h3>2.2. Cookie темы оформления (служебная)</h3>
+		<ul>
+			<li><strong>Назначение:</strong> сохранение выбранной Пользователем темы (светлая / тёмная) между визитами.</li>
+			<li><strong>Где хранится:</strong> локальное хранилище браузера (<code>localStorage</code>), формально не cookie, но с аналогичной ролью.</li>
+			<li><strong>Срок жизни:</strong> до явной очистки данных браузера Пользователем.</li>
+		</ul>
+
+		<h3>2.3. Сторонние cookies</h3>
+		<p>Сервис не размещает сторонних аналитических, рекламных или маркетинговых cookies.</p>
+		<p>
+			Однако при использовании Telegram WebApp / Telegram-оплаты в браузере
+			Пользователя могут устанавливаться cookies со стороны Telegram —
+			их обработка регулируется политикой Telegram, а не SONYA.
+		</p>
+
+		<h2 data-num="03">Согласие на использование cookies</h2>
+		<p>
+			Поскольку сервис использует только технически необходимые cookies,
+			отдельный cookie-баннер не отображается. Использование сервиса
+			автоматически означает согласие Пользователя с настоящей политикой.
+		</p>
+		<p>
+			Если Пользователь не согласен с использованием cookies, единственный
+			способ исключить их установку — не использовать сервис. Технически
+			без сессионной cookie авторизация невозможна.
+		</p>
+
+		<h2 data-num="04">Управление cookies на стороне Пользователя</h2>
+		<ul>
+			<li>В большинстве браузеров cookies можно очистить через настройки конфиденциальности.</li>
+			<li>Можно полностью отключить приём cookies, но в этом случае сервис не сможет распознать сессию авторизации, и доступ к личному кабинету станет невозможен.</li>
+			<li>При очистке cookies Пользователь будет автоматически разлогинен и должен будет повторно ввести email и одноразовый код для входа.</li>
+		</ul>
+
+		<h2 data-num="05">Изменения политики</h2>
+		<p>
+			В случае подключения новых cookies (например, при добавлении опциональной
+			веб-аналитики) Оператор обязуется обновить настоящий документ и при
+			необходимости запросить отдельное согласие Пользователя.
+		</p>
+
+		<h2 data-num="06">Контакты</h2>
+		<p>
+			Вопросы по cookies и обработке данных направляйте на email:
+			<span class="legal-todo">TODO: privacy email</span>.
+		</p>
+	</article>
+
+	<footer class="legal-footer">
+		<p>
+			© 2026 SONYA · <a href="/legal/terms.html">Пользовательское соглашение</a>
+			· <a href="/legal/privacy.html">Политика конфиденциальности</a>
+			· <a href="/legal/personal-data-consent.html">Согласие на обработку ПД</a>
+			· <a href="/legal/refund.html">Возвраты</a>
+		</p>
+	</footer>
+</body>
+</html>

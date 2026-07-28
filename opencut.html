@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="dark">
+
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+	<meta name="theme-color" content="#0B0907">
+	<title>SONYA Edit — OpenCut</title>
+
+	<script src="https://telegram.org/js/telegram-web-app.js"></script>
+
+	<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"
+		integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA=="
+		crossorigin="anonymous" referrerpolicy="no-referrer" />
+
+	<link rel="preconnect" href="https://fonts.googleapis.com">
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link
+		href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Space+Grotesk:wght@500;600;700&family=Inter:wght@300;400;500;600;700&family=Unbounded:wght@200;300;400;500;600;700&display=swap"
+		rel="stylesheet">
+
+	<style>
+		* {
+			margin: 0;
+			padding: 0;
+			box-sizing: border-box;
+		}
+
+		html, body {
+			width: 100%;
+			height: 100%;
+			overflow: hidden;
+			background: #0B0907;
+			font-family: 'Inter', sans-serif;
+			color: #fff;
+		}
+
+		/* ── Background video (авторский фон SONYA) ── */
+		.cinema-bg {
+			position: fixed;
+			inset: 0;
+			z-index: 0;
+			pointer-events: none;
+		}
+
+		.cinema-bg video {
+			width: 100%;
+			height: 100%;
+			object-fit: cover;
+			opacity: 0.18;
+		}
+
+		.cinema-bg::after {
+			content: '';
+			position: absolute;
+			inset: 0;
+			background: linear-gradient(
+				180deg,
+				rgba(11, 9, 7, 0.72) 0%,
+				rgba(11, 9, 7, 0.35) 40%,
+				rgba(11, 9, 7, 0.55) 100%
+			);
+		}
+
+		/* ── Layout ── */
+		.editor-page {
+			position: relative;
+			z-index: 1;
+			display: flex;
+			flex-direction: column;
+			width: 100%;
+			height: 100vh;
+			height: 100dvh;
+		}
+
+		/* ── Header bar ── */
+		.editor-topbar {
+			flex-shrink: 0;
+			display: flex;
+			align-items: center;
+			gap: 12px;
+			padding: 10px 16px;
+			background: rgba(11, 9, 7, 0.72);
+			backdrop-filter: blur(20px);
+			-webkit-backdrop-filter: blur(20px);
+			border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+		}
+
+		.topbar-back {
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			width: 36px;
+			height: 36px;
+			border-radius: 10px;
+			background: rgba(255, 255, 255, 0.06);
+			border: 1px solid rgba(255, 255, 255, 0.1);
+			color: rgba(255, 255, 255, 0.75);
+			cursor: pointer;
+			flex-shrink: 0;
+			transition: background 0.18s, color 0.18s;
+			text-decoration: none;
+			font-size: 14px;
+		}
+
+		.topbar-back:hover,
+		.topbar-back:active {
+			background: rgba(255, 255, 255, 0.12);
+			color: #fff;
+		}
+
+		.topbar-brand {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			flex: 1;
+			min-width: 0;
+		}
+
+		.topbar-wordmark {
+			font-family: 'Unbounded', sans-serif;
+			font-size: 13px;
+			font-weight: 600;
+			letter-spacing: 0.08em;
+			color: #fff;
+			white-space: nowrap;
+		}
+
+		.topbar-sep {
+			width: 1px;
+			height: 16px;
+			background: rgba(255,255,255,0.18);
+			flex-shrink: 0;
+		}
+
+		.topbar-label {
+			font-family: 'Space Grotesk', sans-serif;
+			font-size: 12px;
+			font-weight: 500;
+			color: rgba(255, 255, 255, 0.55);
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
+
+		.topbar-badge {
+			flex-shrink: 0;
+			font-family: 'Space Grotesk', sans-serif;
+			font-size: 10px;
+			font-weight: 600;
+			letter-spacing: 0.06em;
+			text-transform: uppercase;
+			color: rgba(255,255,255,0.9);
+			background: linear-gradient(135deg, rgba(180,120,255,0.25), rgba(100,160,255,0.18));
+			border: 1px solid rgba(180,120,255,0.3);
+			border-radius: 6px;
+			padding: 3px 8px;
+		}
+
+		/* ── Iframe wrapper ── */
+		.editor-frame-wrap {
+			flex: 1;
+			position: relative;
+			min-height: 0;
+		}
+
+		.editor-iframe {
+			width: 100%;
+			height: 100%;
+			border: none;
+			display: block;
+			background: #111;
+		}
+
+		/* ── Loading overlay ── */
+		.editor-loading {
+			position: absolute;
+			inset: 0;
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+			justify-content: center;
+			gap: 20px;
+			background: rgba(11, 9, 7, 0.9);
+			backdrop-filter: blur(12px);
+			-webkit-backdrop-filter: blur(12px);
+			transition: opacity 0.4s, visibility 0.4s;
+		}
+
+		.editor-loading.hidden {
+			opacity: 0;
+			visibility: hidden;
+		}
+
+		.loading-spinner {
+			width: 44px;
+			height: 44px;
+			border-radius: 50%;
+			border: 2px solid rgba(255,255,255,0.08);
+			border-top-color: rgba(180,120,255,0.75);
+			animation: spin 0.9s linear infinite;
+		}
+
+		@keyframes spin {
+			to { transform: rotate(360deg); }
+		}
+
+		.loading-text {
+			font-family: 'Space Grotesk', sans-serif;
+			font-size: 13px;
+			font-weight: 500;
+			color: rgba(255,255,255,0.55);
+			letter-spacing: 0.03em;
+		}
+
+		/* ── Error state (if iframe blocked) ── */
+		.editor-error {
+			position: absolute;
+			inset: 0;
+			display: none;
+			flex-direction: column;
+			align-items: center;
+			justify-content: center;
+			gap: 16px;
+			padding: 32px;
+			text-align: center;
+			background: rgba(11, 9, 7, 0.92);
+		}
+
+		.editor-error.visible {
+			display: flex;
+		}
+
+		.error-icon {
+			font-size: 40px;
+			color: rgba(255,255,255,0.25);
+		}
+
+		.error-title {
+			font-family: 'Sora', sans-serif;
+			font-size: 18px;
+			font-weight: 700;
+			color: #fff;
+		}
+
+		.error-desc {
+			font-size: 13px;
+			color: rgba(255,255,255,0.55);
+			line-height: 1.6;
+			max-width: 300px;
+		}
+
+		.error-btn {
+			display: inline-flex;
+			align-items: center;
+			gap: 8px;
+			padding: 12px 24px;
+			border-radius: 14px;
+			background: linear-gradient(135deg, rgba(180,120,255,0.22), rgba(100,160,255,0.16));
+			border: 1px solid rgba(180,120,255,0.35);
+			color: #fff;
+			font-family: 'Space Grotesk', sans-serif;
+			font-size: 14px;
+			font-weight: 600;
+			cursor: pointer;
+			text-decoration: none;
+			transition: background 0.18s;
+		}
+
+		.error-btn:hover {
+			background: linear-gradient(135deg, rgba(180,120,255,0.35), rgba(100,160,255,0.28));
+		}
+	</style>
+</head>
+
+<body>
+
+	<!-- Авторский фон SONYA -->
+	<div class="cinema-bg" aria-hidden="true">
+		<video autoplay muted loop playsinline preload="auto"
+			disablepictureinpicture disableremoteplayback>
+			<source src="hf_20260419_161836_77c00607-b936-40e5-b41d-240635ddc9d9 (1).mp4" type="video/mp4">
+		</video>
+	</div>
+
+	<!-- Page layout -->
+	<div class="editor-page">
+
+		<!-- Header bar -->
+		<div class="editor-topbar">
+			<button class="topbar-back" id="btn-back" aria-label="Назад к результатам" title="Назад к результатам">
+				<i class="fa-solid fa-arrow-left"></i>
+			</button>
+			<div class="topbar-brand">
+				<span class="topbar-wordmark">SONYA</span>
+				<span class="topbar-sep" aria-hidden="true"></span>
+				<span class="topbar-label">Editor</span>
+			</div>
+			<span class="topbar-badge">Post-Edit</span>
+		</div>
+
+		<!-- Editor iframe wrapper -->
+		<div class="editor-frame-wrap">
+			<iframe
+				id="opencut-iframe"
+				class="editor-iframe"
+				src=""
+				allow="clipboard-read; clipboard-write; fullscreen"
+				title="OpenCut Editor"
+			></iframe>
+
+			<!-- Loading overlay -->
+			<div class="editor-loading" id="editor-loading">
+				<div class="loading-spinner"></div>
+				<span class="loading-text">Загружаем редактор…</span>
+			</div>
+
+			<!-- Error overlay (shown if iframe fails to load) -->
+			<div class="editor-error" id="editor-error">
+				<i class="fa-solid fa-video-slash error-icon"></i>
+				<p class="error-title">Редактор недоступен</p>
+				<p class="error-desc">
+					Не удалось загрузить OpenCut. Откройте его в браузере, нажав кнопку ниже.
+				</p>
+				<a class="error-btn" id="error-open-btn" href="#" target="_blank" rel="noopener">
+					<i class="fa-solid fa-arrow-up-right-from-square"></i>
+					Открыть в браузере
+				</a>
+			</div>
+		</div>
+
+	</div>
+
+	<script>
+		// ──────────────────────────────────────────────────────
+		// OpenCut URL configuration
+		//
+		// Priority:
+		//   1. URL param  ?editor_url=https://my-opencut.vercel.app
+		//   2. Constant below (set this to your deployed OpenCut URL)
+		// ──────────────────────────────────────────────────────
+		const OPENCUT_DEFAULT_URL = 'https://edit.sonya-e.com';
+
+		const params   = new URLSearchParams(window.location.search);
+		const editorUrl = params.get('editor_url') || OPENCUT_DEFAULT_URL;
+
+		const iframe      = document.getElementById('opencut-iframe');
+		const loading     = document.getElementById('editor-loading');
+		const errorPanel  = document.getElementById('editor-error');
+		const errorOpenBtn = document.getElementById('error-open-btn');
+		const btnBack     = document.getElementById('btn-back');
+
+		// Set iframe source
+		iframe.src = editorUrl;
+		errorOpenBtn.href = editorUrl;
+
+		// Hide loading once iframe loads
+		iframe.addEventListener('load', () => {
+			loading.classList.add('hidden');
+		});
+
+		// Detect blocked iframe after timeout
+		const loadTimeout = setTimeout(() => {
+			if (!loading.classList.contains('hidden')) {
+				loading.style.display = 'none';
+				errorPanel.classList.add('visible');
+			}
+		}, 12000);
+
+		iframe.addEventListener('load', () => {
+			clearTimeout(loadTimeout);
+		});
+
+		// Back button — return to mini app result page
+		btnBack.addEventListener('click', () => {
+			if (document.referrer && document.referrer.includes(location.host)) {
+				history.back();
+			} else {
+				window.location.href = 'index.html';
+			}
+		});
+
+		// Telegram WebApp setup
+		const tg = window.Telegram?.WebApp;
+		if (tg) {
+			tg.ready();
+			tg.expand();
+			// Tell Telegram not to close on swipe (editor needs scroll)
+			if (tg.disableVerticalSwipes) tg.disableVerticalSwipes();
+		}
+	</script>
+
+</body>
+</html>
