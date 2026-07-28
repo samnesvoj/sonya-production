@@ -1,0 +1,322 @@
+/* =========================================================
+   SONYA — legal page shell
+   Shared across /legal/*.html
+   Cosmic gradient bg + glass article card + neat typography
+   Light/dark themes via [data-theme]
+   ========================================================= */
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  min-height: 100%;
+  background: #050507;
+  color: #f4eee2;
+  font-family: 'Inter', system-ui, -apple-system, Segoe UI, sans-serif;
+  font-weight: 400;
+  font-size: 15.5px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+[data-theme="light"] body {
+  background: #f4eee2;
+  color: #1a1410;
+}
+
+/* ─── 1. Cosmic background ─────────────────────────────── */
+.legal-bg {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  overflow: hidden;
+  background:
+    radial-gradient(80% 60% at 50% 20%, rgba(80, 70, 60, 0.32), transparent 60%),
+    radial-gradient(60% 50% at 80% 80%, rgba(40, 50, 80, 0.22), transparent 60%),
+    linear-gradient(180deg, #0a0807 0%, #050507 100%);
+}
+
+[data-theme="light"] .legal-bg {
+  background:
+    radial-gradient(80% 60% at 50% 20%, rgba(255, 230, 200, 0.55), transparent 60%),
+    radial-gradient(60% 50% at 80% 80%, rgba(220, 230, 255, 0.45), transparent 60%),
+    linear-gradient(180deg, #f8f3e8 0%, #ede6d4 100%);
+}
+
+.legal-bg::after {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px);
+  background-size: 3px 3px;
+  opacity: 0.5;
+  mix-blend-mode: screen;
+}
+
+[data-theme="light"] .legal-bg::after { opacity: 0.18; }
+
+/* ─── 2. Header ─────────────────────────────────────────── */
+.legal-header {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px clamp(20px, 4vw, 36px);
+  max-width: 880px;
+  margin: 0 auto;
+}
+
+.legal-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 40px;
+  padding: 0 18px;
+  border-radius: 9999px;
+  background: rgba(0, 0, 0, 0.28);
+  color: rgba(255, 255, 255, 0.85);
+  font-family: 'Unbounded', 'Inter', sans-serif;
+  font-weight: 400;
+  font-size: 12.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-decoration: none;
+  box-shadow:
+    inset -14px -14px 8px -14px rgba(179, 179, 179, 0.55),
+    inset  14px  14px 8px -14px rgba(179, 179, 179, 0.55);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  transition: background 220ms ease, transform 180ms ease;
+}
+
+.legal-back:hover {
+  background: rgba(20, 20, 22, 0.55);
+  transform: translateY(-1px);
+}
+
+[data-theme="light"] .legal-back { color: rgba(20, 14, 8, 0.85); }
+[data-theme="light"] .legal-back:hover { color: #1a1410; }
+
+.legal-brand {
+  font-family: 'Unbounded', 'Inter', sans-serif;
+  font-weight: 300;
+  font-size: 18px;
+  letter-spacing: 0.32em;
+  color: rgba(255, 255, 255, 0.85);
+  text-transform: uppercase;
+}
+
+[data-theme="light"] .legal-brand { color: rgba(20, 14, 8, 0.85); }
+
+/* ─── 3. Article card ───────────────────────────────────── */
+.legal-article {
+  position: relative;
+  z-index: 1;
+  max-width: 880px;
+  margin: 16px auto 64px;
+  padding: clamp(28px, 5vw, 56px) clamp(22px, 5vw, 56px);
+  border-radius: 32px;
+  background: rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  box-shadow:
+    inset -21.48px -21.48px 10.74px -21.48px rgba(179, 179, 179, 0.55),
+    inset  21.48px  21.48px 10.74px -21.48px rgba(179, 179, 179, 0.55),
+    0 30px 80px rgba(0, 0, 0, 0.45),
+    0 8px 24px rgba(0, 0, 0, 0.25);
+}
+
+/* ─── 4. Typography ─────────────────────────────────────── */
+.legal-eyebrow {
+  display: inline-block;
+  font-family: 'Unbounded', 'Inter', sans-serif;
+  font-weight: 400;
+  font-size: 11px;
+  letter-spacing: 0.32em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.55);
+  margin: 0 0 14px;
+}
+
+[data-theme="light"] .legal-eyebrow { color: rgba(20, 14, 8, 0.55); }
+
+.legal-article h1 {
+  font-family: 'Unbounded', 'Inter', sans-serif;
+  font-weight: 300;
+  font-size: clamp(28px, 5vw, 40px);
+  letter-spacing: 0.02em;
+  line-height: 1.1;
+  margin: 0 0 12px;
+  color: #fff;
+}
+
+[data-theme="light"] .legal-article h1 { color: #1a1410; }
+
+.legal-meta {
+  font-size: 13px;
+  font-weight: 400;
+  color: rgba(255, 255, 255, 0.55);
+  margin: 0 0 36px;
+  letter-spacing: 0.02em;
+}
+
+[data-theme="light"] .legal-meta { color: rgba(20, 14, 8, 0.55); }
+
+.legal-article h2 {
+  font-family: 'Unbounded', 'Inter', sans-serif;
+  font-weight: 400;
+  font-size: 20px;
+  letter-spacing: 0.02em;
+  line-height: 1.3;
+  margin: 36px 0 14px;
+  color: #fff;
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+}
+
+.legal-article h2::before {
+  content: attr(data-num);
+  font-family: 'Unbounded', monospace;
+  font-size: 12px;
+  font-weight: 300;
+  color: rgba(255, 220, 170, 0.65);
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+  min-width: 26px;
+}
+
+[data-theme="light"] .legal-article h2 { color: #1a1410; }
+[data-theme="light"] .legal-article h2::before { color: rgba(140, 95, 40, 0.85); }
+
+.legal-article h3 {
+  font-family: 'Inter', sans-serif;
+  font-weight: 600;
+  font-size: 15px;
+  margin: 22px 0 8px;
+  color: rgba(255, 255, 255, 0.92);
+}
+
+[data-theme="light"] .legal-article h3 { color: #1a1410; }
+
+.legal-article p,
+.legal-article li {
+  margin: 0 0 14px;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+[data-theme="light"] .legal-article p,
+[data-theme="light"] .legal-article li { color: rgba(20, 14, 8, 0.85); }
+
+.legal-article ul,
+.legal-article ol {
+  margin: 0 0 16px;
+  padding-left: 22px;
+}
+
+.legal-article li { margin-bottom: 8px; }
+
+.legal-article strong { color: #fff; font-weight: 600; }
+[data-theme="light"] .legal-article strong { color: #1a1410; }
+
+.legal-article a {
+  color: #fff;
+  text-decoration: underline;
+  text-decoration-color: rgba(255, 255, 255, 0.32);
+  text-underline-offset: 3px;
+  transition: text-decoration-color 200ms ease;
+}
+
+.legal-article a:hover { text-decoration-color: rgba(255, 255, 255, 0.85); }
+
+[data-theme="light"] .legal-article a {
+  color: #1a1410;
+  text-decoration-color: rgba(20, 14, 8, 0.32);
+}
+
+[data-theme="light"] .legal-article a:hover {
+  text-decoration-color: rgba(20, 14, 8, 0.85);
+}
+
+/* ─── 5. Highlight blocks ───────────────────────────────── */
+.legal-callout {
+  margin: 18px 0 22px;
+  padding: 16px 22px;
+  border-radius: 18px;
+  background: rgba(0, 0, 0, 0.22);
+  box-shadow:
+    inset -10px -10px 6px -10px rgba(179, 179, 179, 0.32),
+    inset  10px  10px 6px -10px rgba(179, 179, 179, 0.32);
+  font-size: 14px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+[data-theme="light"] .legal-callout {
+  background: rgba(255, 255, 255, 0.32);
+  color: rgba(20, 14, 8, 0.78);
+}
+
+.legal-callout strong { color: #fff; }
+[data-theme="light"] .legal-callout strong { color: #1a1410; }
+
+/* TODO marker — visible reminder */
+.legal-todo {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: rgba(255, 200, 90, 0.22);
+  color: #ffd380;
+  font-family: 'Unbounded', monospace;
+  font-size: 11.5px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+[data-theme="light"] .legal-todo {
+  background: rgba(180, 110, 20, 0.16);
+  color: #8a5a16;
+}
+
+/* ─── 6. Footer ─────────────────────────────────────────── */
+.legal-footer {
+  position: relative;
+  z-index: 2;
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 0 clamp(20px, 4vw, 36px) 32px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.45);
+  text-align: center;
+}
+
+[data-theme="light"] .legal-footer { color: rgba(20, 14, 8, 0.55); }
+
+.legal-footer a { color: inherit; }
+
+/* ─── 7. Mobile ─────────────────────────────────────────── */
+@media (max-width: 640px) {
+  body { font-size: 15px; }
+  .legal-header { padding: 16px; }
+  .legal-brand { font-size: 14px; letter-spacing: 0.28em; }
+  .legal-back { height: 36px; padding: 0 14px; font-size: 11.5px; }
+  .legal-article {
+    margin: 8px 12px 32px;
+    padding: 28px 22px;
+    border-radius: 24px;
+  }
+  .legal-article h1 { font-size: 26px; }
+  .legal-article h2 { font-size: 18px; flex-direction: column; gap: 4px; }
+  .legal-article h2::before { min-width: 0; }
+}
+
+/* ─── 8. Reduced motion ─────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
