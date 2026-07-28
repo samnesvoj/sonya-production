@@ -1,0 +1,862 @@
+<!DOCTYPE html>
+<html lang="ru" data-theme="light">
+
+<head>
+	<meta charset="UTF-8">
+
+	<!-- Theme bootstrap — must run before any CSS is requested/parsed
+	     so the saved theme is applied to <html> before first paint
+	     (prevents a light→dark / dark→light flash on load). -->
+	<script>
+		(function () {
+			try {
+				var t = localStorage.getItem('theme');
+				document.documentElement.setAttribute('data-theme', t || 'light');
+			} catch (e) {
+				document.documentElement.setAttribute('data-theme', 'light');
+			}
+		})();
+	</script>
+
+	<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+	<meta name="theme-color" content="#0B0907">
+	<title>SONYA — Cinematic AI editor</title>
+	<meta name="description"
+		content="SONYA — cinematic AI editor. Из длинного видео — Reels, Shorts и трейлеры.">
+
+
+	<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"
+		integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA=="
+		crossorigin="anonymous" referrerpolicy="no-referrer" />
+
+	<link rel="preconnect" href="https://fonts.googleapis.com">
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link
+		href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Space+Grotesk:wght@500;600;700&family=Inter:wght@300;400;500;600;700&family=Unbounded:wght@200;300;400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap"
+		rel="stylesheet">
+
+	<link rel="stylesheet" href="styles.css?v=20260507">
+
+	<!-- SONYA backend API base. External file → CSP-friendly. -->
+	<script src="config.js?v=20260507"></script>
+</head>
+
+<body>
+	<!-- Ambient background -->
+	<div class="ambient-bg" aria-hidden="true">
+		<div class="ambient-dune ambient-dune--a"></div>
+		<div class="ambient-dune ambient-dune--b"></div>
+		<div class="ambient-dune ambient-dune--c"></div>
+		<div class="ambient-grid"></div>
+		<div class="ambient-vignette"></div>
+		<div class="ambient-noise"></div>
+	</div>
+
+	<!-- Global cinematic video background (covers every page) -->
+	<div class="cinema-stage cinema-stage--global" aria-hidden="true">
+		<video class="cinema-video" id="cinema-video"
+			autoplay muted loop playsinline preload="auto"
+			disablepictureinpicture disableremoteplayback poster=""
+			data-dark-src="hf_20260419_161836_77c00607-b936-40e5-b41d-240635ddc9d9 (1).mp4"
+			data-light-src="bg-light.mp4">
+			<source id="cinema-video-source" src="hf_20260419_161836_77c00607-b936-40e5-b41d-240635ddc9d9 (1).mp4" type="video/mp4">
+		</video>
+		<div class="cinema-overlay cinema-overlay--tint"></div>
+		<div class="cinema-overlay cinema-overlay--gradient"></div>
+		<div class="cinema-overlay cinema-overlay--vignette"></div>
+		<div class="cinema-overlay cinema-overlay--grain"></div>
+	</div>
+
+	<!-- Floating Controls -->
+	<div class="floating-controls floating-controls--left">
+		<button class="profile-btn" id="profile-btn" aria-label="Профиль">
+			<img src="" alt="Profile" id="profile-avatar" class="profile-avatar">
+			<span class="profile-ring" aria-hidden="true"></span>
+		</button>
+	</div>
+
+	<div class="floating-controls floating-controls--right">
+		<!-- Account button + dropdown -->
+		<div class="acct-wrap">
+			<button class="icon-btn acct-btn" id="sonya-account-btn" aria-label="Аккаунт">
+				<i class="fa-solid fa-user"></i>
+			</button>
+			<div class="acct-drop" id="sonya-account-drop"></div>
+		</div>
+
+		<button class="icon-btn theme-toggle" id="theme-toggle" aria-label="Тема">
+			<i class="fa-solid fa-circle-half-stroke"></i>
+		</button>
+		<button class="icon-btn burger-btn" id="menu-toggle" aria-label="Меню">
+			<span></span><span></span><span></span>
+		</button>
+	</div>
+
+	<!-- Brand Menu Overlay -->
+	<div class="menu-overlay" id="menu-overlay">
+		<div class="menu-panel">
+			<div class="menu-header">
+				<span class="menu-eyebrow">Workspace</span>
+				<span class="menu-title">Режим работы</span>
+				<button class="menu-close" id="menu-close" aria-label="Закрыть">
+					<i class="fa-solid fa-xmark"></i>
+				</button>
+			</div>
+			<div class="menu-items">
+				<button class="menu-item active" data-brand-option="sonya">
+					<span class="menu-item-dot"></span>
+					<div class="menu-item-content">
+						<span class="menu-item-title">SONYA</span>
+						<span class="menu-item-subtitle">Cinematic AI editor</span>
+					</div>
+					<span class="menu-item-badge">Live</span>
+			
+			</div>
+		</div>
+	</div>
+
+	<!-- App Container -->
+	<div class="app-container v2">
+
+		<!-- ═══════════════════════════════════════════
+		     PAGE 1 — Cinematic Hero (minimal)
+		     · fullscreen video
+		     · SONYA wordmark
+		     · single glass module (tabs + input + source icons)
+		     · "Посмотреть пример" link
+		═══════════════════════════════════════════ -->
+		<section class="page active cinema-hero cinema-hero--v2" id="page-source">
+
+			<!-- Hero stack (Figma layout) · background video is now global -->
+			<div class="hero2">
+
+				<!-- Wordmark -->
+				<h1 class="hero2-wordmark reveal" style="--rd: 0ms">SONYA</h1>
+
+				<!-- Source tabs: Ссылка / Файл -->
+				<div class="hero2-tabs reveal" style="--rd: 160ms" role="tablist" aria-label="Источник">
+					<button class="hero2-tab mode-btn active" data-mode="url" role="tab" aria-selected="true">
+						<i class="fa-solid fa-link hero2-tab-icon" aria-hidden="true"></i>
+						<span class="hero2-tab-label">Ссылка</span>
+					</button>
+					<button class="hero2-tab mode-btn" data-mode="upload" role="tab" aria-selected="false">
+						<i class="fa-solid fa-folder-open hero2-tab-icon" aria-hidden="true"></i>
+						<span class="hero2-tab-label">Файл</span>
+					</button>
+				</div>
+
+				<!-- Input pill (URL) / File drop -->
+				<div class="hero2-input reveal" style="--rd: 260ms">
+					<div class="input-mode active" id="mode-url">
+						<div class="hero2-input-row">
+							<i class="fa-solid fa-link hero2-input-icon" aria-hidden="true"></i>
+							<input type="url" id="video-url" class="hero2-input-field"
+								placeholder="Вставьте ссылку на видео..." autocomplete="off" spellcheck="false">
+						</div>
+					</div>
+
+					<div class="input-mode" id="mode-upload">
+						<label class="hero2-input-row hero2-input-row--file" id="upload-zone" for="file-input">
+							<i class="fa-solid fa-folder-open hero2-input-icon" aria-hidden="true"></i>
+							<span class="hero2-input-placeholder">Выберите видео-файл</span>
+							<input type="file" id="file-input" accept="video/*" hidden>
+						</label>
+						<div class="hero2-input-row hero2-input-row--file hidden" id="file-info">
+							<i class="fa-solid fa-film hero2-input-icon" aria-hidden="true"></i>
+							<span class="hero2-input-filename" id="file-name"></span>
+							<button class="hero2-input-remove" id="remove-file" aria-label="Удалить">
+								<i class="fa-solid fa-xmark"></i>
+							</button>
+						</div>
+					</div>
+				</div>
+
+				<!-- Source brand dots (YouTube / Twitch / VK) -->
+				<div class="hero2-sources reveal" style="--rd: 340ms" aria-label="Источники">
+					<a class="hero2-source" href="https://www.youtube.com" target="_blank" rel="noopener" aria-label="YouTube">
+						<i class="fa-brands fa-youtube" aria-hidden="true"></i>
+					</a>
+					<a class="hero2-source" href="https://www.twitch.tv" target="_blank" rel="noopener" aria-label="Twitch">
+						<i class="fa-brands fa-twitch" aria-hidden="true"></i>
+					</a>
+					<a class="hero2-source" href="https://vk.com" target="_blank" rel="noopener" aria-label="VK">
+						<i class="fa-brands fa-vk" aria-hidden="true"></i>
+					</a>
+				</div>
+
+				<!-- Primary CTA -->
+				<button class="hero2-cta reveal" style="--rd: 440ms" id="btn-next-1" disabled>
+					<span class="hero2-cta-label">Продолжить</span>
+					<i class="fa-solid fa-arrow-right hero2-cta-arrow" aria-hidden="true"></i>
+				</button>
+
+			</div>
+		</section>
+
+		<!-- ═══════════════════════════════════════════
+		     PAGE 2 — Edit Mode Selection
+		═══════════════════════════════════════════ -->
+		<section class="page" id="page-type">
+			<header class="page-header compact">
+				<button class="btn-back" id="btn-back-2" aria-label="Назад">
+					<i class="fa-solid fa-arrow-left"></i>
+				</button>
+				<div class="step-indicator">
+					<span class="step-indicator-num">02</span>
+					<span class="step-indicator-text">Режим</span>
+				</div>
+			</header>
+
+			<div class="page-content">
+				<div class="section-head">
+					<h2 class="section-title">Режим монтажа</h2>
+					<p class="section-subtitle">AI подберёт моменты под выбранную стратегию</p>
+				</div>
+
+				<!-- Trailer — featured hero option -->
+				<div class="trailer-option">
+					<button class="btn-trailer" id="btn-trailer">
+						<div class="btn-trailer-glow"></div>
+						<div class="btn-trailer-main">
+							<span class="trailer-icon"><i class="fa-solid fa-clapperboard"></i></span>
+							<div class="trailer-info">
+								<span class="trailer-eyebrow">Featured</span>
+								<span class="trailer-title">Cinematic trailer</span>
+								<span class="trailer-desc">60–90 секунд ключевых моментов</span>
+							</div>
+						</div>
+						<span class="trailer-arrow"><i class="fa-solid fa-arrow-right"></i></span>
+					</button>
+				</div>
+
+				<div class="type-divider"><span>или</span></div>
+
+				<div class="type-options">
+					<label class="type-card" data-variant="viral">
+						<input type="radio" name="clip-type" value="viral">
+						<div class="type-card-inner">
+							<div class="type-card-top">
+								<span class="type-icon"><i class="fa-solid fa-fire-flame-curved"></i></span>
+								<span class="type-check"><i class="fa-solid fa-check"></i></span>
+							</div>
+							<div class="type-info">
+								<span class="type-name">Viral</span>
+								<span class="type-desc">Эмоциональные пики · максимум охвата</span>
+							</div>
+						</div>
+					</label>
+
+					<label class="type-card" data-variant="educational">
+						<input type="radio" name="clip-type" value="educational">
+						<div class="type-card-inner">
+							<div class="type-card-top">
+								<span class="type-icon"><i class="fa-solid fa-lightbulb"></i></span>
+								<span class="type-check"><i class="fa-solid fa-check"></i></span>
+							</div>
+							<div class="type-info">
+								<span class="type-name">Educational</span>
+								<span class="type-desc">Инсайты и пошаговые разборы</span>
+							</div>
+						</div>
+					</label>
+
+					<label class="type-card" data-variant="storytelling">
+						<input type="radio" name="clip-type" value="storytelling">
+						<div class="type-card-inner">
+							<div class="type-card-top">
+								<span class="type-icon"><i class="fa-solid fa-book-open"></i></span>
+								<span class="type-check"><i class="fa-solid fa-check"></i></span>
+							</div>
+							<div class="type-info">
+								<span class="type-name">Storytelling</span>
+								<span class="type-desc">Мини-истории с началом и концом</span>
+							</div>
+						</div>
+					</label>
+
+				<label class="type-card" data-variant="hooks">
+					<input type="radio" name="clip-type" value="hooks">
+					<div class="type-card-inner">
+						<div class="type-card-top">
+							<span class="type-icon"><i class="fa-solid fa-bullseye"></i></span>
+							<span class="type-check"><i class="fa-solid fa-check"></i></span>
+						</div>
+						<div class="type-info">
+							<span class="type-name">Hooks</span>
+							<span class="type-desc">Первые 3–5 секунд для захвата</span>
+						</div>
+					</div>
+				</label>
+
+				<label class="type-card" data-variant="streamer" style="grid-column: 1 / -1; width: calc(50% - 6px); margin-inline: auto;">
+					<input type="radio" name="clip-type" value="streamer">
+					<div class="type-card-inner">
+						<div class="type-card-top">
+							<span class="type-icon"><i class="fa-brands fa-twitch"></i></span>
+							<span class="type-check"><i class="fa-solid fa-check"></i></span>
+						</div>
+						<div class="type-info">
+							<span class="type-name">Streamer</span>
+							<span class="type-desc">Лучшие моменты из стримов и длинных видео</span>
+						</div>
+					</div>
+				</label>
+			</div>
+			</div>
+
+			<footer class="page-footer">
+				<button class="btn-primary" id="btn-next-2" disabled>
+					<span class="btn-label">Продолжить</span>
+					<span class="btn-arrow"><i class="fa-solid fa-arrow-right"></i></span>
+				</button>
+			</footer>
+		</section>
+
+	<!-- ═══════════════════════════════════════════
+	     PAGE 3 — SONYA Editor Lite (removed from main flow)
+	     · Kept in DOM for JS id compatibility but not reachable
+	     · Full editor available at opencut.html (post-result step)
+	═══════════════════════════════════════════ -->
+	<section class="page page--editor" id="page-customize" aria-hidden="true" style="display:none!important">
+			<header class="page-header compact editor-header">
+				<button class="btn-back" id="btn-back-3" aria-label="Назад">
+					<i class="fa-solid fa-arrow-left"></i>
+				</button>
+				<div class="step-indicator">
+					<span class="step-indicator-num">03</span>
+					<span class="step-indicator-text">Editor</span>
+				</div>
+				<div class="editor-header-meta">
+					<span class="editor-header-tag"><i class="fa-solid fa-film"></i> Lite</span>
+				</div>
+			</header>
+
+			<div class="page-content editor-lite">
+				<!-- Preview stage -->
+				<div class="editor-stage">
+					<div class="editor-stage-inner">
+						<video class="editor-stage-video" id="editor-preview" muted playsinline loop preload="metadata" poster=""></video>
+						<div class="editor-stage-grid" aria-hidden="true"></div>
+						<button class="editor-stage-play" id="editor-play" type="button" aria-label="Play / Pause">
+							<i class="fa-solid fa-play"></i>
+						</button>
+						<span class="editor-stage-tag"><i class="fa-solid fa-circle"></i> Preview</span>
+						<span class="editor-stage-time" id="editor-time">00:00 / 00:00</span>
+					</div>
+				</div>
+
+				<!-- Mini toolbar -->
+				<div class="editor-toolbar">
+					<div class="editor-toolbar-group">
+						<button class="editor-tool" type="button" data-action="prev" aria-label="Назад 5с"><i class="fa-solid fa-backward"></i></button>
+						<button class="editor-tool editor-tool--primary" type="button" data-action="play" aria-label="Play"><i class="fa-solid fa-play"></i></button>
+						<button class="editor-tool" type="button" data-action="next" aria-label="Вперёд 5с"><i class="fa-solid fa-forward"></i></button>
+					</div>
+					<div class="editor-toolbar-group editor-toolbar-group--tools">
+						<button class="editor-tool" type="button" data-action="split" aria-label="Разделить"><i class="fa-solid fa-scissors"></i></button>
+						<button class="editor-tool" type="button" data-action="trim" aria-label="Обрезать"><i class="fa-solid fa-crop-simple"></i></button>
+						<button class="editor-tool" type="button" data-action="mark" aria-label="Маркер"><i class="fa-solid fa-location-dot"></i></button>
+					</div>
+					<div class="editor-aspect" role="group" aria-label="Соотношение сторон">
+						<button class="editor-aspect-btn is-active" type="button" data-ratio="9:16">9:16</button>
+						<button class="editor-aspect-btn" type="button" data-ratio="1:1">1:1</button>
+						<button class="editor-aspect-btn" type="button" data-ratio="16:9">16:9</button>
+					</div>
+				</div>
+
+				<!-- Timeline -->
+				<div class="editor-timeline">
+					<div class="editor-timeline-ruler" aria-hidden="true">
+						<span>00:00</span><span>00:15</span><span>00:30</span><span>00:45</span><span>01:00</span>
+					</div>
+					<div class="editor-timeline-track">
+						<div class="editor-track-range" style="left:8%; right:18%;"></div>
+						<div class="editor-track-playhead" style="left:34%;"></div>
+						<div class="editor-track-handle editor-track-handle--in" style="left:8%;"><span></span></div>
+						<div class="editor-track-handle editor-track-handle--out" style="right:18%;"><span></span></div>
+					</div>
+					<div class="editor-timeline-clips" aria-hidden="true">
+						<div class="editor-clip editor-clip--a"><span>Intro</span></div>
+						<div class="editor-clip editor-clip--b"><span>Hook</span></div>
+						<div class="editor-clip editor-clip--c"><span>Moment</span></div>
+						<div class="editor-clip editor-clip--d"><span>Outro</span></div>
+					</div>
+				</div>
+
+				<!-- Output control bar (subtitles / voice / language) -->
+				<div class="editor-bar">
+					<!-- Subtitles chip -->
+					<div class="editor-chip">
+						<div class="editor-chip-head">
+							<span class="editor-chip-icon"><i class="fa-solid fa-closed-captioning"></i></span>
+							<div class="editor-chip-body">
+								<span class="editor-chip-label">Субтитры</span>
+								<span class="editor-chip-hint">Kinetic типографика</span>
+							</div>
+							<label class="toggle-switch">
+								<input type="checkbox" id="subtitles-toggle">
+								<span class="toggle-slider"></span>
+							</label>
+						</div>
+						<div class="editor-chip-extra subtitle-styles hidden" id="subtitle-styles">
+							<label class="style-card" data-style="viral">
+								<input type="radio" name="subtitle-style" value="viral" checked>
+								<div class="style-card-inner">
+									<div class="style-preview style-preview--viral">
+										<span class="style-preview-word">Это</span>
+										<span class="style-preview-word style-preview-word--hot">меняет</span>
+										<span class="style-preview-word">всё</span>
+									</div>
+									<div class="style-info">
+										<span class="style-name">Viral</span>
+										<span class="style-desc">Яркие, анимированные</span>
+									</div>
+									<span class="style-check"><i class="fa-solid fa-check"></i></span>
+								</div>
+							</label>
+							<label class="style-card" data-style="minimal">
+								<input type="radio" name="subtitle-style" value="minimal">
+								<div class="style-card-inner">
+									<div class="style-preview style-preview--minimal">
+										<span>Key insight</span>
+									</div>
+									<div class="style-info">
+										<span class="style-name">Minimal</span>
+										<span class="style-desc">Элегантные</span>
+									</div>
+									<span class="style-check"><i class="fa-solid fa-check"></i></span>
+								</div>
+							</label>
+							<label class="style-card" data-style="basic">
+								<input type="radio" name="subtitle-style" value="basic">
+								<div class="style-card-inner">
+									<div class="style-preview style-preview--classic">
+										<span>Простые</span>
+									</div>
+									<div class="style-info">
+										<span class="style-name">Classic</span>
+										<span class="style-desc">Белые внизу</span>
+									</div>
+									<span class="style-check"><i class="fa-solid fa-check"></i></span>
+								</div>
+							</label>
+						</div>
+					</div>
+
+					<!-- Voiceover chip -->
+					<div class="editor-chip">
+						<div class="editor-chip-head">
+							<span class="editor-chip-icon"><i class="fa-solid fa-volume-high"></i></span>
+							<div class="editor-chip-body">
+								<span class="editor-chip-label">Озвучка</span>
+								<span class="editor-chip-hint">AI-голос или дубляж</span>
+							</div>
+							<label class="toggle-switch">
+								<input type="checkbox" id="voiceover-toggle">
+								<span class="toggle-slider"></span>
+							</label>
+						</div>
+						<div class="editor-chip-extra voice-options hidden" id="voice-options">
+							<div class="select-wrap">
+								<i class="fa-solid fa-microphone-lines select-wrap-icon"></i>
+								<select id="voice-select" class="select-field">
+									<option value="male-1">Мужской · уверенный</option>
+									<option value="female-1">Женский · тёплый</option>
+									<option value="male-2">Мужской · низкий</option>
+									<option value="female-2">Женский · мягкий</option>
+								</select>
+								<i class="fa-solid fa-chevron-down select-wrap-chevron"></i>
+							</div>
+						</div>
+					</div>
+
+					<!-- Language chip (compact, always visible) -->
+					<div class="editor-chip editor-chip--lang">
+						<div class="editor-chip-head editor-chip-head--static">
+							<span class="editor-chip-icon"><i class="fa-solid fa-language"></i></span>
+							<div class="editor-chip-body">
+								<span class="editor-chip-label">Язык</span>
+								<span class="editor-chip-hint">Авто-детект или перевод</span>
+							</div>
+						</div>
+						<div class="language-options">
+							<label class="language-card">
+								<input type="radio" name="language" value="none" checked>
+								<div class="language-inner">
+									<span class="lang-flag"><i class="fa-solid fa-wand-magic-sparkles"></i></span>
+									<span class="lang-name">Авто</span>
+								</div>
+							</label>
+							<label class="language-card">
+								<input type="radio" name="language" value="ru">
+								<div class="language-inner">
+									<span class="lang-flag">RU</span>
+									<span class="lang-name">Русский</span>
+								</div>
+							</label>
+							<label class="language-card">
+								<input type="radio" name="language" value="en">
+								<div class="language-inner">
+									<span class="lang-flag">EN</span>
+									<span class="lang-name">English</span>
+								</div>
+							</label>
+						</div>
+					</div>
+				</div>
+			</div>
+
+			<footer class="page-footer">
+				<button class="btn-primary btn-generate" id="btn-generate">
+					<span class="btn-icon"><i class="fa-solid fa-wand-magic-sparkles"></i></span>
+					<span class="btn-label">Запустить AI</span>
+					<span class="btn-arrow"><i class="fa-solid fa-arrow-right"></i></span>
+				</button>
+			</footer>
+		</section>
+
+		<!-- ═══════════════════════════════════════════
+		     PAGE 4 — Processing · 3D cinematic loading
+		═══════════════════════════════════════════ -->
+		<section class="page" id="page-processing">
+			<div class="processing-content">
+				<div class="sonya-sphere-wrap" aria-hidden="true">
+					<canvas id="sonya-sphere"></canvas>
+				</div>
+
+				<div class="processing-hero">
+					<h2 class="processing-title">Собираем монтаж</h2>
+					<p class="processing-status" id="processing-status">Инициализация…</p>
+
+					<div class="processing-progress">
+						<div class="progress-bar" id="progress-bar"></div>
+					</div>
+				</div>
+			</div>
+		</section>
+
+		<!-- ═══════════════════════════════════════════
+		     PAGE 5 — Result Dashboard
+		═══════════════════════════════════════════ -->
+		<section class="page" id="page-result">
+			<header class="page-header page-header--result">
+				<div class="result-header-left">
+					<h1 class="result-headline">Готово</h1>
+					<p class="result-sub">Short-form готов к экспорту</p>
+				</div>
+				<span class="success-pill">
+					<i class="fa-solid fa-circle-check"></i>
+					Complete
+				</span>
+			</header>
+
+			<div class="page-content result-content">
+
+				<div class="result-grid">
+					<!-- Trailer-style hero card -->
+					<div class="result-card result-card--hero">
+						<div class="result-card-thumb">
+							<div class="result-card-thumb-glow"></div>
+							<span class="result-card-play"><i class="fa-solid fa-play"></i></span>
+							<span class="result-card-ratio">16:9 · Trailer</span>
+							<span class="result-card-duration">01:12</span>
+						</div>
+						<div class="result-card-body">
+							<h3 class="result-card-title">Cinematic trailer</h3>
+							<div class="result-card-metrics">
+								<span class="score-badge"><i class="fa-solid fa-bolt"></i> Virality 92</span>
+								<span class="score-badge score-badge--soft"><i class="fa-solid fa-eye"></i> Hook 87</span>
+							</div>
+						</div>
+					</div>
+
+	
+					<!-- Archive -->
+					<div class="result-card result-card--archive">
+						<div class="result-archive-stats">
+							<div class="result-stat">
+								<span class="stat-value" id="result-count">—</span>
+								<span class="stat-label">клипов</span>
+							</div>
+							<div class="result-stat">
+								<span class="stat-value" id="result-size">—</span>
+								<span class="stat-label">архив</span>
+							</div>
+						</div>
+						<button class="btn-primary btn-download" id="btn-download">
+							<span class="btn-icon"><i class="fa-solid fa-file-zipper"></i></span>
+							<span class="btn-label">Скачать архив</span>
+						</button>
+					</div>
+
+				</div>
+
+				<!-- Editor Handoff — premium product feature -->
+				<section class="handoff-card">
+					<div class="handoff-glow" aria-hidden="true"></div>
+					<div class="handoff-body">
+						<span class="handoff-eyebrow">Continue editing</span>
+						<h3 class="handoff-title">Доработать в редакторе</h3>
+						<p class="handoff-desc">
+							Таймлайн, склейки, субтитры и тайминги — в полноценном video editor.
+						</p>
+						<ul class="handoff-features">
+							<li><i class="fa-solid fa-scissors"></i> Frame-accurate cuts</li>
+							<li><i class="fa-solid fa-closed-captioning"></i> Caption tuning</li>
+							<li><i class="fa-solid fa-sliders"></i> Color & audio</li>
+						</ul>
+					</div>
+					<button class="handoff-cta" id="btn-open-editor" type="button">
+						<span>Доработать в редакторе</span>
+						<i class="fa-solid fa-arrow-right"></i>
+					</button>
+				</section>
+			</div>
+
+			<footer class="page-footer">
+				<button class="btn-secondary" id="btn-new-project">
+					<i class="fa-solid fa-rotate-right"></i>
+					<span>Новый проект</span>
+				</button>
+			</footer>
+		</section>
+
+	</div><!-- /.app-container -->
+
+	<!-- ═══════════════════════════════════════════
+	     Modals
+	═══════════════════════════════════════════ -->
+	<div class="profile-modal-overlay" id="profile-modal-overlay">
+		<div class="profile-modal">
+			<button class="profile-modal-close" id="profile-modal-close" aria-label="Закрыть">
+				<i class="fa-solid fa-xmark"></i>
+			</button>
+
+			<div class="profile-header">
+				<div class="profile-avatar-wrap">
+					<img src="" alt="Profile" id="profile-modal-avatar" class="profile-modal-avatar">
+					<span class="profile-avatar-glow"></span>
+				</div>
+				<h3 class="profile-name" id="profile-name">Загрузка…</h3>
+				<span class="profile-username" id="profile-username">@username</span>
+			</div>
+
+			<div class="profile-status">
+				<div class="profile-status-badge" id="profile-status-badge">
+					<span class="status-icon">⭐</span>
+					<span class="status-text" id="profile-status-text">FREE</span>
+				</div>
+				<div class="profile-role" id="profile-role" style="display:none;"></div>
+			</div>
+
+			<div class="profile-info">
+				<div class="profile-info-item">
+					<span class="profile-info-label">User ID</span>
+					<span class="profile-info-value" id="profile-id">—</span>
+				</div>
+			</div>
+
+			<div class="profile-subscription">
+				<div class="subscription-header">
+					<div>
+						<span class="subscription-eyebrow">Plan</span>
+						<h4 class="subscription-title">Ваша подписка</h4>
+					</div>
+					<div class="subscription-info-wrapper">
+						<span class="subscription-hint">Тарифы</span>
+						<button class="subscription-info-btn" id="subscription-info-btn" aria-label="Тарифы">
+							<span class="info-icon-small">i</span>
+						</button>
+					</div>
+				</div>
+				<div class="subscription-current" id="subscription-current">
+					<div class="subscription-plan-name" id="subscription-plan-name">Free Plan</div>
+					<div class="subscription-limits" id="subscription-limits">
+						<div class="limit-item">
+							<span class="limit-label">Клипов в месяц</span>
+							<span class="limit-value">2</span>
+						</div>
+						<div class="limit-item">
+							<span class="limit-label">Длительность</span>
+							<span class="limit-value">до 30 сек</span>
+						</div>
+						<div class="limit-item">
+							<span class="limit-label">Водяной знак</span>
+							<span class="limit-value">SONYA</span>
+						</div>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<!-- ═══════════════════════════════════════════
+	     AUTH MODAL  ·  SONYA glass
+	═══════════════════════════════════════════ -->
+	<div class="sonya-auth-overlay" id="sonya-auth-overlay" aria-hidden="true">
+		<div class="sonya-auth-card" role="dialog" aria-modal="true" aria-label="Вход / Регистрация">
+
+			<button class="sonya-auth-close" id="sonya-auth-close" type="button" aria-label="Закрыть">
+				<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+					<path d="M5 5l14 14M19 5L5 19" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+				</svg>
+			</button>
+
+			<div class="sonya-auth-tabs" role="tablist">
+				<span class="sonya-auth-tabs-glow" aria-hidden="true"></span>
+				<button class="sonya-auth-tab is-active" data-auth-tab="login" type="button" role="tab">Войти</button>
+				<button class="sonya-auth-tab" data-auth-tab="register" type="button" role="tab">Регистрация</button>
+			</div>
+
+			<!-- Optional banner -->
+			<p class="sonya-auth-banner" id="sonya-auth-banner" hidden></p>
+
+			<!-- LOGIN VIEW -->
+			<section class="sonya-auth-view is-active" data-auth-view="login">
+				<h2 class="sonya-auth-title">Войти в SONYA</h2>
+				<p class="sonya-auth-subtitle">Введите email — мы отправим код для входа</p>
+
+				<div class="sonya-auth-field">
+					<svg class="sonya-auth-field-ic" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+						<path d="M3 7a2 2 0 012-2h14a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" fill="none" stroke="currentColor" stroke-width="1.6"/>
+						<path d="M3 7l9 6 9-6" fill="none" stroke="currentColor" stroke-width="1.6"/>
+					</svg>
+					<input id="sonya-login-email" class="sonya-auth-input"
+						type="email" placeholder="your@email.com" autocomplete="email" inputmode="email" />
+				</div>
+
+				<button class="sonya-auth-cta" id="sonya-login-code-btn" type="button">
+					<span>Получить код</span>
+					<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+						<path d="M5 12h14M13 5l7 7-7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+					</svg>
+				</button>
+
+				<div class="sonya-auth-switch">
+					Нет аккаунта?
+					<button type="button" data-switch-auth="register">Создать аккаунт</button>
+				</div>
+			</section>
+
+			<!-- REGISTER VIEW -->
+			<section class="sonya-auth-view" data-auth-view="register">
+				<h2 class="sonya-auth-title">Создать аккаунт SONYA</h2>
+				<p class="sonya-auth-subtitle">Получите 1 бесплатную генерацию видео</p>
+
+				<div class="sonya-auth-field">
+					<svg class="sonya-auth-field-ic" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+						<path d="M3 7a2 2 0 012-2h14a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V7z" fill="none" stroke="currentColor" stroke-width="1.6"/>
+						<path d="M3 7l9 6 9-6" fill="none" stroke="currentColor" stroke-width="1.6"/>
+					</svg>
+					<input id="sonya-register-email" class="sonya-auth-input"
+						type="email" placeholder="your@email.com" autocomplete="email" inputmode="email" />
+				</div>
+
+				<div class="sonya-auth-consents">
+					<label class="sonya-auth-consent">
+						<input type="checkbox" name="terms_of_service" />
+						<span class="sonya-auth-check" aria-hidden="true"></span>
+						<span class="sonya-auth-consent-text">
+							Я принимаю
+							<a href="/legal/terms.html" target="_blank" rel="noopener">Пользовательское соглашение</a>
+						</span>
+					</label>
+					<label class="sonya-auth-consent">
+						<input type="checkbox" name="privacy_policy" />
+						<span class="sonya-auth-check" aria-hidden="true"></span>
+						<span class="sonya-auth-consent-text">
+							Я ознакомлен(а) с
+							<a href="/legal/privacy.html" target="_blank" rel="noopener">Политикой конфиденциальности</a>
+						</span>
+					</label>
+					<label class="sonya-auth-consent">
+						<input type="checkbox" name="personal_data_processing" />
+						<span class="sonya-auth-check" aria-hidden="true"></span>
+						<span class="sonya-auth-consent-text">
+							Я даю согласие на
+							<a href="/legal/personal-data-consent.html" target="_blank" rel="noopener">обработку персональных данных</a>
+						</span>
+					</label>
+				</div>
+
+				<button class="sonya-auth-cta" id="sonya-register-code-btn" type="button">
+					<span>Получить код</span>
+					<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+						<path d="M5 12h14M13 5l7 7-7 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+					</svg>
+				</button>
+
+				<div class="sonya-auth-switch">
+					Уже есть аккаунт?
+					<button type="button" data-switch-auth="login">Войти</button>
+				</div>
+			</section>
+
+			<!-- CODE VIEW -->
+			<section class="sonya-auth-view" data-auth-view="code">
+				<h2 class="sonya-auth-title">Введите код</h2>
+				<p class="sonya-auth-subtitle" id="sonya-code-subtitle">Мы отправили код подтверждения на ваш email</p>
+
+				<div class="sonya-auth-field sonya-auth-field--code">
+					<input id="sonya-code-input" class="sonya-auth-input sonya-auth-input--code"
+						type="text" inputmode="numeric" maxlength="6" pattern="\d{6}"
+						autocomplete="one-time-code" placeholder="000000" />
+				</div>
+
+				<button class="sonya-auth-cta" id="sonya-verify-code-btn" type="button">
+					<span>Подтвердить</span>
+					<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+						<path d="M5 12l5 5L20 7" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+					</svg>
+				</button>
+
+				<div class="sonya-auth-switch sonya-auth-switch--row">
+					<button type="button" id="sonya-auth-back">← Изменить email</button>
+					<button type="button" id="sonya-auth-resend">Отправить код повторно</button>
+				</div>
+			</section>
+
+			<!-- Inline error -->
+			<p class="sonya-auth-error" id="sonya-auth-error" hidden></p>
+
+			<div class="sonya-auth-footer">
+				<span class="sonya-auth-footer-dot" aria-hidden="true"></span>
+				<span>Мы не передаём ваши данные третьим лицам · <a href="/legal/privacy.html" target="_blank" rel="noopener">Политика конфиденциальности</a></span>
+			</div>
+		</div>
+	</div>
+
+	<!-- ═══════════════════════════════════════════
+	     PAYWALL MODAL
+	═══════════════════════════════════════════ -->
+	<div class="sonya-modal-overlay" id="sonya-paywall-modal" role="dialog" aria-modal="true">
+		<div class="sonya-modal paywall-modal">
+			<button class="sonya-modal-close" id="paywall-modal-close" aria-label="Закрыть">
+				<i class="fa-solid fa-xmark"></i>
+			</button>
+			<div class="paywall-icon"><i class="fa-solid fa-bolt"></i></div>
+			<h2 class="paywall-title">Free Plan использован</h2>
+			<p class="paywall-desc">Подключите SONYA Pro на 30 дней — без автопродления, генерируйте видео без ограничений.</p>
+			<div class="paywall-price">
+				<span class="paywall-price-value">500 ₽</span>
+				<span class="paywall-price-period">/ 30 дней</span>
+			</div>
+			<div class="paywall-features">
+				<span><i class="fa-solid fa-check"></i> Неограниченные видео</span>
+				<span><i class="fa-solid fa-check"></i> Все режимы монтажа</span>
+				<span><i class="fa-solid fa-check"></i> Приоритетная обработка</span>
+			</div>
+			<button class="paywall-tg-btn" id="paywall-tg-btn" type="button">
+				<i class="fa-brands fa-telegram"></i> Оплатить в Telegram
+			</button>
+			<button class="paywall-later-btn" id="paywall-later-btn" type="button">Позже</button>
+		</div>
+	</div>
+
+	<!-- Three.js for cinematic 3D sphere on processing page -->
+	<script src="app.js?v=202607261605"></script>
+	<script type="module" src="sphere.js?v=202607261620"></script>
+	<script src="auth.js?v=202607261335"></script>
+</body>
+
+</html>
