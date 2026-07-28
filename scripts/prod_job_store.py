@@ -328,8 +328,27 @@ def claim_next_pending_job(
         conn.close()
 
 
+# Statuses from which a job may still be claimed by the worker the GPU
+# dispatcher already provisioned an instance for. The dispatcher sets
+# status=gpu_requested (mark_gpu_requested) immediately after requesting an
+# ephemeral instance -- well before that instance boots and its worker gets
+# a chance to call /api/worker/claim. If only 'queued' were accepted here,
+# the claim would always find 0 matching rows and the job would get stuck
+# in gpu_requested until the startup-SLA timeout destroys the instance and
+# blacklists the (innocent) host. gpu_booting is included for the same
+# reason even though nothing sets it today.
+_CLAIMABLE_STATUSES = (JOB_STATUS_QUEUED, JOB_STATUS_GPU_REQUESTED, JOB_STATUS_GPU_BOOTING)
+
+
 def claim_specific_job(job_id: str, worker_id: str) -> Optional[Dict[str, Any]]:
-    """Claim a specific queued job. Returns None if not claimable."""
+    """
+    Claim a specific job by ID. Returns None if not claimable.
+
+    Accepts status in _CLAIMABLE_STATUSES (not just 'queued') -- see comment
+    above. Also stamps worker_started_at atomically with the claim, so
+    get_stale_gpu_requested_jobs() correctly stops treating this job as an
+    unclaimed/stuck startup once a worker has actually checked in.
+    """
     conn = _get_conn()
     try:
         with conn:
@@ -337,16 +356,17 @@ def claim_specific_job(job_id: str, worker_id: str) -> Optional[Dict[str, Any]]:
                 cur.execute(
                     """
                     UPDATE generation_jobs
-                    SET status     = %s,
-                        worker_id  = %s,
-                        claimed_at = %s,
-                        started_at = %s,
-                        updated_at = %s
-                    WHERE id = %s AND status = %s
+                    SET status            = %s,
+                        worker_id         = %s,
+                        claimed_at        = %s,
+                        started_at        = %s,
+                        worker_started_at = %s,
+                        updated_at        = %s
+                    WHERE id = %s AND status = ANY(%s)
                     RETURNING *
                     """,
-                    (JOB_STATUS_CLAIMED, worker_id, _now(), _now(), _now(),
-                     job_id, JOB_STATUS_QUEUED),
+                    (JOB_STATUS_CLAIMED, worker_id, _now(), _now(), _now(), _now(),
+                     job_id, list(_CLAIMABLE_STATUSES)),
                 )
                 row = cur.fetchone()
                 return dict(row) if row else None
