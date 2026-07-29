@@ -636,6 +636,80 @@ function requestZipDownload() {
 }
 
 // =====================================================
+// Job Submission — single-flight guard
+// =====================================================
+// btnNext2 and btnGenerate are two separate UI entry points that both do
+// the exact same thing: create a generation job and start polling. Without
+// a shared, synchronous lock, a fast double-click (or click + Enter) on
+// either button fires two independent async handlers, each calling
+// checkAndCreateVideoJob() -> POST /api/generation/jobs, before the first
+// one's await has a chance to resolve. submitGenerationJob() is the single
+// function every trigger (click, Enter) must go through; the lock is set
+// synchronously, before the first await, so a second call in the same
+// event-loop tick is a guaranteed no-op.
+
+let jobSubmitInFlight = false;
+
+function setGenerateButtonsBusy(busy) {
+        [elements.btnNext2, elements.btnGenerate].forEach(btn => {
+                if (!btn) return;
+                if (busy) {
+                        if (btn.dataset.origText === undefined) {
+                                btn.dataset.origText = btn.textContent;
+                        }
+                        btn.disabled = true;
+                        btn.textContent = 'Создаём задачу…';
+                } else {
+                        btn.disabled = false;
+                        if (btn.dataset.origText !== undefined) {
+                                btn.textContent = btn.dataset.origText;
+                                delete btn.dataset.origText;
+                        }
+                }
+        });
+}
+
+// Called once the job reaches a terminal state (completed/failed/cancelled
+// — see SONYA_REAL_POLLING_PATCH_V2 below) or the user starts a new
+// project. Re-enables the buttons for the next submission.
+function resetGenerationLock() {
+        jobSubmitInFlight = false;
+        setGenerateButtonsBusy(false);
+}
+
+async function submitGenerationJob() {
+        if (jobSubmitInFlight) return; // synchronous check — no await above this line
+        jobSubmitInFlight = true;
+        setGenerateButtonsBusy(true);
+
+        try {
+                const formData = collectFormData();
+
+                // checkAndCreateVideoJob is defined in auth.js (loaded after app.js)
+                const result = (typeof checkAndCreateVideoJob === 'function')
+                        ? await checkAndCreateVideoJob(formData)
+                        : 'ok';
+
+                if (result !== 'ok') {
+                        // Auth/paywall modal opened, or a validation/network error —
+                        // unlock so the user can retry.
+                        resetGenerationLock();
+                        return;
+                }
+
+                if (tg) sendDataToBot(formData);
+                showPage('processing');
+                simulateProcessing();
+                // Lock stays held on success — released by resetGenerationLock()
+                // once polling sees the job reach a terminal state, or by
+                // btnNewProject's reset handler.
+        } catch (err) {
+                console.error('[SONYA] job submission failed', err);
+                resetGenerationLock();
+        }
+}
+
+// =====================================================
 // Event Listeners
 // =====================================================
 
@@ -845,19 +919,12 @@ function initEventListeners() {
 
         // Navigation - Page 2 → Processing
         // New flow: check auth + POST /api/videos/create before starting.
-        elements.btnNext2.addEventListener('click', async () => {
-                const formData = collectFormData();
-
-                // checkAndCreateVideoJob is defined in auth.js (loaded after app.js)
-                if (typeof checkAndCreateVideoJob === 'function') {
-                        const result = await checkAndCreateVideoJob(formData);
-                        if (result !== 'ok') return; // auth/paywall modal opened, or error
-                }
-
-                // Only reach here on backend 202
-                if (tg) sendDataToBot(formData);
-                showPage('processing');
-                simulateProcessing();
+        // Routed through submitGenerationJob() — the single-flight guard —
+        // so a double-click or a click racing an Enter press never fires a
+        // second POST /api/generation/jobs.
+        elements.btnNext2.addEventListener('click', submitGenerationJob);
+        elements.btnNext2.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') submitGenerationJob();
         });
 
         // Navigation - Back buttons
@@ -887,18 +954,11 @@ function initEventListeners() {
         });
 
         // Generate button (page 3 / editor flow)
-        // Same backend check as btnNext2.
-        elements.btnGenerate.addEventListener('click', async () => {
-                const formData = collectFormData();
-
-                if (typeof checkAndCreateVideoJob === 'function') {
-                        const result = await checkAndCreateVideoJob(formData);
-                        if (result !== 'ok') return;
-                }
-
-                if (tg) sendDataToBot(formData);
-                showPage('processing');
-                simulateProcessing();
+        // Same submitGenerationJob() single-flight guard as btnNext2 — both
+        // buttons lead to the exact same job-creation call.
+        elements.btnGenerate.addEventListener('click', submitGenerationJob);
+        elements.btnGenerate.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') submitGenerationJob();
         });
 
         // Download ZIP button
@@ -907,6 +967,7 @@ function initEventListeners() {
         // New project button
         elements.btnNewProject.addEventListener('click', () => {
                 // Reset state
+                resetGenerationLock();
                 elements.videoUrlInput.value = '';
                 appState.uploadedFile = null;
                 removeFile();
@@ -1142,16 +1203,37 @@ document.addEventListener('DOMContentLoaded', init);
     return { res, data };
   }
 
+  // Backend-controlled URL (S3 presigned result link) must never be trusted
+  // as-is: only an absolute https: URL, or a same-origin URL (any scheme
+  // the page itself is already served over), is allowed. Rejects
+  // javascript:, data:, vbscript:, and any malformed value -- those get an
+  // opaque/null URL.origin from the URL constructor, which can never equal
+  // window.location.origin, so both branches below fail closed.
+  function isSafeResultUrl(rawUrl) {
+    if (typeof rawUrl !== 'string' || !rawUrl.trim()) return false;
+    let parsed;
+    try {
+      parsed = new URL(rawUrl, window.location.href);
+    } catch (_) {
+      return false;
+    }
+    if (parsed.protocol === 'https:') return true;
+    if (parsed.origin === window.location.origin) return true;
+    return false;
+  }
+
   function showRealResult(result, job) {
     localStorage.removeItem('sonya_active_job_id');
+    if (typeof resetGenerationLock === 'function') resetGenerationLock();
 
-    const url =
+    const rawUrl =
       result.url ||
       result.result_url ||
       result.download_url ||
       result.presigned_url ||
       result.signed_url ||
       '';
+    const url = isSafeResultUrl(rawUrl) ? rawUrl : '';
 
     window.SONYA_LAST_RESULT_URL = url;
     window.SONYA_LAST_COMPLETED_JOB = job;
@@ -1168,17 +1250,50 @@ document.addEventListener('DOMContentLoaded', init);
       document.body.appendChild(box);
     }
 
+    // Rebuild contents via DOM APIs only -- never innerHTML with anything
+    // derived from the backend response. url has already been validated by
+    // isSafeResultUrl(); .src/.href are plain property assignments (never
+    // parsed as markup), not string concatenation into an HTML template.
+    while (box.firstChild) box.removeChild(box.firstChild);
+
     if (url) {
-      box.innerHTML =
-        '<div style="font-size:22px;margin-bottom:14px;">Видео готово</div>' +
-        '<video src="' + url + '" controls style="width:100%;max-height:520px;border-radius:16px;background:#000;"></video>' +
-        '<div style="margin-top:16px;">' +
-        '<a href="' + url + '" target="_blank" rel="noopener" style="color:#fff;text-decoration:underline;font-size:18px;">Скачать видео</a>' +
-        '</div>';
+      const title = document.createElement('div');
+      title.style.cssText = 'font-size:22px;margin-bottom:14px;';
+      title.textContent = 'Видео готово';
+
+      const video = document.createElement('video');
+      video.controls = true;
+      video.style.cssText = 'width:100%;max-height:520px;border-radius:16px;background:#000;';
+      video.src = url;
+
+      const linkWrap = document.createElement('div');
+      linkWrap.style.cssText = 'margin-top:16px;';
+      const link = document.createElement('a');
+      link.href = url;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      link.style.cssText = 'color:#fff;text-decoration:underline;font-size:18px;';
+      link.textContent = 'Скачать видео';
+      linkWrap.appendChild(link);
+
+      box.appendChild(title);
+      box.appendChild(video);
+      box.appendChild(linkWrap);
     } else {
-      box.innerHTML = '<div style="font-size:20px;">Видео готово, но ссылка результата не найдена. Job: ' + (pickJobId(job) || '') + '</div>';
+      const msg = document.createElement('div');
+      msg.style.cssText = 'font-size:20px;';
+      msg.textContent = rawUrl
+        ? 'Видео готово, но получена небезопасная ссылка на результат. Обратитесь в поддержку. Job: ' + (pickJobId(job) || '')
+        : 'Видео готово, но ссылка результата не найдена. Job: ' + (pickJobId(job) || '');
+      box.appendChild(msg);
     }
   }
+
+  // Reentrancy guard: btnNext2/btnGenerate (via simulateProcessing) AND the
+  // DOMContentLoaded resume-from-localStorage check below can both try to
+  // start a poll for the same (or a different) job. Never run two polling
+  // loops concurrently — the second call is a no-op while one is active.
+  let pollInFlight = false;
 
   async function pollJob(jobId) {
     if (!jobId) {
@@ -1186,34 +1301,42 @@ document.addEventListener('DOMContentLoaded', init);
       return;
     }
 
+    if (pollInFlight) return;
+    pollInFlight = true;
+
     localStorage.setItem('sonya_active_job_id', jobId);
     setText('Видео в очереди');
 
-    for (let i = 0; i < 720; i++) {
-      const { res, data: job } = await getJson(API_BASE + '/generation/jobs/' + jobId);
+    try {
+      for (let i = 0; i < 720; i++) {
+        const { res, data: job } = await getJson(API_BASE + '/generation/jobs/' + jobId);
 
-      if (!res.ok) {
-        setText('Ждём статус задачи...');
+        if (!res.ok) {
+          setText('Ждём статус задачи...');
+          await new Promise(r => setTimeout(r, 5000));
+          continue;
+        }
+
+        const st = String(job.status || '').toLowerCase();
+        setText(statusText(job));
+
+        if (st === 'completed') {
+          const result = await getJson(API_BASE + '/generation/jobs/' + jobId + '/result-url');
+          showRealResult(result.data || {}, job);
+          return;
+        }
+
+        if (st === 'failed' || st === 'cancelled') {
+          localStorage.removeItem('sonya_active_job_id');
+          if (typeof resetGenerationLock === 'function') resetGenerationLock();
+          setText(job.error || job.last_error || 'Ошибка генерации');
+          return;
+        }
+
         await new Promise(r => setTimeout(r, 5000));
-        continue;
       }
-
-      const st = String(job.status || '').toLowerCase();
-      setText(statusText(job));
-
-      if (st === 'completed') {
-        const result = await getJson(API_BASE + '/generation/jobs/' + jobId + '/result-url');
-        showRealResult(result.data || {}, job);
-        return;
-      }
-
-      if (st === 'failed' || st === 'cancelled') {
-        localStorage.removeItem('sonya_active_job_id');
-        setText(job.error || job.last_error || 'Ошибка генерации');
-        return;
-      }
-
-      await new Promise(r => setTimeout(r, 5000));
+    } finally {
+      pollInFlight = false;
     }
 
     setText('Задача ещё выполняется. Обновите страницу позже.');
