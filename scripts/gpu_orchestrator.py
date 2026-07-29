@@ -14,8 +14,30 @@ GPU_ORCHESTRATOR_MODE selects which backend creates the GPU instance:
 
 This module is NOT a worker and does NOT generate video.
 It only requests creation of a temporary GPU instance for a single job.
-The instance runs deploy/gpu/bootstrap_worker_once.sh, processes the job,
-uploads the result to S3, then shuts itself down.
+The instance runs the worker image (deploy/docker/worker_entrypoint.sh in
+production; the legacy deploy/gpu/bootstrap_worker_once.sh in the git-clone
+fallback path only), processes the job, and uploads the result to S3.
+
+The instance is NOT self-destroying in the production Docker-image path —
+nothing inside the container calls Vast's Destroy Instance API or shuts the
+host down after a successful job. Explicit destroy on the orchestrator side
+is cleanup_instance_for_terminal_job() below, called once a job reaches a
+terminal state; today it is a no-op in production because the live GPU is
+manually managed (see prod_job_store.get_ephemeral_contract_id() and
+GPU_MANAGED_BY_VAST_EPHEMERAL). destroy_vast_instance() is also called
+directly by gpu_dispatcher.cleanup_stale_gpu_requests() on a startup-SLA
+timeout, independent of job success.
+
+cleanup_instance_for_terminal_job() has two callers: an immediate FastAPI
+BackgroundTask right after a job goes terminal (fast path — see
+prod_generation_api._cleanup_ephemeral_instance), and
+gpu_dispatcher.reconcile_gpu_instance_cleanup() on every dispatcher tick
+(durable path — re-derived from Postgres, so it survives the API process
+crashing/restarting between the terminal-status commit and the
+BackgroundTask running, and retries any destroy that previously failed).
+Both share the same idempotent function and the same cleanup-confirmation
+state (orchestrator_payload.gpu_cleanup_status), so a confirmed destroy is
+never re-attempted regardless of which path got there first.
 
 ────────────────────────────────────────────────────────────────────────────────
 Common env vars
@@ -146,6 +168,12 @@ import logging
 import os
 import re
 from typing import Any, Dict, List, Optional, Tuple
+
+from scripts.prod_job_store import (
+    get_ephemeral_contract_id,
+    mark_gpu_instance_cleanup_destroyed,
+    mark_gpu_instance_cleanup_error,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1525,6 +1553,13 @@ def _trigger_vast(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
                 "machine_id": _get_offer_machine_id(offer),
                 "offer_ip": _get_offer_ip(offer),
                 "raw_response": sanitized_body,
+                # Explicit ownership stamp -- this is the ONLY place in the codebase
+                # that writes it. prod_job_store.get_ephemeral_contract_id() requires
+                # this exact value before it will ever hand back a contract_id for
+                # cleanup_instance_for_terminal_job() to destroy. A manually-managed
+                # persistent worker never goes through mark_gpu_requested(), so its
+                # jobs never carry this stamp and are never eligible for auto-destroy.
+                "gpu_managed_by": "vast_ephemeral",
             }
 
         logger.warning(
@@ -1545,14 +1580,25 @@ def _trigger_vast(job_id: str, mode: str) -> Tuple[bool, Dict[str, Any]]:
 
 def destroy_vast_instance(contract_id: str) -> bool:
     """
-    Destroy (cancel) a vast.ai instance by contract id — production startup SLA.
+    Destroy (cancel) a vast.ai instance by contract id.
 
-    Called by gpu_dispatcher.cleanup_stale_gpu_requests() when a worker fails
-    to report in within VAST_STARTUP_TIMEOUT_SEC, so a single slow instance
-    never runs (and bills) indefinitely.
+    Two callers:
+      - gpu_dispatcher.cleanup_stale_gpu_requests() when a worker fails to
+        report in within VAST_STARTUP_TIMEOUT_SEC, so a single slow instance
+        never runs (and bills) indefinitely.
+      - cleanup_instance_for_terminal_job() below, once a dispatcher-owned
+        job reaches a terminal state (completed/failed/cancelled).
 
-    Never raises. Returns True on a confirmed HTTP-ok response, False
-    otherwise (including missing contract_id / VAST_API_KEY / network error).
+    Idempotent: destroying an already-destroyed/unknown contract_id gets a
+    404 from Vast, which is treated as a SUCCESS (the desired end state —
+    "no instance running" — already holds), not a failure. Any other
+    non-ok response (auth error, 5xx, timeout, network error) is a real
+    failure. Calling this more than once for the same contract_id is
+    always safe either way.
+
+    Never raises. Returns True when the instance is confirmed gone (2xx, or
+    404 = already destroyed/not found), False otherwise (including missing
+    contract_id / VAST_API_KEY / network error / any other non-ok status).
     On failure the caller logs a warning and proceeds with job retry/failure
     regardless — a destroy failure must never block the job from moving on.
 
@@ -1582,6 +1628,14 @@ def destroy_vast_instance(contract_id: str) -> bool:
             )
             return True
 
+        if resp.status_code == 404:
+            logger.info(
+                "vast_instance_already_gone contract_id=%s http=404 — "
+                "treating as successful cleanup",
+                contract_id,
+            )
+            return True
+
         logger.warning(
             "vast_destroy_failed contract_id=%s http=%d body=%s",
             contract_id, resp.status_code, resp.text[:300],
@@ -1590,6 +1644,76 @@ def destroy_vast_instance(contract_id: str) -> bool:
     except Exception as exc:
         logger.warning("vast_destroy_exception contract_id=%s exc=%s", contract_id, exc)
         return False
+
+
+def cleanup_instance_for_terminal_job(job: Dict[str, Any]) -> bool:
+    """
+    Best-effort destroy of the vast.ai ephemeral instance backing `job`, now
+    that it has reached a terminal state (completed/failed/cancelled).
+
+    This is the future automatic lifecycle's cleanup step:
+        job -> request GPU -> create Vast instance -> run worker image
+        -> download models -> run job -> upload result -> explicit destroy (here)
+
+    It is currently a no-op in production: the live GPU is a manually
+    provisioned, persistently-running worker, never provisioned through
+    mark_gpu_requested(), so prod_job_store.get_ephemeral_contract_id()
+    never returns a contract_id for its jobs. This function only ever acts
+    on a job whose orchestrator_payload was stamped gpu_managed_by=
+    "vast_ephemeral" by _trigger_vast() above -- i.e. a job the automatic
+    dispatcher itself provisioned. Enabling that path in production is a
+    separate, explicit config change (AUTO_GPU_TRIGGER_ENABLED=true), not a
+    side effect of this function existing.
+
+    Two callers share this exact function, so the idempotency/state-recording
+    behavior below is identical either way:
+      - The FastAPI worker /complete and /fail endpoints, as an immediate
+        BackgroundTask (fast path) right after the terminal status commits.
+      - gpu_dispatcher.reconcile_gpu_instance_cleanup() on every dispatcher
+        tick (durable retry path — covers the fast path never having run,
+        e.g. the API process crashed/restarted before the BackgroundTask
+        executed, and covers retrying a previous destroy failure).
+
+    After a destroy attempt, records the outcome in orchestrator_payload via
+    prod_job_store.mark_gpu_instance_cleanup_destroyed/_error (same JSONB
+    column already used for contract_id/gpu_managed_by — no schema change).
+    On success this stops get_terminal_jobs_pending_gpu_cleanup() from
+    returning the job again, so a confirmed destroy is never re-attempted
+    on a later tick. On failure the job stays a candidate for the next tick
+    to retry. Recording itself is best-effort: a failure to persist (e.g. DB
+    briefly unreachable) is logged and swallowed, never raised — it only
+    costs a redundant (idempotent, safe) retry next tick, not correctness.
+
+    Fail-safe and side-effect-free on JOB STATUS: never raises, never
+    touches status/completed_at/failed_at, and returns False for anything
+    not eligible (manually-owned GPU, unknown/missing ownership stamp,
+    non-terminal job, or a Vast API failure) — a destroy failure must never
+    turn a completed job into a failed one. Safe to call more than once for
+    the same job (see destroy_vast_instance's idempotency note above).
+    """
+    contract_id = get_ephemeral_contract_id(job)
+    if not contract_id:
+        return False
+
+    job_id = job.get("id")
+    destroyed = destroy_vast_instance(contract_id)
+
+    try:
+        if job_id is not None:
+            if destroyed:
+                mark_gpu_instance_cleanup_destroyed(str(job_id))
+            else:
+                mark_gpu_instance_cleanup_error(
+                    str(job_id),
+                    f"vast destroy failed for contract_id={contract_id}",
+                )
+    except Exception as exc:
+        logger.warning(
+            "gpu_cleanup_state_persist_failed job_id=%s contract_id=%s exc=%s",
+            job_id, contract_id, exc,
+        )
+
+    return destroyed
 
 
 def trigger_gpu_for_job(

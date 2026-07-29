@@ -40,11 +40,12 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
+import scripts.gpu_orchestrator as orchestrator
 from scripts.prod_job_store import (
     JOB_STATUS_QUEUED,
     JOB_STATUS_CLAIMED,
@@ -453,10 +454,35 @@ async def worker_update_status(
     return {"ok": True, "job_id": job_id, "status": body.status}
 
 
+def _cleanup_ephemeral_instance(job: Optional[Dict[str, Any]]) -> None:
+    """
+    Best-effort destroy of the vast.ai instance backing a job that just
+    reached a terminal state. Runs as a FastAPI background task, strictly
+    after the job's terminal status is already committed to Postgres, so a
+    destroy failure here can never turn a completed job into a failed one.
+
+    No-op for anything not explicitly stamped gpu_managed_by="vast_ephemeral"
+    -- see prod_job_store.get_ephemeral_contract_id() for the ownership
+    rule. That covers the current production config entirely: the live GPU
+    is manually managed and never carries that stamp, so this is always a
+    no-op today. Never raises.
+    """
+    if not job:
+        return
+    try:
+        orchestrator.cleanup_instance_for_terminal_job(job)
+    except Exception as exc:
+        logger.warning(
+            "[api] ephemeral_instance_cleanup_failed job_id=%s exc=%s",
+            job.get("id"), exc,
+        )
+
+
 @app.post("/api/worker/jobs/{job_id}/complete")
 async def worker_complete_job(
     job_id: str,
     body: JobCompleteRequest,
+    background_tasks: BackgroundTasks,
     _auth: None = Depends(verify_worker_secret),
 ):
     trace_id = new_trace_id()
@@ -472,6 +498,7 @@ async def worker_complete_job(
           job_id=job_id, trace_id=trace_id,
           details={"clip_count": body.clip_count, "processing_ms": body.processing_ms})
     logger.info("[api] job_completed job_id=%s clips=%s ms=%s", job_id, body.clip_count, body.processing_ms)
+    background_tasks.add_task(_cleanup_ephemeral_instance, job)
     return {"ok": True, "job_id": job_id}
 
 
@@ -479,6 +506,7 @@ async def worker_complete_job(
 async def worker_fail_job(
     job_id: str,
     body: JobFailRequest,
+    background_tasks: BackgroundTasks,
     _auth: None = Depends(verify_worker_secret),
 ):
     trace_id = new_trace_id()
@@ -493,6 +521,7 @@ async def worker_fail_job(
           job_id=job_id, trace_id=trace_id,
           details={"error_code": body.error_code, "retry": body.retry})
     logger.warning("[api] job_failed job_id=%s code=%s retry=%s", job_id, body.error_code, body.retry)
+    background_tasks.add_task(_cleanup_ephemeral_instance, job)
     return {"ok": True, "job_id": job_id}
 
 

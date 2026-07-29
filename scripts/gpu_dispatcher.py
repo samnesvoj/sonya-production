@@ -7,8 +7,10 @@ Runs on the VPS as a systemd service.  Polls PostgreSQL for queued jobs and
 calls gpu_orchestrator to request an ephemeral GPU instance for each one.
 
 No GPU compute happens here.  The dispatcher only decides *when* to fire a
-webhook; the GPU instance is created by the orchestrator (n8n / provider API)
-and destroys itself automatically after the job finishes.
+webhook; the GPU instance is created by the orchestrator (n8n / provider API).
+It is NOT self-destroying after the job finishes — reconcile_gpu_instance_
+cleanup() below explicitly destroys it once the job reaches a terminal state
+(see scripts/gpu_orchestrator.py's module docstring for the full picture).
 
 Usage:
     python scripts/gpu_dispatcher.py           # continuous loop (systemd)
@@ -32,6 +34,15 @@ Production startup SLA (Vast cold-start protection):
     the host, and requeues/fails the job so a single slow instance never
     blocks the production queue. See scripts/gpu_orchestrator.py and
     scripts/vast_bad_hosts.py for the full policy.
+
+    reconcile_gpu_instance_cleanup() also runs on every pass (loop and
+    --once), independent of AUTO_GPU_TRIGGER_ENABLED. It is the durable
+    retry path for destroying an ephemeral instance after a SUCCESSFUL job —
+    the immediate FastAPI BackgroundTask fast path (see
+    prod_generation_api.py) can be lost if the API process restarts before
+    it runs. Always a no-op today: it only ever acts on a job explicitly
+    stamped gpu_managed_by="vast_ephemeral", which the current manually-
+    managed production GPU never carries.
 """
 from __future__ import annotations
 
@@ -50,6 +61,7 @@ from scripts.prod_job_store import (
     count_active_gpu_jobs,
     get_next_queued_job_for_dispatch,
     get_stale_gpu_requested_jobs,
+    get_terminal_jobs_pending_gpu_cleanup,
     lock_job_for_dispatch,
     mark_gpu_request_failed,
     mark_gpu_requested,
@@ -189,6 +201,59 @@ def _cleanup_one_stale_job(job: dict) -> None:
     )
 
 
+def reconcile_gpu_instance_cleanup() -> int:
+    """
+    Durable retry path for cleanup_instance_for_terminal_job().
+
+    The FastAPI worker /complete and /fail endpoints already trigger that
+    same function as an immediate BackgroundTask right after a job goes
+    terminal (fast path). A BackgroundTask is only a best-effort in-process
+    callback, though — if the API process crashes or restarts between
+    committing the terminal status and running the task, the instance is
+    never destroyed and nothing retries it from that side. The same gap
+    exists if a previous destroy attempt simply failed (Vast API error).
+
+    This is the trusted-side backstop: on every tick it re-derives candidates
+    straight from Postgres (durable, survives API restarts) via
+    get_terminal_jobs_pending_gpu_cleanup() — terminal status, explicitly
+    gpu_managed_by="vast_ephemeral", contract_id present, not yet confirmed
+    destroyed — and calls the exact same idempotent
+    cleanup_instance_for_terminal_job() used by the fast path. Manually-
+    managed and unknown-ownership jobs are never candidates; there is no
+    query result for the reconciler to act on for them.
+
+    Once a destroy is confirmed, cleanup_instance_for_terminal_job() records
+    that in orchestrator_payload.gpu_cleanup_status, so the next tick's
+    query no longer returns the job — no repeated Vast API calls for
+    already-cleaned-up jobs.
+
+    Never raises — a single bad row must not crash the dispatcher loop.
+    Returns the number of candidate jobs processed this tick (attempted,
+    not necessarily destroyed — a failure just leaves the job for the next
+    tick to retry).
+    """
+    try:
+        candidates = get_terminal_jobs_pending_gpu_cleanup()
+    except Exception as exc:
+        logger.error("reconcile_gpu_instance_cleanup_query_failed exc=%s", exc)
+        return 0
+
+    for job in candidates:
+        job_id = str(job.get("id"))
+        try:
+            destroyed = orchestrator.cleanup_instance_for_terminal_job(job)
+            logger.info(
+                "reconcile_gpu_instance_cleanup job_id=%s destroyed=%s",
+                job_id, destroyed,
+            )
+        except Exception as exc:
+            logger.error(
+                "reconcile_gpu_instance_cleanup_job_error job_id=%s exc=%s", job_id, exc
+            )
+
+    return len(candidates)
+
+
 # ── Core dispatch logic ────────────────────────────────────────────────────────
 
 def _dispatch_one() -> bool:
@@ -275,6 +340,10 @@ def run_loop() -> None:
             if cleaned:
                 logger.info("dispatcher_cleanup stale_jobs_processed=%d", cleaned)
 
+            reconciled = reconcile_gpu_instance_cleanup()
+            if reconciled:
+                logger.info("dispatcher_reconcile_cleanup jobs_processed=%d", reconciled)
+
             if AUTO_GPU_TRIGGER_ENABLED:
                 _dispatch_one()
             else:
@@ -297,6 +366,10 @@ def run_once() -> int:
     cleaned = cleanup_stale_gpu_requests()
     if cleaned:
         logger.info("dispatcher_cleanup stale_jobs_processed=%d", cleaned)
+
+    reconciled = reconcile_gpu_instance_cleanup()
+    if reconciled:
+        logger.info("dispatcher_reconcile_cleanup jobs_processed=%d", reconciled)
 
     if not AUTO_GPU_TRIGGER_ENABLED:
         logger.warning("AUTO_GPU_TRIGGER_ENABLED=false — no GPU will be triggered")

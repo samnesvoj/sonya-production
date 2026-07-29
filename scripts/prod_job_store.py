@@ -29,6 +29,20 @@ Functions:
 GPU dispatcher / Vast startup SLA (migration 006 + 007):
   get_stale_gpu_requested_jobs  find jobs stuck past VAST_STARTUP_TIMEOUT_SEC
   mark_gpu_startup_timeout      requeue (another offer) or fail a timed-out job
+
+GPU instance ownership / cleanup (future automatic lifecycle — see
+gpu_orchestrator.cleanup_instance_for_terminal_job and
+gpu_dispatcher.reconcile_gpu_instance_cleanup; disabled today because the
+current production GPU is manually managed, not dispatcher-provisioned):
+  get_ephemeral_contract_id           contract_id to destroy for a terminal
+                                       job, or None if not a dispatcher-owned
+                                       instance
+  mark_gpu_instance_cleanup_destroyed record a confirmed destroy (incl. 404)
+  mark_gpu_instance_cleanup_error     record a failed destroy attempt
+  get_terminal_jobs_pending_gpu_cleanup
+                                       dispatcher reconciliation candidates —
+                                       terminal + vast_ephemeral + not yet
+                                       confirmed destroyed
 """
 from __future__ import annotations
 
@@ -70,6 +84,30 @@ _ACTIVE_STATUSES = (
     JOB_STATUS_YOLO, JOB_STATUS_SCRIPTING, JOB_STATUS_TTS, JOB_STATUS_SUBTITLES,
     JOB_STATUS_ASSEMBLING, JOB_STATUS_UPLOADING_RESULT,
 )
+
+_TERMINAL_STATUSES = (JOB_STATUS_COMPLETED, JOB_STATUS_FAILED, JOB_STATUS_CANCELLED)
+
+# GPU instance ownership — stamped into orchestrator_payload.gpu_managed_by
+# by gpu_orchestrator._trigger_vast() ONLY when the automatic dispatcher
+# provisions a per-job ephemeral vast.ai instance. The current production
+# GPU is a manually-provisioned, persistently-running worker
+# (WORKER_LOOP=true) that claims jobs itself via claim_next_pending_job() —
+# it never goes through mark_gpu_requested(), so its jobs' orchestrator_payload
+# is always empty and this stamp never appears for them. See
+# get_ephemeral_contract_id() below, which is the single source of truth for
+# "is this job's GPU safe to destroy automatically".
+GPU_MANAGED_BY_VAST_EPHEMERAL = "vast_ephemeral"
+
+# Cleanup confirmation, stored in the SAME orchestrator_payload JSONB column
+# (no schema migration needed — JSONB has no fixed key set). Written by
+# gpu_orchestrator.cleanup_instance_for_terminal_job() after every destroy
+# attempt, read by get_terminal_jobs_pending_gpu_cleanup() so the dispatcher's
+# reconciliation pass stops re-attempting a job once destroy is confirmed.
+# Absence of gpu_cleanup_status (or any value other than "destroyed") is
+# always treated as "not yet confirmed — retry-eligible", which covers both
+# "never attempted" and "attempted and failed" with the same retry behavior.
+GPU_CLEANUP_STATUS_DESTROYED = "destroyed"
+GPU_CLEANUP_STATUS_ERROR = "error"
 
 # ── DB helpers —————————————————————————————————————————————————————————————————
 
@@ -710,6 +748,143 @@ def mark_gpu_startup_timeout(
         job_id, result.get("status"), result.get("attempts"), result.get("max_attempts"),
     )
     return result
+
+
+# ── GPU instance ownership / cleanup ─────────────────────────────────────────
+
+def _parse_orchestrator_payload(job: Dict[str, Any]) -> Dict[str, Any]:
+    payload = job.get("orchestrator_payload") or {}
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except (TypeError, ValueError):
+            return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def get_ephemeral_contract_id(job: Dict[str, Any]) -> Optional[str]:
+    """
+    Return the vast.ai contract_id whose ephemeral instance should be
+    destroyed now that `job` has reached a terminal state, or None if it
+    must NOT be destroyed.
+
+    Fail-safe by construction — returns None (never destroy) unless ALL of:
+      - job["status"] is terminal (completed/failed/cancelled). A job still
+        mid-flight is never a candidate, no matter what its payload says.
+      - job["orchestrator_payload"]["gpu_managed_by"] == GPU_MANAGED_BY_VAST_EPHEMERAL
+        — stamped only by gpu_orchestrator._trigger_vast(). Any other value,
+        or the key missing entirely (manually-managed GPU, or orchestrator_payload
+        itself missing/null/unparseable), returns None.
+      - a contract_id is present in that payload.
+
+    Never raises — a malformed payload (bad JSON, wrong type) is treated the
+    same as "no payload", i.e. never destroy. This is the single source of
+    truth for "is this job's GPU instance safe to destroy automatically";
+    callers must not destroy based on any other signal.
+    """
+    if job.get("status") not in _TERMINAL_STATUSES:
+        return None
+    payload = _parse_orchestrator_payload(job)
+    if payload.get("gpu_managed_by") != GPU_MANAGED_BY_VAST_EPHEMERAL:
+        return None
+    contract_id = payload.get("contract_id")
+    return str(contract_id) if contract_id else None
+
+
+def _merge_orchestrator_payload(job_id: str, patch: Dict[str, Any]) -> None:
+    """
+    Shallow-merge `patch` into orchestrator_payload via Postgres JSONB `||`
+    (top-level keys in `patch` overwrite existing ones; everything else in
+    the column — contract_id, gpu_managed_by, offer/host identifiers — is
+    left untouched). Works whether the existing value is NULL or a JSONB
+    object. No schema change: orchestrator_payload already has no fixed key
+    set (migration 006).
+    """
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE generation_jobs
+                    SET orchestrator_payload = COALESCE(orchestrator_payload, '{}'::jsonb) || %s::jsonb,
+                        updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (json.dumps(patch), job_id),
+                )
+    finally:
+        conn.close()
+
+
+def mark_gpu_instance_cleanup_destroyed(job_id: str) -> None:
+    """
+    Record that the job's ephemeral vast.ai instance has been confirmed
+    destroyed (including "already gone" / 404 — see destroy_vast_instance).
+    After this, get_terminal_jobs_pending_gpu_cleanup() no longer returns
+    this job, so the dispatcher's reconciliation pass stops re-attempting it.
+    """
+    _merge_orchestrator_payload(job_id, {
+        "gpu_cleanup_status": GPU_CLEANUP_STATUS_DESTROYED,
+        "gpu_cleanup_last_attempt_at": _now().isoformat(),
+        "gpu_cleanup_error": None,
+    })
+    logger.info("[job_store] gpu_instance_cleanup_destroyed job_id=%s", job_id)
+
+
+def mark_gpu_instance_cleanup_error(job_id: str, error: str) -> None:
+    """
+    Record a failed destroy attempt. Deliberately does NOT touch job
+    status/completed_at/failed_at — a Vast API error must never turn a
+    completed job into a failed one. gpu_cleanup_status stays anything-but-
+    "destroyed", so get_terminal_jobs_pending_gpu_cleanup() keeps returning
+    this job for the next dispatcher tick to retry.
+    """
+    _merge_orchestrator_payload(job_id, {
+        "gpu_cleanup_status": GPU_CLEANUP_STATUS_ERROR,
+        "gpu_cleanup_last_attempt_at": _now().isoformat(),
+        "gpu_cleanup_error": (error or "")[:2000],
+    })
+    logger.warning("[job_store] gpu_instance_cleanup_error job_id=%s error=%.120s", job_id, error)
+
+
+def get_terminal_jobs_pending_gpu_cleanup() -> List[Dict[str, Any]]:
+    """
+    Find terminal jobs whose ephemeral vast.ai instance is not yet confirmed
+    destroyed. Used by gpu_dispatcher.reconcile_gpu_instance_cleanup() — the
+    durable retry path for cleanup_instance_for_terminal_job(), covering the
+    window where the FastAPI BackgroundTask fast path never ran (API process
+    crashed/restarted between committing the terminal status and running the
+    task) as well as any prior destroy attempt that errored.
+
+    A job is a candidate when ALL of:
+      status              terminal (completed/failed/cancelled)
+      gpu_managed_by       = 'vast_ephemeral'  (never true for the manually-
+                            managed production GPU, or any job with a
+                            missing/unrecognized ownership stamp)
+      contract_id          present
+      gpu_cleanup_status   NOT 'destroyed' (covers both "never attempted"
+                            and "attempted and failed" — same retry path)
+
+    Manually-managed and unknown-ownership jobs can never match — there is
+    no contract_id/gpu_managed_by stamp for the query to find.
+    """
+    conn = _get_conn()
+    try:
+        return _rows(
+            conn,
+            """
+            SELECT *
+            FROM generation_jobs
+            WHERE status = ANY(%s)
+              AND orchestrator_payload->>'gpu_managed_by' = %s
+              AND orchestrator_payload->>'contract_id' IS NOT NULL
+              AND COALESCE(orchestrator_payload->>'gpu_cleanup_status', '') <> %s
+            """,
+            (list(_TERMINAL_STATUSES), GPU_MANAGED_BY_VAST_EPHEMERAL, GPU_CLEANUP_STATUS_DESTROYED),
+        )
+    finally:
+        conn.close()
 
 
 def mark_worker_started(job_id: str) -> None:
