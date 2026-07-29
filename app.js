@@ -968,6 +968,8 @@ function initEventListeners() {
         elements.btnNewProject.addEventListener('click', () => {
                 // Reset state
                 resetGenerationLock();
+                // clearJobIdempotencyKey is defined in auth.js (loaded after app.js)
+                if (typeof clearJobIdempotencyKey === 'function') clearJobIdempotencyKey();
                 elements.videoUrlInput.value = '';
                 appState.uploadedFile = null;
                 removeFile();

@@ -342,6 +342,69 @@ export function loadApp({ checkAndCreateVideoJob } = {}) {
   return { sandbox, document, localStorage, fetchCalls };
 }
 
+/**
+ * Loads the REAL auth.js (unmodified) into a fresh sandbox. auth.js's own
+ * initAuth() guards every DOM lookup it makes (getElementById results are
+ * either optional-chained or null-checked before use -- verified by
+ * inspection), so unlike app.js this needs no pre-registered elements at
+ * all to load and run cleanly; a bare FakeDocument is enough.
+ *
+ * `fetchImpl` lets each test control exactly what apiCreateVideoJob's
+ * POST /generation/jobs call observes (network error vs a real response).
+ */
+export function loadAuth({ fetchImpl } = {}) {
+  const document = new FakeDocument();
+
+  const fetchCalls = [];
+  const defaultFetch = async (url, opts) => {
+    fetchCalls.push({ url, opts });
+    return { ok: true, status: 200, json: async () => ({}) };
+  };
+  const fetchFn = fetchImpl
+    ? (url, opts) => {
+        fetchCalls.push({ url, opts });
+        return fetchImpl(url, opts);
+      }
+    : defaultFetch;
+
+  const location = {
+    search: '', hash: '', pathname: '/',
+    href: 'https://sonya-e.com/', origin: 'https://sonya-e.com',
+  };
+  // showToast's auto-dismiss uses a real 4200ms timer; fire on the next
+  // tick instead so tests stay fast (same rationale as loadApp's
+  // fastSetTimeout for the poll loop).
+  const fastSetTimeout = (fn, _ms, ...args) => setTimeout(fn, 0, ...args);
+
+  const windowObj = {
+    document, location, fetch: fetchFn, console,
+    setTimeout: fastSetTimeout, clearTimeout,
+    SONYA_API_BASE: '/api',
+  };
+  const sandbox = {
+    window: windowObj,
+    document,
+    fetch: fetchFn,
+    console,
+    setTimeout: fastSetTimeout, clearTimeout,
+    crypto, // Node's global WebCrypto (randomUUID) -- not auto-visible inside a vm context
+    FormData, // Node's global FormData (undici) -- same reason
+    appState: { uploadedFile: null },
+  };
+  sandbox.globalThis = sandbox;
+
+  vm.createContext(sandbox);
+
+  const src = fs.readFileSync(path.join(REPO_ROOT, 'auth.js'), 'utf8');
+  new vm.Script(src, { filename: 'auth.js' }).runInContext(sandbox);
+
+  // auth.js's own bottom-of-file guard checks document.readyState; a fresh
+  // FakeDocument has none set (undefined !== 'loading'), so it already
+  // called initAuth() synchronously during the script run above.
+
+  return { sandbox, document, fetchCalls };
+}
+
 export function click(el) {
   el.dispatchEvent({ type: 'click' });
 }

@@ -47,14 +47,16 @@ def test_create_job_succeeds_with_valid_session_cookie(client, monkeypatch):
 
     created_jobs = {}
 
-    def fake_create_job(job_id, user_id, mode, params, s3_input_key, queue_priority=0):
+    def fake_create_job_idempotent(job_id, user_id, mode, params, s3_input_key,
+                                    idempotency_key, idempotency_fingerprint, queue_priority=0):
         created_jobs["job_id"] = job_id
         created_jobs["user_id"] = user_id
         created_jobs["mode"] = mode
         created_jobs["queue_priority"] = queue_priority
-        return job_id
+        created_jobs["idempotency_key"] = idempotency_key
+        return {"id": job_id, "user_id": user_id, "mode": mode, "status": "queued"}
 
-    monkeypatch.setattr("scripts.prod_generation_api.create_job", fake_create_job)
+    monkeypatch.setattr("scripts.prod_generation_api.create_job_idempotent", fake_create_job_idempotent)
     monkeypatch.setattr("scripts.prod_generation_api.get_job", lambda job_id: {"created_at": "2026-01-01T00:00:00Z"})
     monkeypatch.setattr("scripts.prod_generation_api.add_job_file", lambda **kw: "file-id")
     monkeypatch.setattr("scripts.prod_generation_api.upload_bytes", lambda content, key, content_type=None: None)
@@ -75,16 +77,19 @@ def test_create_job_succeeds_with_valid_session_cookie(client, monkeypatch):
         files={"file": ("clip.mp4", io.BytesIO(_mp4_bytes()), "video/mp4")},
     )
 
-    assert resp.status_code == 200
+    assert resp.status_code == 202
     body = resp.json()
     assert body["status"] == "queued"
     assert body["mode"] == "virality"
+    assert "Idempotency-Replayed" not in resp.headers
 
     # The job was created for the *authenticated* user, not any client-supplied id.
     assert created_jobs["user_id"] == user["id"]
     # Priority was resolved from the user's plan_type in Postgres (free -> 100),
     # never from a client header.
     assert created_jobs["queue_priority"] == 100
+    # No Idempotency-Key header was sent -- legacy behavior, key is None.
+    assert created_jobs["idempotency_key"] is None
 
 
 def test_list_jobs_requires_session(client):

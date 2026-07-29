@@ -94,6 +94,30 @@ async function apiLogout() {
 }
 
 
+/* ─────────────────────────────────────────────
+   IDEMPOTENCY KEY  (POST /api/generation/jobs)
+   One key per logical submission attempt, generated once via
+   crypto.randomUUID() the first time apiCreateVideoJob() actually sends
+   it. Kept across a network-error retry of the SAME attempt (the whole
+   point of an idempotency key -- avoid a duplicate job if the client
+   doesn't know whether the first request reached the server). Cleared
+   after any real HTTP response (success or a definitive rejection like
+   401/402/400) or an explicit form reset, so the next click is always a
+   fresh "new run" with its own key.
+───────────────────────────────────────────── */
+let _jobIdempotencyKey = null;
+
+function _getOrCreateJobIdempotencyKey() {
+  if (!_jobIdempotencyKey) {
+    _jobIdempotencyKey = crypto.randomUUID();
+  }
+  return _jobIdempotencyKey;
+}
+
+function clearJobIdempotencyKey() {
+  _jobIdempotencyKey = null;
+}
+
 function normalizeMode(clipType) {
   const v = String(clipType || '').toLowerCase();
 
@@ -154,7 +178,7 @@ async function apiCreateVideoJob(formData) {
   return apiFetch('/generation/jobs', {
     method: 'POST',
     body: fd,
-    headers: {}
+    headers: { 'Idempotency-Key': _getOrCreateJobIdempotencyKey() }
   });
 }
 
@@ -603,7 +627,20 @@ async function checkAndCreateVideoJob(formData) {
   }
 
   // B. Try to create video job
-  const jobRes  = await apiCreateVideoJob(formData);
+  const jobRes = await apiCreateVideoJob(formData);
+
+  if (jobRes._networkError) {
+    // Client doesn't know whether the server received the request --
+    // keep the same Idempotency-Key so a retry of this same attempt
+    // can't create a duplicate job.
+    const data = await safeJson(jobRes);
+    showToast(data?.detail || 'Ошибка создания задания', 'error');
+    return 'error';
+  }
+
+  // Any real HTTP response means this attempt is settled one way or
+  // another -- the next click is always a new logical run.
+  clearJobIdempotencyKey();
   const jobData = await safeJson(jobRes);
 
   if ([200, 201, 202].includes(jobRes.status)) {

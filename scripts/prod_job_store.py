@@ -15,6 +15,10 @@ Status lifecycle:
 
 Functions:
   create_job             create a new queued job
+  create_job_idempotent  atomic create-or-detect-conflict insert
+                         (POST /api/generation/jobs Idempotency-Key,
+                         migration 009)
+  get_job_by_idempotency_key  fetch the job owning a (user_id, key) pair
   get_job                fetch single job by id
   list_user_jobs         paginated list for a user
   update_job_status      granular status update (any status constant)
@@ -173,6 +177,82 @@ def create_job(
     finally:
         conn.close()
     return job_id
+
+
+def create_job_idempotent(
+    job_id: str,
+    user_id: str,
+    mode: str,
+    params: Dict[str, Any],
+    s3_input_key: str,
+    idempotency_key: Optional[str],
+    idempotency_fingerprint: Optional[str],
+    queue_priority: int = 0,
+) -> Optional[Dict[str, Any]]:
+    """
+    Atomic create-or-detect-conflict insert for POST /api/generation/jobs.
+
+    Returns the newly created row when the INSERT wins (idempotency_key is
+    None -- no header supplied, legacy behavior, always wins since NULL
+    never conflicts with anything under standard SQL UNIQUE semantics --
+    or idempotency_key is set and no row with this (user_id,
+    idempotency_key) existed yet).
+
+    Returns None when a row with the same (user_id, idempotency_key)
+    already exists -- ON CONFLICT DO NOTHING matched zero rows. The caller
+    must then fetch the existing row via get_job_by_idempotency_key() and
+    compare idempotency_fingerprint to decide replay (200/202, same job)
+    vs conflict (409, different payload under the same key).
+
+    Deliberately does NOT do a SELECT before this INSERT -- conflict
+    detection is entirely the database's, via the unique index
+    (ux_jobs_user_idempotency_key, migration 009). A SELECT first would
+    not protect against two concurrent requests racing past it.
+
+    Deliberately does NOT use ON CONFLICT ... DO UPDATE -- generation_jobs
+    has a BEFORE UPDATE trigger (trg_jobs_updated_at) that would bump
+    updated_at on the existing row for every duplicate/replayed request,
+    even though nothing about that row actually changed.
+    """
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO generation_jobs
+                        (id, user_id, mode, params, s3_input_key, status,
+                         queue_priority, created_at, updated_at,
+                         idempotency_key, idempotency_fingerprint)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (user_id, idempotency_key) DO NOTHING
+                    RETURNING *
+                    """,
+                    (job_id, user_id, mode, json.dumps(params), s3_input_key,
+                     JOB_STATUS_QUEUED, queue_priority, _now(), _now(),
+                     idempotency_key, idempotency_fingerprint),
+                )
+                row = cur.fetchone()
+                return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def get_job_by_idempotency_key(user_id: str, idempotency_key: str) -> Optional[Dict[str, Any]]:
+    """
+    Fetch the job that owns a given (user_id, idempotency_key) pair --
+    called only after create_job_idempotent() reports a conflict, to
+    compare idempotency_fingerprint and decide replay vs 409.
+    """
+    conn = _get_conn()
+    try:
+        return _row(
+            conn,
+            "SELECT * FROM generation_jobs WHERE user_id = %s AND idempotency_key = %s",
+            (user_id, idempotency_key),
+        )
+    finally:
+        conn.close()
 
 
 def get_job(job_id: str) -> Optional[Dict[str, Any]]:

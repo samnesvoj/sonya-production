@@ -194,6 +194,30 @@ def generate_presigned_get_url(s3_key: str, expires_in: int = 3600) -> str:
     return url
 
 
+# ── Delete ——————————————————————————————————————————————————————————————————————
+
+def delete_object(s3_key: str, bucket: Optional[str] = None) -> bool:
+    """
+    Best-effort delete of an S3 object. Never raises -- returns True on a
+    confirmed delete (S3 DELETE is idempotent; a missing object is not an
+    error), False if the call itself failed (logged as a warning).
+
+    Used to clean up an orphaned upload: POST /api/generation/jobs uploads
+    the input file before it knows whether the DB insert will win an
+    Idempotency-Key conflict. Callers must only ever pass the s3_key just
+    uploaded by the losing request -- never an existing job's
+    s3_input_key.
+    """
+    try:
+        b = bucket or _bucket()
+        _client().delete_object(Bucket=b, Key=s3_key)
+        logger.info("[s3] deleted orphaned object s3://%s/%s", b, s3_key)
+        return True
+    except Exception as exc:
+        logger.warning("[s3] delete_failed key=%s exc=%s", s3_key, exc)
+        return False
+
+
 # ── Existence check —————————————————————————————————————————————————————————————
 
 def object_exists(s3_key: str, bucket: Optional[str] = None) -> bool:

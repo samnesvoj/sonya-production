@@ -33,14 +33,17 @@ File upload only -- no URL-based video fetching via any external tool.
 """
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 import logging
 import os
+import re
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, Response, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -57,8 +60,10 @@ from scripts.prod_job_store import (
     claim_specific_job,
     complete_job,
     create_job,
+    create_job_idempotent,
     fail_job,
     get_job,
+    get_job_by_idempotency_key,
     list_job_files,
     list_user_jobs,
     update_job_status,
@@ -66,6 +71,7 @@ from scripts.prod_job_store import (
 from scripts.prod_s3_storage import (
     build_input_key,
     build_output_key,
+    delete_object,
     generate_presigned_get_url,
     upload_bytes,
 )
@@ -153,6 +159,95 @@ ALLOWED_MODES = {
     "sonya_gen",
 }
 
+# ── Idempotency (POST /api/generation/jobs) ——————————————————————————————————————
+# Optional `Idempotency-Key` header. Absent -> legacy behavior (always a new
+# job, matches every client that doesn't send it yet). Present -> validated
+# format/length, then used with an atomic INSERT ... ON CONFLICT DO NOTHING
+# (migration 009) to guarantee at most one job per (user_id, key) even under
+# concurrent requests. See create_generation_job() below.
+
+_IDEMPOTENCY_KEY_MAX_LEN = 255
+_IDEMPOTENCY_KEY_RE = re.compile(r"^[A-Za-z0-9_\-.:]{1,255}$")
+
+# Fields that are provably non-semantic -- client diagnostics / routing
+# markers, never used to decide what the job does or how it's processed.
+# Removed from the fingerprint so a version bump to `frontend` (say) never
+# turns a genuine retry into a false idempotency_key_conflict. Every other
+# field in `params` -- known today or added by a future frontend change --
+# is included by default; see _compute_idempotency_fingerprint().
+_FINGERPRINT_EXCLUDED_TOP_LEVEL_KEYS = ("frontend", "production_endpoint")
+
+
+def _validate_idempotency_key(raw: Optional[str], trace_id: str) -> Optional[str]:
+    """
+    Returns the normalized key, or None if the header was absent entirely
+    (legacy behavior — always creates a new job). Raises HTTPException(400)
+    for a header that IS present but invalid: empty after trim, too long,
+    or containing characters outside the allowed set.
+    """
+    if raw is None:
+        return None
+    key = raw.strip()
+    if not key:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_idempotency_key",
+                    "message": "Idempotency-Key must not be empty", "trace_id": trace_id},
+        )
+    if len(key) > _IDEMPOTENCY_KEY_MAX_LEN:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_idempotency_key",
+                    "message": f"Idempotency-Key must be at most {_IDEMPOTENCY_KEY_MAX_LEN} characters",
+                    "trace_id": trace_id},
+        )
+    if not _IDEMPOTENCY_KEY_RE.match(key):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_idempotency_key",
+                    "message": "Idempotency-Key contains invalid characters "
+                                "(allowed: letters, digits, '_', '-', '.', ':')",
+                    "trace_id": trace_id},
+        )
+    return key
+
+
+def _compute_idempotency_fingerprint(mode: str, file_content: bytes, parsed_params: Dict[str, Any]) -> str:
+    """
+    Canonical fingerprint of everything that defines this job.
+
+    Deliberately NOT a hand-picked allowlist of "processing" fields --
+    that drifts silently the moment a new field is added to params and
+    forgotten here. Instead: take the actual normalized params dict that
+    gets stored in the DB, drop only the two provably non-semantic
+    top-level keys and the one non-semantic nested key (source.fileName --
+    a display label; not used for s3_key or processing, and the file's
+    real identity is already covered by the content hash below), and
+    fingerprint everything else, whatever it is.
+
+    No field-level normalization beyond that: a missing key and an empty
+    string are NOT treated as equal (json.dumps distinguishes None/absent
+    from "" -- nothing here coerces one into the other).
+
+    canonical JSON uses sort_keys=True + compact separators so key order
+    in the original request never affects the result.
+    """
+    normalized = copy.deepcopy(parsed_params)
+    for key in _FINGERPRINT_EXCLUDED_TOP_LEVEL_KEYS:
+        normalized.pop(key, None)
+    source = normalized.get("source")
+    if isinstance(source, dict):
+        source.pop("fileName", None)
+
+    canonical = {
+        "mode": mode,
+        "file_sha256": hashlib.sha256(file_content).hexdigest(),
+        "params": normalized,
+    }
+    canonical_json = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+
+
 # ── Rate limiters ——————————————————————————————————————————————————————————————
 
 _upload_limiter = RateLimiter(key_prefix="upload", limit=20, window_seconds=3600, key_by="session")
@@ -211,12 +306,14 @@ async def health():
 
 # ── Public: Job creation ————————————————————————————————————————————————————————
 
-@app.post("/api/generation/jobs", response_model=JobResponse)
+@app.post("/api/generation/jobs", response_model=JobResponse, status_code=status.HTTP_202_ACCEPTED)
 async def create_generation_job(
     request: Request,
+    response: Response,
     mode: str = Form(...),
     file: UploadFile = File(...),
     params: Optional[str] = Form(None),
+    idempotency_key_header: Optional[str] = Header(None, alias="Idempotency-Key"),
     user: dict = Depends(get_current_user),
     _origin: None = Depends(verify_browser_origin),
     _rl: None = Depends(_upload_limiter),
@@ -234,6 +331,10 @@ async def create_generation_job(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"error": "invalid_mode", "allowed": sorted(ALLOWED_MODES), "trace_id": trace_id},
         )
+
+    # Idempotency-Key format validation -- cheap, local, done before any
+    # quota/DB/S3 work. None (header absent) = legacy behavior.
+    idempotency_key = _validate_idempotency_key(idempotency_key_header, trace_id)
 
     # Params parsing
     parsed_params: Dict[str, Any] = {}
@@ -260,7 +361,15 @@ async def create_generation_job(
               ip_address=request.client.host if request.client else None)
         raise
 
-    # Upload to S3
+    idempotency_fingerprint = (
+        _compute_idempotency_fingerprint(mode, content, parsed_params)
+        if idempotency_key is not None else None
+    )
+
+    # Upload to S3. This happens unconditionally, before we know whether
+    # this request will win an Idempotency-Key race -- if it loses, this
+    # upload is orphaned and cleaned up below (never the winning job's
+    # s3_input_key, only ever this request's own fresh key).
     ext     = Path(safe_name).suffix or ".mp4"
     job_id  = str(uuid.uuid4())
     s3_key  = build_input_key(user_id=user_id, job_id=job_id, mode=mode, ext=ext)
@@ -271,20 +380,69 @@ async def create_generation_job(
         logger.error("[api] s3_upload_failed job_id=%s trace_id=%s: %s", job_id, trace_id, exc)
         raise safe_error("storage_error", 500, trace_id)
 
-    # Create job in DB — GPU is never triggered here; the dispatcher service
-    # picks up queued jobs and calls the GPU orchestrator asynchronously.
+    # Atomic create-or-detect-conflict. GPU is never triggered here; the
+    # dispatcher service picks up queued jobs and calls the GPU orchestrator
+    # asynchronously.
     try:
-        job_id = create_job(
+        created_row = create_job_idempotent(
             job_id=job_id,
             user_id=user_id,
             mode=mode,
             params=parsed_params,
             s3_input_key=s3_key,
+            idempotency_key=idempotency_key,
+            idempotency_fingerprint=idempotency_fingerprint,
             queue_priority=priority,  # existing column (migration 003)
         )
     except Exception as exc:
         logger.error("[api] create_job_failed trace_id=%s: %s", trace_id, exc)
+        delete_object(s3_key)  # best-effort -- this request's own upload, never an existing job's
         raise safe_error("db_error", 500, trace_id)
+
+    if created_row is None:
+        # ON CONFLICT DO NOTHING matched zero rows: another request already
+        # holds this (user_id, idempotency_key). This request's own upload
+        # is now orphaned -- clean it up (best-effort; never the existing
+        # job's s3_input_key).
+        delete_object(s3_key)
+
+        existing = get_job_by_idempotency_key(user_id, idempotency_key)
+        if existing is None:
+            # Conflict reported by the unique index but the row is gone by
+            # the time we look it up (e.g. concurrent delete) -- surface as
+            # a transient server error rather than guessing.
+            logger.error(
+                "[api] idempotency_conflict_row_missing user_id=%s trace_id=%s",
+                user_id, trace_id,
+            )
+            raise safe_error("db_error", 500, trace_id)
+
+        if existing.get("idempotency_fingerprint") == idempotency_fingerprint:
+            logger.info(
+                "[api] idempotency_replay job_id=%s user_id=%s trace_id=%s",
+                existing.get("id"), user_id, trace_id,
+            )
+            response.headers["Idempotency-Replayed"] = "true"
+            return JobResponse(
+                job_id=str(existing.get("id")),
+                status=str(existing.get("status")),
+                mode=str(existing.get("mode")),
+                created_at=str(existing.get("created_at")) if existing.get("created_at") else None,
+            )
+
+        logger.warning(
+            "[api] idempotency_key_conflict user_id=%s key=%s trace_id=%s",
+            user_id, idempotency_key, trace_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": "idempotency_key_conflict",
+                    "message": "This Idempotency-Key was already used with a different request",
+                    "trace_id": trace_id},
+        )
+
+    # ── New job created — same post-processing as before ────────────────────
+    job_id = str(created_row["id"])
 
     # Persist migration-006 columns (priority + plan) — best-effort
     try:

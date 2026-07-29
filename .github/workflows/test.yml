@@ -10,6 +10,21 @@ jobs:
   pytest:
     runs-on: ubuntu-latest
 
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: sonya_test
+          POSTGRES_PASSWORD: sonya_test
+          POSTGRES_DB: sonya_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U sonya_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -22,5 +37,23 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
 
-      - name: Run pytest
+      - name: Run pytest (unit tests — no real DB, matches local dev)
         run: pytest tests/ -v
+
+      - name: Apply database migrations to the Postgres service container
+        run: python scripts/run_migrations.py
+        env:
+          DATABASE_URL: postgresql://sonya_test:sonya_test@localhost:5432/sonya_test
+
+      - name: Run PostgreSQL integration tests (real unique-index concurrency check)
+        run: pytest tests/test_job_idempotency_postgres.py -v
+        env:
+          DATABASE_URL: postgresql://sonya_test:sonya_test@localhost:5432/sonya_test
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run frontend tests
+        run: node --test tests/frontend/*.mjs
