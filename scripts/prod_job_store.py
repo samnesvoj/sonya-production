@@ -791,13 +791,12 @@ def count_active_gpu_jobs() -> int:
     Count jobs currently in GPU-active states.
     Used by the dispatcher to enforce MAX_ACTIVE_GPU_JOBS concurrency cap.
     """
-    gpu_active = ("gpu_requested", "gpu_booting", "worker_started", "model_downloading")
     conn = _get_conn()
     try:
         row = _row(
             conn,
             "SELECT COUNT(*) AS n FROM generation_jobs WHERE status = ANY(%s)",
-            (list(gpu_active),),
+            (list(_ACTIVE_STATUSES),),
         )
         return int(row["n"]) if row else 0
     finally:
