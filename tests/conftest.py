@@ -9,8 +9,9 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture()
 def app():
-    # Imported lazily so the root conftest.py env vars are guaranteed to be
-    # set before scripts.prod_generation_api runs its import-time CORS check.
+    # Imported lazily so the root conftest.py env vars (see /conftest.py)
+    # are guaranteed to be set before scripts.prod_generation_api runs its
+    # import-time CORS check.
     from scripts.prod_generation_api import app as fastapi_app
     return fastapi_app
 

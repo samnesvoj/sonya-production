@@ -1,4 +1,4 @@
 -r requirements-backend.txt
--r requirements-worker.txt
 pytest
 pytest-mock
+httpx

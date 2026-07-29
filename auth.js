@@ -56,11 +56,6 @@ async function apiGetMe() {
 }
 
 
-async function apiGetSessionStatus() {
-  return apiFetch('/auth/session-status');
-}
-
-
 function normalizeApiAuthPurpose(purpose) {
   return purpose === 'registration' ? 'register' : purpose;
 }
@@ -171,7 +166,7 @@ async function apiGetSubscriptionStatus() {
    REFRESH AUTH STATE  (call after login/logout)
 ───────────────────────────────────────────── */
 async function refreshAuthState() {
-  const res = await apiGetSessionStatus();
+  const res = await apiGetMe();
   if (res.status === 401 || !res.ok) {
     authState.user = null;
   } else {
