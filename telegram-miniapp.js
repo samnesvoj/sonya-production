@@ -6,24 +6,28 @@
  * Never touches auth, job submission, or any other business logic — that
  * all lives in app.js/auth.js, shared unmodified with the plain site.
  *
- * Must be safe to load outside Telegram (direct browser hit on /miniapp/):
- * every Telegram API access is feature-detected and wrapped, so a missing
- * or malformed window.Telegram.WebApp never throws.
+ * Must be safe to load outside Telegram (direct browser hit on /miniapp/
+ * in Chrome/Safari): every Telegram API access is feature-detected and
+ * wrapped, so a missing or malformed window.Telegram.WebApp never throws.
+ *
+ * IMPORTANT: the official telegram-web-app.js SDK creates
+ * window.Telegram.WebApp UNCONDITIONALLY, even when the page is opened as
+ * a plain link outside Telegram — its mere presence is not proof of a real
+ * Telegram launch. Only webApp.initData (non-empty) or one of Telegram's
+ * own tgWebApp* launch params in the URL prove that. Everything below —
+ * data-runtime="telegram" (which telegram-overrides.css keys off), ready(),
+ * expand(), and theme/viewport sync — only ever runs after that check.
  */
 (function () {
 	'use strict';
 
-	// Marks this page as the Telegram entry point regardless of whether the
-	// SDK is actually present — telegram-overrides.css keys off this, and it
-	// must apply even when /miniapp/ is opened by mistake in a plain browser.
-	document.documentElement.setAttribute('data-runtime', 'telegram');
-
 	// Pause the full-bleed background video while the WebView is backgrounded
 	// (autoplaying <video> keeps decoding frames in a hidden tab/app unless
-	// explicitly paused) and resume it on return. Independent of the
-	// Telegram SDK — this script runs in <head>, before #cinema-video
-	// exists, so the element is looked up lazily inside the handler rather
-	// than captured up front.
+	// explicitly paused) and resume it on return. Independent of whether this
+	// is a real Telegram launch — harmless, generically useful for this page,
+	// doesn't touch any Telegram API or Telegram-only visuals. This script
+	// runs in <head>, before #cinema-video exists, so the element is looked
+	// up lazily inside the handler rather than captured up front.
 	document.addEventListener('visibilitychange', function () {
 		var video = document.getElementById('cinema-video');
 		if (!video) return;
@@ -42,12 +46,54 @@
 	} catch (e) {
 		webApp = null;
 	}
-	if (!webApp) return;
+
+	// Telegram appends these to the launch URL (query string on some
+	// clients, hash fragment on others) — their presence is evidence of a
+	// real Telegram launch independent of whether the SDK object loaded.
+	var TG_LAUNCH_PARAM_RE = /(?:^|[?&#])tgWebApp(?:Data|Version|Platform|ThemeParams|StartParam)=/;
+
+	function hasTelegramLaunchParams() {
+		var haystack = '';
+		try {
+			haystack += window.location.search || '';
+		} catch (e) {}
+		try {
+			haystack += window.location.hash || '';
+		} catch (e) {}
+		return TG_LAUNCH_PARAM_RE.test(haystack);
+	}
+
+	function isRealTelegramLaunch() {
+		if (webApp) {
+			try {
+				if (typeof webApp.initData === 'string' && webApp.initData.length > 0) {
+					return true;
+				}
+			} catch (e) {}
+		}
+		try {
+			return hasTelegramLaunchParams();
+		} catch (e) {
+			return false;
+		}
+	}
+
+	// Plain browser hit on /miniapp/ (Chrome, Safari, a dev preview, someone
+	// pasting the link outside Telegram) — even with the SDK loaded and
+	// window.Telegram.WebApp present, this is NOT a real Telegram launch.
+	// Stop here: no data-runtime, no Telegram CSS, no Telegram API calls,
+	// no console errors. The page renders with the plain-site browser style.
+	if (!isRealTelegramLaunch()) return;
+
+	// Marks this page as running inside a confirmed Telegram launch —
+	// telegram-overrides.css and app.js's theme logic key off this.
+	document.documentElement.setAttribute('data-runtime', 'telegram');
 
 	var readyCalled = false;
 	function initOnce() {
 		if (readyCalled) return;
 		readyCalled = true;
+		if (!webApp) return;
 		try {
 			if (typeof webApp.ready === 'function') webApp.ready();
 		} catch (e) {}
@@ -65,6 +111,7 @@
 	}
 
 	function applyThemeParams() {
+		if (!webApp) return;
 		try {
 			var params = webApp.themeParams || {};
 			var root = document.documentElement.style;
@@ -79,15 +126,18 @@
 	// localStorage['theme']) always wins over Telegram's colorScheme —
 	// Telegram only supplies the *default* when the user never picked one.
 	function applyColorScheme() {
-		try {
-			if (!manualTheme() && webApp.colorScheme) {
-				document.documentElement.setAttribute('data-theme', webApp.colorScheme);
-			}
-		} catch (e) {}
+		if (webApp) {
+			try {
+				if (!manualTheme() && webApp.colorScheme) {
+					document.documentElement.setAttribute('data-theme', webApp.colorScheme);
+				}
+			} catch (e) {}
+		}
 		applyThemeParams();
 	}
 
 	function applyViewportVars() {
+		if (!webApp) return;
 		try {
 			var root = document.documentElement.style;
 			if (typeof webApp.viewportHeight === 'number') {
@@ -104,7 +154,7 @@
 	applyViewportVars();
 
 	try {
-		if (typeof webApp.onEvent === 'function') {
+		if (webApp && typeof webApp.onEvent === 'function') {
 			webApp.onEvent('themeChanged', applyColorScheme);
 			webApp.onEvent('viewportChanged', applyViewportVars);
 		}

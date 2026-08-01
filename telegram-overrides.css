@@ -12,10 +12,49 @@
  * for Telegram's own chrome / on-screen keyboard.
  */
 
-/* ── Lighter glass blur — same glass look, far cheaper to composite ── */
+/* ── No backdrop-filter at all, anywhere ─────────────────────────────
+   Was: blur(6px) !important on `*`. That was the actual bug behind the
+   dark rectangular artifacts reported around "Ссылка"/"Файл", the input
+   placeholder, the source icons and the "ПРОДОЛЖИТЬ" button: backdrop-
+   filter forces the element it's set on to sample and blur whatever sits
+   behind IT SPECIFICALLY, inside its own layout box — so once every
+   element got backdrop-filter, every span/i/button nested inside an
+   already-blurred glass pill got a second, independently-clipped blur
+   pass over just its own smaller rectangle, visible as a darker box.
+   `none` is this property's initial value, so setting it on elements that
+   never declared backdrop-filter (the vast majority matched by `*`) is a
+   true no-op — no compositor layer, no artifact, no cost. On the ~50
+   selectors in styles.css that DO declare backdrop-filter (all real glass
+   panels: .hero2-tabs, modals, dropdowns, cards…), this removes the blur
+   outright rather than just shrinking its radius — the WebView GPU cost
+   this was meant to cut, gone completely instead of partially. */
 html[data-runtime="telegram"] * {
-	backdrop-filter: blur(6px) !important;
-	-webkit-backdrop-filter: blur(6px) !important;
+	backdrop-filter: none !important;
+	-webkit-backdrop-filter: none !important;
+}
+
+/* ── Compensate the hero pills for the lost blur ─────────────────────
+   .hero2-tabs / .hero2-input-row / .hero2-source / .hero2-cta (styles.css
+   ~line 2004) share one low background alpha (rgba(0,0,0,.28)) that
+   depended on backdrop-filter's blur to read as "frosted glass" against
+   the video. Without blur they'd look washed-out, so — same idea the rest
+   of the site already uses via the --glass/--glass-strong/--glass-hot
+   tokens (styles.css ~line 43), which are opaque enough on their own to
+   need no compensation here — bump these four to a near-opaque solid.
+   border-radius/box-shadow bevel are untouched, so the pill shape and
+   layering read exactly as before, just without the frosted texture. */
+html[data-runtime="telegram"] .hero2-tabs,
+html[data-runtime="telegram"] .hero2-input .hero2-input-row,
+html[data-runtime="telegram"] .hero2-source,
+html[data-runtime="telegram"] .hero2-cta {
+	background: rgba(10, 8, 6, 0.62) !important;
+}
+html[data-runtime="telegram"] .hero2-tab.active {
+	background: rgba(20, 20, 22, 0.92) !important;
+}
+html[data-runtime="telegram"] .hero2-input .hero2-input-row:focus-within,
+html[data-runtime="telegram"] .hero2-input-row--file:focus-visible {
+	background: rgba(20, 20, 22, 0.75) !important;
 }
 
 /* ── The heavy WebGL sphere ──────────────────────────────────────────
