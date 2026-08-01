@@ -6,7 +6,7 @@
 /* ──────────────────────────── TOKENS ──────────────────────── */
 :root {
 	--font-display: 'Sora', 'Space Grotesk', system-ui, sans-serif;
-	--font-body: 'Inter', system-ui, -apple-system, sans-serif;
+	--font-body: 'Onest', 'Inter', system-ui, -apple-system, sans-serif;
 
 	/* Core background */
 	--bg-0: #0A0806;
@@ -143,22 +143,11 @@
 	color: #fff !important;
 }
 
-/* ── Исключения: экран результата — всё белое ── */
-[data-theme="light"] .result-card,
-[data-theme="light"] .result-card *,
-[data-theme="light"] .result-card-title,
-[data-theme="light"] .result-card-ratio,
-[data-theme="light"] .result-card-duration,
-[data-theme="light"] .score-badge,
-[data-theme="light"] .score-badge *,
-[data-theme="light"] .result-stat,
-[data-theme="light"] .result-stat *,
-[data-theme="light"] .stat-value,
-[data-theme="light"] .stat-label,
-[data-theme="light"] .btn-download,
-[data-theme="light"] .btn-download * {
-	color: #fff !important;
-}
+/* ── Исключения: экран результата ──
+   .result-clip-card and .score-badge no longer force white text — both
+   now genuinely invert to a light glass pill/card in light theme (see
+   the .result-clip-* and .score-badge rules further down), so neither
+   needs a wildcard exception any more. */
 
 /* Оверлеи фона делаем светлее чтобы видео просматривалось */
 [data-theme="light"] .cinema-overlay--tint {
@@ -196,11 +185,45 @@ body {
 button { font: inherit; color: inherit; background: none; border: none; cursor: pointer; padding: 0; }
 input, select, textarea { font: inherit; color: inherit; }
 a { color: inherit; text-decoration: none; }
+
+/* Deliberate, on-brand keyboard focus ring — replaces the browser default
+   so every interactive element gets a consistent, visible indicator that
+   reads on the dark glass surface, in both themes. */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+label:focus-within,
+[tabindex]:focus-visible {
+	outline: 2px solid rgba(255, 255, 255, 0.85);
+	outline-offset: 3px;
+}
+[data-theme="light"] button:focus-visible,
+[data-theme="light"] a:focus-visible,
+[data-theme="light"] input:focus-visible,
+[data-theme="light"] select:focus-visible,
+[data-theme="light"] label:focus-within,
+[data-theme="light"] [tabindex]:focus-visible {
+	outline-color: rgba(10, 10, 10, 0.75);
+}
 img { max-width: 100%; display: block; }
 ul, ol { margin: 0; padding: 0; list-style: none; }
 h1, h2, h3, h4, h5, h6, p { margin: 0; }
 
 .hidden { display: none !important; }
+
+/* Visually hidden but keyboard-focusable — for the native file input,
+   so Tab can reach the upload control (a plain `hidden` attribute
+   removes it from the focus order entirely). */
+.visually-hidden {
+	position: absolute;
+	width: 1px; height: 1px;
+	padding: 0; margin: -1px;
+	overflow: hidden;
+	clip: rect(0, 0, 0, 0);
+	white-space: nowrap;
+	border: 0;
+}
 
 /* ──────────────────────── AMBIENT BACKGROUND ──────────────── */
 .ambient-bg {
@@ -1336,10 +1359,8 @@ h1, h2, h3, h4, h5, h6, p { margin: 0; }
 	color: var(--text-inverse);
 	background: linear-gradient(180deg, #F6E3BE, #C8A367);
 	box-shadow: 0 12px 40px rgba(232, 197, 142, 0.45);
-	cursor: pointer;
-	transition: transform var(--dur-2) var(--ease);
+	pointer-events: none;
 }
-.result-card-play:hover { transform: translate(-50%, -50%) scale(1.06); }
 .result-card-ratio, .result-card-duration {
 	position: absolute;
 	padding: 6px 10px;
@@ -1414,12 +1435,6 @@ h1, h2, h3, h4, h5, h6, p { margin: 0; }
 	letter-spacing: 0.2em;
 	color: var(--text-muted);
 }
-.btn-download {
-	width: 100%;
-	min-width: 0;
-	padding: 14px 22px;
-}
-
 /* ─────────────── HANDOFF — Editor continuation ─────────────── */
 .handoff-card {
 	position: relative;
@@ -1974,6 +1989,12 @@ body:has(#page-source.active) .ambient-bg { opacity: 0.35; transition: opacity 6
 	/* subtle optical refinement */
 	font-feature-settings: "ss01", "ss02";
 }
+/* light theme: black wordmark — a dark shadow does nothing for
+   contrast on dark text, so the lift becomes a soft light halo instead. */
+[data-theme="light"] .hero2-wordmark {
+	color: #0a0a0a;
+	text-shadow: 0 2px 24px rgba(255, 255, 255, 0.5);
+}
 
 /* ---------- Shared liquid-bevel glass ---------- */
 /* This is the Figma box-shadow spec:
@@ -2008,32 +2029,35 @@ body:has(#page-source.active) .ambient-bg { opacity: 0.35; transition: opacity 6
 .hero2-tab {
 	flex: 1 1 0;
 	display: inline-flex; align-items: center; justify-content: center;
-	gap: 12px;
+	gap: 10px;
 	height: 100%;
 	padding: 0 18px;
-	background: rgba(6, 6, 8, 0.55);
+	/* Unselected: no slab of its own — just text over the shared outer
+	   pill, so only the active tab reads as "filled." */
+	background: transparent;
 	border: 0;
 	border-radius: 9999px;
-	color: rgba(255, 255, 255, 0.64);
+	color: rgba(255, 255, 255, 0.58);
 	font-family: 'Unbounded', 'Sora', system-ui, sans-serif;
 	font-weight: 400;
 	font-size: clamp(15px, 3.4vw, 19px);
 	letter-spacing: 0.06em;
 	cursor: pointer;
-	box-shadow:
-		-14px -14px 8px -14px rgba(179, 179, 179, 0.55) inset,
-		 14px  14px 8px -14px rgba(179, 179, 179, 0.55) inset;
-	transition: color 180ms ease, background 220ms ease, box-shadow 220ms ease, transform 180ms ease;
+	box-shadow: none;
+	transition: color 200ms ease, background 260ms ease, box-shadow 260ms ease, transform 160ms ease;
 }
-.hero2-tab:hover { color: rgba(255, 255, 255, 0.85); }
+.hero2-tab:hover { color: rgba(255, 255, 255, 0.82); background: rgba(255, 255, 255, 0.05); }
+.hero2-tab:active { transform: scale(0.98); }
 .hero2-tab.active {
 	color: #fff;
-	background: rgba(20, 20, 22, 0.72);
+	background: rgba(20, 20, 22, 0.78);
 	box-shadow:
 		-14px -14px 8px -14px rgba(255, 255, 255, 0.95) inset,
 		 14px  14px 8px -14px rgba(255, 255, 255, 0.60) inset,
 		 0 6px 20px rgba(0, 0, 0, 0.35);
 }
+.hero2-tab.active:hover { background: rgba(24, 24, 26, 0.82); }
+
 .hero2-tab-icon {
 	font-size: 0.78em;
 	opacity: 0.85;
@@ -2054,10 +2078,26 @@ body:has(#page-source.active) .ambient-bg { opacity: 0.35; transition: opacity 6
 	padding: 0 28px;
 	border-radius: 9999px;
 }
+.hero2-input .hero2-input-row:focus-within,
+.hero2-input .hero2-input-row--file:focus-visible {
+	background: rgba(20, 20, 22, 0.55);
+	box-shadow:
+		-21.48px -21.48px 10.74px -21.48px rgba(255, 255, 255, 0.85) inset,
+		 21.48px  21.48px 10.74px -21.48px rgba(255, 255, 255, 0.85) inset,
+		 0 10px 40px rgba(0, 0, 0, 0.35);
+}
+.hero2-input-row--file:hover {
+	background: rgba(10, 10, 12, 0.38);
+}
 .hero2-input-icon {
-	font-size: 20px;
+	font-size: 18px;
 	color: rgba(255, 255, 255, 0.72);
 	flex-shrink: 0;
+	transition: color 200ms ease;
+}
+.hero2-input .hero2-input-row:focus-within .hero2-input-icon,
+.hero2-input-row--file:hover .hero2-input-icon {
+	color: rgba(255, 255, 255, 0.92);
 }
 .hero2-input-field,
 .hero2-input-placeholder,
@@ -2067,11 +2107,11 @@ body:has(#page-source.active) .ambient-bg { opacity: 0.35; transition: opacity 6
 	background: transparent;
 	border: 0; outline: 0;
 	color: #fff;
-	font-family: 'Unbounded', 'Sora', system-ui, sans-serif;
-	font-weight: 300;
+	font-family: var(--font-body);
+	font-weight: 400;
 	font-size: clamp(15px, 3.6vw, 20px);
 	line-height: 1.2;
-	letter-spacing: 0.04em;
+	letter-spacing: 0.01em;
 	text-align: center;
 }
 .hero2-input-field::placeholder { color: rgba(255, 255, 255, 0.60); }
@@ -2107,34 +2147,45 @@ body:has(#page-source.active) .ambient-bg { opacity: 0.35; transition: opacity 6
 }
 .hero2-source i { line-height: 1; }
 
-/* ---------- Primary CTA "Продолжить" ---------- */
+/* ---------- Primary CTA "Продолжить" ----------
+   Narrower than the input above it and with real (if quiet) fill, so it
+   reads as a confident button, not a full-width bar echoing the pills. */
 .hero2-cta {
-	width: min(679px, 92vw);
-	height: 84px;
-	padding: 0 36px;
+	width: min(420px, 90vw);
+	height: 68px;
+	padding: 0 32px;
 	display: inline-flex; align-items: center; justify-content: center;
-	gap: 18px;
+	gap: 14px;
 	font-family: 'Unbounded', 'Sora', system-ui, sans-serif;
-	font-weight: 400;
-	font-size: clamp(18px, 4.6vw, 26px);
-	letter-spacing: 0.08em;
+	font-weight: 500;
+	font-size: clamp(15px, 3.4vw, 18px);
+	letter-spacing: 0.06em;
 	color: #fff;
 	text-transform: uppercase;
 	border: 0;
 	cursor: pointer;
 	margin-top: clamp(8px, 2vh, 20px);
+	transition: transform 180ms ease, background 220ms ease, box-shadow 220ms ease;
 }
 .hero2-cta-arrow {
-	font-size: 0.66em;
+	font-size: 0.7em;
 	opacity: 0;
 	transform: translateX(-6px);
 	transition: opacity 200ms ease, transform 200ms ease;
 }
-.hero2-cta:not(:disabled):hover { transform: translateY(-1px); }
+.hero2-cta:not(:disabled):hover {
+	transform: translateY(-1px);
+	background: rgba(255, 255, 255, 0.13);
+	box-shadow:
+		-21.48px -21.48px 10.74px -21.48px rgba(255, 255, 255, 0.9) inset,
+		 21.48px  21.48px 10.74px -21.48px rgba(255, 255, 255, 0.65) inset,
+		 0 12px 34px rgba(0, 0, 0, 0.4);
+}
 .hero2-cta:not(:disabled):hover .hero2-cta-arrow { opacity: 0.9; transform: translateX(0); }
-.hero2-cta:disabled { opacity: 0.55; cursor: not-allowed; }
+.hero2-cta:not(:disabled):active { transform: translateY(0) scale(0.98); }
+.hero2-cta:disabled { opacity: 0.5; cursor: not-allowed; }
 .hero2-cta:not(:disabled) {
-	background: rgba(255, 255, 255, 0.04);
+	background: rgba(255, 255, 255, 0.08);
 }
 
 /* ---------- Compact phones ---------- */
@@ -2143,7 +2194,7 @@ body:has(#page-source.active) .ambient-bg { opacity: 0.35; transition: opacity 6
 	.hero2-tabs { height: 60px; }
 	.hero2-input .hero2-input-row { height: 72px; padding: 0 22px; }
 	.hero2-source { width: 72px; height: 34px; font-size: 16px; }
-	.hero2-cta { height: 70px; padding: 0 28px; }
+	.hero2-cta { width: min(340px, 92vw); height: 62px; padding: 0 26px; }
 }
 
 @media (max-width: 380px) {
@@ -2152,7 +2203,7 @@ body:has(#page-source.active) .ambient-bg { opacity: 0.35; transition: opacity 6
 	.hero2-input-field,
 	.hero2-input-placeholder,
 	.hero2-input-filename { font-size: 16px; }
-	.hero2-cta { font-size: 20px; }
+	.hero2-cta { width: 100%; font-size: 17px; }
 }
 
 /* iOS blur cost */
@@ -2182,7 +2233,7 @@ body:has(#page-source.active) .ambient-bg { opacity: 0.35; transition: opacity 6
 	--v2-surface-solid:#060608;
 	--v2-text:         #fff;
 	--v2-text-dim:     rgba(255,255,255,.62);
-	--v2-text-mute:    rgba(255,255,255,.42);
+	--v2-text-mute:    rgba(255,255,255,.58);
 	--v2-radius-pill:  293.33px;
 	--v2-radius-panel: 32px;
 	--v2-radius-card:  22px;
@@ -2196,7 +2247,9 @@ body:has(#page-source.active) .ambient-bg { opacity: 0.35; transition: opacity 6
 	z-index: 0 !important;
 	overflow: hidden;
 	pointer-events: none;
-	background: #050507;
+	/* Theme-aware fallback while the video decodes its first frame —
+	   was hardcoded near-black, which flashed dark under a light theme. */
+	background: var(--bg-0);
 }
 .cinema-stage.cinema-stage--global .cinema-video {
 	position: absolute;
@@ -2208,7 +2261,7 @@ body:has(#page-source.active) .ambient-bg { opacity: 0.35; transition: opacity 6
 	transform: none !important;
 	animation: none !important;
 	opacity: 1 !important;
-	background: #050507;
+	background: var(--bg-0);
 }
 .cinema-stage.cinema-stage--global .cinema-overlay {
 	position: absolute;
@@ -2237,8 +2290,10 @@ body:has(#page-source.active) .ambient-bg { opacity: 0.35; transition: opacity 6
 /* Hide old ambient layer (was dune/beige gradients) — video backdrop replaces it */
 .ambient-bg { display: none !important; }
 
-/* Base body fallback behind the video */
-html, body { background: #050507; }
+/* Base body fallback behind the video — theme-aware so a saved/system
+   light theme doesn't flash a hardcoded dark color before the video
+   and foreground layers paint over it. */
+html, body { background: var(--bg-0); }
 
 /* ────────── Top chrome: keep ONLY the theme toggle ────────── */
 .app-container.v2 ~ .floating-controls--left,
@@ -2251,7 +2306,7 @@ body > .floating-controls--left {
 .floating-controls--right #menu-toggle { display: none !important; }
 
 /* Theme toggle — refined glass pill */
-.floating-controls--right { gap: 14px; }
+.floating-controls--right { gap: 16px; }
 .floating-controls--right .theme-toggle {
 	width: 44px; height: 44px;
 	background: rgba(8, 8, 10, .55) !important;
@@ -2265,11 +2320,36 @@ body > .floating-controls--left {
 	-webkit-backdrop-filter: blur(18px) saturate(130%);
 	font-size: 15px;
 }
-.floating-controls--right .theme-toggle:hover {
+.floating-controls--right .theme-toggle i {
+	transition: transform 320ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.floating-controls--right .theme-toggle:hover i {
+	transform: rotate(24deg);
+}
+.floating-controls--right .theme-toggle:hover,
+.floating-controls--right .theme-toggle:focus-visible {
 	background: rgba(18, 18, 22, .7) !important;
 	box-shadow:
 		inset -21.48px -21.48px 10.74px -21.48px rgba(179,179,179,.55),
 		inset  21.48px  21.48px 10.74px -21.48px rgba(179,179,179,.55) !important;
+}
+.floating-controls--right .theme-toggle,
+.floating-controls--right .acct-wrap {
+	transition: background .25s ease, box-shadow .25s ease, transform .2s ease;
+}
+.floating-controls--right .theme-toggle:active { transform: scale(.94); }
+
+/* Entrance: chrome settles in just after the hero reveal finishes */
+.floating-controls--right {
+	opacity: 0;
+	transform: translateY(-8px);
+	animation: chromeIn 640ms var(--ease-out) 560ms both;
+}
+@keyframes chromeIn {
+	to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+	.floating-controls--right { opacity: 1; transform: none; animation: none; }
 }
 
 /* Per-page header: strip step-indicator, keep only the back button (floating) */
@@ -2353,15 +2433,15 @@ body > .floating-controls--left {
 	font-family: var(--v2-font-head);
 	font-weight: 300;
 	font-size: clamp(26px, 5.8vw, 38px);
-	letter-spacing: .06em;
+	letter-spacing: .03em;
 	color: var(--v2-text);
-	margin: 0 0 6px;
+	margin: 0 0 8px;
 }
 .app-container.v2 .section-subtitle {
-	font-family: var(--v2-font-head);
-	font-weight: 300;
+	font-family: var(--font-body);
+	font-weight: 400;
 	font-size: clamp(13px, 3.2vw, 15px);
-	letter-spacing: .04em;
+	letter-spacing: 0.01em;
 	color: var(--v2-text-dim);
 	margin: 0;
 }
@@ -2404,11 +2484,13 @@ body > .floating-controls--left {
 	align-items: center; justify-content: center;
 	gap: 10px;
 	padding: 16px 26px;
-	background: var(--v2-surface-soft);
+	background:
+		radial-gradient(160% 140% at 50% -50%, rgba(255, 255, 255, 0.14), transparent 60%),
+		var(--v2-surface-soft);
 	border: none;
 	border-radius: 999px;
 	color: var(--v2-text);
-	box-shadow: var(--v2-bevel-soft);
+	box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.26), var(--v2-bevel-soft);
 	backdrop-filter: blur(18px) saturate(130%);
 	-webkit-backdrop-filter: blur(18px) saturate(130%);
 	font-family: var(--v2-font-head);
@@ -2419,7 +2501,12 @@ body > .floating-controls--left {
 	cursor: pointer;
 	transition: box-shadow .2s ease, transform .2s ease, background .2s ease;
 }
-.app-container.v2 .btn-secondary:hover  { background: rgba(18,18,22,.62); box-shadow: var(--v2-bevel); }
+.app-container.v2 .btn-secondary:hover {
+	background:
+		radial-gradient(160% 140% at 50% -50%, rgba(255, 255, 255, 0.22), transparent 60%),
+		rgba(18,18,22,.62);
+	box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.4), var(--v2-bevel);
+}
 .app-container.v2 .btn-secondary:active { transform: scale(.98); }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -2497,10 +2584,10 @@ body > .floating-controls--left {
 }
 .app-container.v2 .trailer-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .app-container.v2 .trailer-eyebrow {
-	font-family: var(--v2-font-head);
-	font-weight: 300;
+	font-family: var(--font-body);
+	font-weight: 600;
 	font-size: 11px;
-	letter-spacing: .22em;
+	letter-spacing: .18em;
 	text-transform: uppercase;
 	color: rgba(255, 255, 255, .55);
 }
@@ -2512,10 +2599,10 @@ body > .floating-controls--left {
 	color: var(--v2-text);
 }
 .app-container.v2 .trailer-desc {
-	font-family: var(--v2-font-head);
-	font-weight: 300;
+	font-family: var(--font-body);
+	font-weight: 400;
 	font-size: 13px;
-	letter-spacing: .03em;
+	letter-spacing: 0.005em;
 	color: var(--v2-text-dim);
 }
 .app-container.v2 .trailer-arrow {
@@ -2569,6 +2656,7 @@ body > .floating-controls--left {
 	transition: box-shadow .2s ease, background .2s ease, transform .2s ease;
 }
 .app-container.v2 .type-card:hover { background: rgba(110, 110, 115, 0.38); box-shadow: var(--v2-bevel-strong); }
+.app-container.v2 .type-card:active { transform: scale(.985); }
 .app-container.v2 .type-card input { position: absolute; opacity: 0; pointer-events: none; }
 .app-container.v2 .type-card-inner {
 	display: flex; flex-direction: column; gap: 12px;
@@ -2641,12 +2729,12 @@ body > .floating-controls--left {
 	color: var(--v2-text);
 }
 .app-container.v2 .type-desc {
-	font-family: var(--v2-font-head);
-	font-weight: 300;
+	font-family: var(--font-body);
+	font-weight: 400;
 	font-size: 12px;
-	letter-spacing: .02em;
+	letter-spacing: 0;
 	color: var(--v2-text-dim);
-	line-height: 1.35;
+	line-height: 1.4;
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -3144,10 +3232,10 @@ body > .floating-controls--left {
 	color: var(--v2-text);
 }
 .app-container.v2 .lang-name {
-	font-family: var(--v2-font-head);
-	font-weight: 300;
+	font-family: var(--font-body);
+	font-weight: 400;
 	font-size: 12px;
-	letter-spacing: .06em;
+	letter-spacing: 0;
 	color: var(--v2-text-dim);
 }
 .app-container.v2 .language-card:has(input:checked) {
@@ -3181,6 +3269,29 @@ body > .floating-controls--left {
 	gap: 18px;
 	max-width: 440px;
 	width: 100%;
+	/* explicit z-index (not auto) contains the ambient glow below in its
+	   own stacking context, so it can't leak behind the video backdrop */
+	position: relative;
+	z-index: 0;
+}
+/* Ambient breathing glow — the page was static (title + text + bar, no
+   motion, no visual anchor); this gives it the same quiet "alive" signal
+   the trailer card glow already uses elsewhere, reusing the same
+   @keyframes breathe rather than inventing new motion. */
+.app-container.v2 #page-processing .processing-hero::before {
+	content: "";
+	position: absolute;
+	top: 50%; left: 50%;
+	width: 480px; height: 480px;
+	transform: translate(-50%, -50%);
+	background: radial-gradient(circle, rgba(255, 255, 255, 0.10), transparent 68%);
+	filter: blur(40px);
+	pointer-events: none;
+	z-index: -1;
+	animation: breathe 4.5s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+	.app-container.v2 #page-processing .processing-hero::before { animation: none; }
 }
 .app-container.v2 .processing-title {
 	font-family: var(--v2-font-head);
@@ -3191,22 +3302,62 @@ body > .floating-controls--left {
 	text-transform: uppercase;
 }
 .app-container.v2 .processing-status {
-	font-family: var(--v2-font-head);
-	font-weight: 300;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+	font-family: var(--font-body);
+	font-weight: 400;
 	font-size: clamp(13px, 3.2vw, 15px);
-	letter-spacing: .1em;
+	letter-spacing: .06em;
 	color: var(--v2-text-dim);
 	text-transform: uppercase;
 }
+/* Small pulsing "live" dot — the only motion cue that a real process is
+   running, now that the 3D sphere is retired (see DESIGN.md). */
+.app-container.v2 .processing-status::before {
+	content: "";
+	width: 6px; height: 6px;
+	border-radius: 999px;
+	background: currentColor;
+	opacity: 0.5;
+	flex-shrink: 0;
+	animation: statusPulse 1.6s ease-in-out infinite;
+}
+@keyframes statusPulse {
+	0%, 100% { opacity: 0.3; transform: scale(0.85); }
+	50%      { opacity: 1;   transform: scale(1.15); }
+}
+@media (prefers-reduced-motion: reduce) {
+	.app-container.v2 .processing-status::before { animation: none; opacity: 0.7; }
+}
 .app-container.v2 .processing-progress {
+	position: relative;
 	margin-top: 20px;
 	height: 10px;
-	background: var(--v2-surface);
+	background:
+		radial-gradient(160% 220% at 50% -80%, rgba(255, 255, 255, 0.14), transparent 60%),
+		var(--v2-surface);
 	border-radius: 999px;
-	box-shadow: var(--v2-bevel-soft);
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), var(--v2-bevel-soft);
 	overflow: hidden;
 	backdrop-filter: blur(12px);
 	-webkit-backdrop-filter: blur(12px);
+}
+/* Stage ticks at the 5-rung status thresholds the JS progress bar snaps
+   to (see progressForStatus in app.js) — reads as a real staged pipeline,
+   not a vague loading bar. mix-blend-mode keeps each mark visible whether
+   it's sitting on the dark track or the white fill has passed over it. */
+.app-container.v2 .processing-progress::after {
+	content: "";
+	position: absolute;
+	inset: 0;
+	mix-blend-mode: overlay;
+	pointer-events: none;
+	background:
+		linear-gradient(90deg, transparent calc(32% - 1px), rgba(128, 128, 128, 0.9) calc(32% - 1px), rgba(128, 128, 128, 0.9) 32%, transparent 32%),
+		linear-gradient(90deg, transparent calc(58% - 1px), rgba(128, 128, 128, 0.9) calc(58% - 1px), rgba(128, 128, 128, 0.9) 58%, transparent 58%),
+		linear-gradient(90deg, transparent calc(85% - 1px), rgba(128, 128, 128, 0.9) calc(85% - 1px), rgba(128, 128, 128, 0.9) 85%, transparent 85%);
 }
 .app-container.v2 .progress-bar {
 	height: 100%;
@@ -3225,25 +3376,138 @@ body > .floating-controls--left {
 	justify-content: space-between;
 	flex-wrap: wrap;
 	gap: 12px;
-	padding: 0 0 8px;
-	min-height: 0;
+	padding: 22px 22px 26px;
+	min-height: 128px;
 	margin-bottom: 4px;
+	/* position + explicit z-index (not auto) opens a stacking context here,
+	   so the decorative layer's negative z-index is contained to this header
+	   and can't leak behind the video/app shell — same fix used earlier on
+	   .sonya-auth-card / .processing-hero for the same reason. */
+	position: relative;
+	z-index: 0;
+	overflow: hidden;
+	border-radius: var(--v2-radius-panel);
+}
+.app-container.v2 .result-header-left,
+.app-container.v2 .page-header--result .success-pill {
+	position: relative;
+	z-index: 1;
+}
+
+/* ── Result Header Glass Experiment ───────────────────────────────────
+   Two decorative-only layers behind the real headline: a warped-glass
+   texture (feTurbulence → feDisplacementMap, exact chain from the Figma
+   reference) and an embossed "sonya" watermark. Neither carries content,
+   neither can be focused or clicked, and both stay fully clipped by the
+   header's own overflow:hidden + rounded corners. ── */
+.app-container.v2 .result-glass-fx {
+	position: absolute;
+	inset: 0;
+	z-index: -1;
+	pointer-events: none;
+	background: rgba(255, 255, 255, 0.01);
+	backdrop-filter: blur(0.5px);
+	-webkit-backdrop-filter: blur(0.5px);
+	filter: url(#sonya-glass-distort);
+	/* dark theme: dark glass with a light refraction line along the top */
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+[data-theme="light"] .app-container.v2 .result-glass-fx {
+	/* light theme: airy — no dark tint, just a soft warm edge, never a
+	   gray/black smear over the panel */
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.6), inset 0 -1px 0 rgba(10, 10, 10, 0.04);
+}
+/* Fallback for browsers that ignore `filter: url(#id)` on HTML elements
+   (the reference filter is simply dropped, per spec, when unsupported):
+   backdrop-filter alone still reads as a quiet frosted pane, not a blank
+   or broken layer. No JS feature-detection needed. */
+@supports not (backdrop-filter: blur(1px)) {
+	.app-container.v2 .result-glass-fx { background: rgba(255, 255, 255, 0.03); }
+}
+@media (max-width: 640px) {
+	/* smaller viewport, closer viewing distance — the distortion reads as
+	   noisier at this scale, so turn the whole layer down rather than
+	   swap in a second filter definition */
+	.app-container.v2 .result-glass-fx { opacity: 0.55; }
+}
+@media (prefers-reduced-transparency: reduce) {
+	.app-container.v2 .result-glass-fx { display: none; }
+}
+
+.app-container.v2 .result-glass-word {
+	position: absolute;
+	top: 50%; right: 4%;
+	transform: translateY(-42%);
+	z-index: -1;
+	pointer-events: none;
+	user-select: none;
+	font-family: 'Unbounded', sans-serif;
+	font-size: clamp(72px, 11vw, 180px);
+	font-weight: 500;
+	line-height: 1;
+	letter-spacing: clamp(-16px, -1.1vw, -8px);
+	text-transform: lowercase;
+	white-space: nowrap;
+	opacity: 0.5;
+	/* Shadow offset/blur are in em, scaled to the word's own font-size —
+	   at the size this word renders (96–240px before this pass), a fixed
+	   3px offset / 8px blur was imperceptibly close to the glyph itself,
+	   so both "shadows" nearly retraced the letterforms and the whole
+	   word rendered as a solid, high-contrast shape instead of a light
+	   emboss (see result-page glass experiment notes). Em units keep the
+	   ratio — and therefore the airy read — correct at every clamp step
+	   and every breakpoint below, instead of needing a size-matched
+	   constant at each one.
+	   Dark theme: embossed into dark glass — light catches the
+	   top-right edge, a soft dark shadow falls to the bottom-left. */
+	color: rgba(255, 255, 255, 0.02);
+	text-shadow:
+		0.035em -0.035em 0.09em rgba(255, 255, 255, 0.16),
+		-0.035em 0.035em 0.18em rgba(0, 0, 0, 0.28);
+}
+[data-theme="light"] .app-container.v2 .result-glass-word {
+	/* light theme: embossed into pale glass — inverted shadow pairing,
+	   never a gray/black smear. `!important` on color is required here:
+	   the global `[data-theme="light"] * { color: #0a0a0a !important }`
+	   legibility wildcard (near the top of this file) otherwise clobbers
+	   this element's near-transparent fill and turns the "soft emboss"
+	   into a solid dark-gray word — exactly the failure this experiment
+	   is trying to avoid. Same escape hatch already used by .type-card /
+	   .btn-trailer for the same reason. */
+	color: rgba(255, 255, 255, 0.02) !important;
+	text-shadow:
+		0.035em -0.035em 0.08em rgba(255, 255, 255, 0.9),
+		-0.035em 0.035em 0.16em rgba(0, 0, 0, 0.05);
+}
+@media (max-width: 1024px) {
+	.app-container.v2 .result-glass-word {
+		font-size: clamp(56px, 13vw, 96px);
+		opacity: 0.4;
+	}
+}
+@media (max-width: 640px) {
+	.app-container.v2 .result-glass-word {
+		right: 50%;
+		transform: translate(50%, -42%);
+		font-size: clamp(40px, 15vw, 64px);
+		opacity: 0.3;
+	}
 }
 .app-container.v2 .result-headline {
 	font-family: var(--v2-font-head);
 	font-weight: 300;
-	font-size: clamp(26px, 6.4vw, 38px);
-	letter-spacing: .08em;
+	font-size: clamp(28px, 7vw, 46px);
+	letter-spacing: .06em;
 	color: var(--v2-text);
 	text-transform: uppercase;
 	margin: 0;
 	line-height: 1;
 }
 .app-container.v2 .result-sub {
-	font-family: var(--v2-font-head);
-	font-weight: 300;
+	font-family: var(--font-body);
+	font-weight: 400;
 	font-size: 12px;
-	letter-spacing: .1em;
+	letter-spacing: .04em;
 	color: var(--v2-text-dim);
 	text-transform: uppercase;
 	margin: 4px 0 0;
@@ -3265,126 +3529,56 @@ body > .floating-controls--left {
 }
 .app-container.v2 .success-pill i { color: #9ce0a0; }
 
-.app-container.v2 .result-content { gap: 14px; }
-.app-container.v2 .result-grid {
-	display: grid;
-	grid-template-columns: 1fr;
-	grid-template-rows: auto;
-	gap: 12px;
-}
-.app-container.v2 .result-card--hero    { grid-row: auto; padding: 0; background: rgba(8,8,10,.55); }
-.app-container.v2 .result-card-thumb {
-	background: linear-gradient(135deg, #14141a 0%, #08080a 100%);
-}
-.app-container.v2 .result-card-thumb-glow {
-	position: absolute;
-	top: 30%; left: 25%;
-	width: 55%; height: 55%;
-	border-radius: 50%;
-	background: radial-gradient(circle, rgba(255,255,255,.22), transparent 65%);
-	filter: blur(40px);
-}
-.app-container.v2 .result-card-play {
-	background: rgba(8,8,10,.55);
-	color: #fff;
-	width: 64px; height: 64px;
-	box-shadow:
-		inset -21.48px -21.48px 10.74px -21.48px rgba(179,179,179,.55),
-		inset  21.48px  21.48px 10.74px -21.48px rgba(179,179,179,.55);
-	backdrop-filter: blur(16px);
-	-webkit-backdrop-filter: blur(16px);
+.app-container.v2 .result-content { gap: 20px; }
+
+/* Real, derived-from-generation tags row (mode / aspect / clip count).
+   Reuses .score-badge's visual language — the invented Virality/Hook
+   scores are gone, but "a compact row of glass pills" was the right
+   idiom, just fed honest content now (see renderResultTags in app.js). */
+.app-container.v2 .result-tags {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
 }
 
 /* Success pill — neutral whites */
 .app-container.v2 .success-pill {
 	color: #fff;
-	background: rgba(8,8,10,.55);
+	background:
+		radial-gradient(160% 160% at 50% -60%, rgba(255, 255, 255, 0.16), transparent 60%),
+		rgba(8,8,10,.55);
 	border: none;
-	box-shadow: var(--v2-bevel-soft);
-	backdrop-filter: blur(14px);
-	-webkit-backdrop-filter: blur(14px);
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), var(--v2-bevel-soft);
+	backdrop-filter: blur(14px) saturate(140%);
+	-webkit-backdrop-filter: blur(14px) saturate(140%);
 }
 .app-container.v2 .success-pill i { color: rgba(255,255,255,.7); }
-.app-container.v2 .result-card {
-	position: relative;
-	background: var(--v2-surface);
-	border-radius: var(--v2-radius-panel);
-	box-shadow: var(--v2-bevel-soft);
-	backdrop-filter: blur(20px) saturate(140%);
-	-webkit-backdrop-filter: blur(20px) saturate(140%);
-	overflow: hidden;
-	border: none;
-	transition: box-shadow .25s ease, background .25s ease;
-}
-.app-container.v2 .result-card:hover { box-shadow: var(--v2-bevel); background: rgba(14,14,20,.6); }
 
-.app-container.v2 .result-card--hero .result-card-thumb {
-	position: relative;
-	aspect-ratio: 16 / 9;
-	background: linear-gradient(135deg, #14141a 0%, #08080a 100%);
-	display: flex; align-items: center; justify-content: center;
-	overflow: hidden;
+/* light theme: was keeping the dark rgba(8,8,10,.55) fill with only text
+   forced black by the global wildcard — black-on-near-black, unreadable.
+   Same fix pattern as .sonya-auth-card / .acct-drop. */
+[data-theme="light"] .app-container.v2 .success-pill {
+	color: #0a0a0a !important;
+	background:
+		radial-gradient(160% 160% at 50% -60%, rgba(255, 255, 255, 0.7), transparent 60%),
+		rgba(255, 255, 255, 0.62);
+	box-shadow:
+		inset 0 1px 0 rgba(255, 255, 255, 0.6),
+		inset -14px -14px 8px -14px rgba(10, 10, 10, 0.16),
+		inset  14px  14px 8px -14px rgba(10, 10, 10, 0.16);
 }
-.app-container.v2 .result-card-thumb-glow {
-	position: absolute; inset: -20%;
-	background: radial-gradient(closest-side, rgba(255,255,255,.18), transparent 70%);
-	pointer-events: none;
-}
-.app-container.v2 .result-card-play {
-	position: absolute;
-	top: 50%; left: 50%;
-	transform: translate(-50%, -50%);
-	width: 58px; height: 58px;
-	display: flex;
-	align-items: center; justify-content: center;
-	background: rgba(8,8,10,.55);
-	border-radius: 999px;
-	color: #fff;
-	font-size: 18px;
-	padding-left: 3px;
-	box-shadow: var(--v2-bevel);
-	backdrop-filter: blur(16px);
-	-webkit-backdrop-filter: blur(16px);
-	z-index: 2;
-}
-.app-container.v2 .result-card-play:hover {
-	transform: translate(-50%, -50%) scale(1.07);
-}
-.app-container.v2 .result-card-ratio,
-.app-container.v2 .result-card-duration {
-	position: absolute;
-	padding: 6px 12px;
-	background: rgba(6,6,8,.65);
-	border-radius: 999px;
-	box-shadow: inset 0 0 0 1px rgba(255,255,255,.08);
-	color: var(--v2-text);
-	font-family: var(--v2-font-head);
-	font-weight: 300;
-	font-size: 11px;
-	letter-spacing: .14em;
-	text-transform: uppercase;
-	backdrop-filter: blur(12px);
-	-webkit-backdrop-filter: blur(12px);
-}
-.app-container.v2 .result-card-ratio    { top: 12px; left: 12px; }
-.app-container.v2 .result-card-duration { top: 12px; right: 12px; }
-.app-container.v2 .result-card-body { padding: 16px 18px 18px; }
-.app-container.v2 .result-card-title {
-	font-family: var(--v2-font-head);
-	font-weight: 400;
-	font-size: 18px;
-	letter-spacing: .06em;
-	color: var(--v2-text);
-	margin: 0 0 10px;
-}
-.app-container.v2 .result-card-metrics { display: flex; flex-wrap: wrap; gap: 6px; }
+[data-theme="light"] .app-container.v2 .success-pill i { color: rgba(10, 10, 10, 0.7) !important; }
 .app-container.v2 .score-badge {
 	display: inline-flex;
 	align-items: center; gap: 6px;
-	padding: 6px 12px;
-	background: rgba(6,6,8,.6);
+	padding: 7px 13px;
+	background:
+		radial-gradient(160% 160% at 50% -60%, rgba(255, 255, 255, 0.16), transparent 60%),
+		rgba(6,6,8,.46);
 	border-radius: 999px;
-	box-shadow: inset 0 0 0 1px rgba(255,255,255,.22);
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), inset 0 0 0 1px rgba(255,255,255,.14);
+	backdrop-filter: blur(14px) saturate(140%);
+	-webkit-backdrop-filter: blur(14px) saturate(140%);
 	color: var(--v2-text);
 	font-family: var(--v2-font-head);
 	font-weight: 300;
@@ -3396,42 +3590,246 @@ body > .floating-controls--left {
 .app-container.v2 .score-badge--soft { box-shadow: inset 0 0 0 1px rgba(255,255,255,.12); }
 .app-container.v2 .score-badge--soft i { color: rgba(255,255,255,.7); }
 
-.app-container.v2 .result-card--archive { padding: 20px 20px 18px; }
-.app-container.v2 .result-archive-stats {
-	display: flex; gap: 12px; justify-content: space-between;
-	margin-bottom: 14px;
-	padding: 14px 16px;
-	background: rgba(255,255,255,.04);
-	border-radius: var(--v2-radius-card);
-	box-shadow: inset 0 0 0 1px rgba(255,255,255,.07);
+/* light theme: was keeping the dark rgba(6,6,8,.6) fill with text forced
+   white by the global wildcard — a dark-gray pill sitting on an otherwise
+   light page. Genuine frosted-silver inversion, same pattern as
+   .success-pill / .handoff-card. */
+[data-theme="light"] .app-container.v2 .score-badge {
+	color: #0a0a0a;
+	background:
+		radial-gradient(160% 160% at 50% -60%, rgba(255, 255, 255, 0.7), transparent 60%),
+		rgba(255, 255, 255, 0.5);
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7), inset 0 0 0 1px rgba(10, 10, 10, 0.1);
 }
-.app-container.v2 .result-stat { display: flex; flex-direction: column; align-items: center; gap: 2px; flex: 1; }
-.app-container.v2 .stat-value {
-	font-family: var(--v2-font-head);
-	font-weight: 400;
-	font-size: 26px;
-	letter-spacing: .04em;
-	color: var(--v2-text);
+[data-theme="light"] .app-container.v2 .score-badge i { color: rgba(10, 10, 10, 0.7); }
+[data-theme="light"] .app-container.v2 .score-badge--soft { box-shadow: inset 0 0 0 1px rgba(10, 10, 10, 0.08); }
+[data-theme="light"] .app-container.v2 .score-badge--soft i { color: rgba(10, 10, 10, 0.55); }
+
+/* ── Clip grid — one hero-sized card for a single result, a real grid
+   the moment there's more than one. Column count is generic (driven by
+   [data-count], set by renderResultClips() in app.js), not hardcoded to
+   the 4/8 buckets specifically, so any N behaves reasonably. ── */
+.app-container.v2 .result-clip-grid {
+	display: grid;
+	grid-template-columns: 1fr;
+	gap: 12px;
 }
-.app-container.v2 .stat-label {
-	font-family: var(--v2-font-head);
-	font-weight: 300;
-	font-size: 10px;
-	letter-spacing: .2em;
-	text-transform: uppercase;
-	color: var(--v2-text-mute);
+.app-container.v2 .result-clip-grid[data-count="1"] { grid-template-columns: 1fr; }
+.app-container.v2 .result-clip-grid[data-count="2"],
+.app-container.v2 .result-clip-grid[data-count="3"],
+.app-container.v2 .result-clip-grid[data-count="4"] { grid-template-columns: repeat(2, 1fr); }
+.app-container.v2 .result-clip-grid:not([data-count="1"]):not([data-count="2"]):not([data-count="3"]):not([data-count="4"]) {
+	grid-template-columns: repeat(4, 1fr);
+}
+@media (max-width: 720px) {
+	.app-container.v2 .result-clip-grid[data-count="1"] { grid-template-columns: 1fr; }
+	.app-container.v2 .result-clip-grid:not([data-count="1"]) { grid-template-columns: repeat(2, 1fr); }
 }
 
-.app-container.v2 .btn-download.btn-primary {
-	margin-top: 0;
-	background: rgba(100, 100, 105, 0.45) !important;
-	backdrop-filter: blur(16px) saturate(100%);
-	-webkit-backdrop-filter: blur(16px) saturate(100%);
-	color: #fff !important;
+.app-container.v2 .result-clip-card {
+	position: relative;
+	/* thin glass border + top highlight + soft outer shadow, not the
+	   heavier diagonal bevel used on buttons/tabs — a passive content
+	   card reads calmer than an interactive pill. Lightened further as
+	   part of the result-page glass experiment (was .62 / .68 on hover). */
+	background:
+		radial-gradient(160% 100% at 50% -30%, rgba(255, 255, 255, 0.08), transparent 60%),
+		rgba(10, 10, 12, 0.46);
+	border-radius: var(--v2-radius-panel);
+	box-shadow:
+		inset 0 1px 0 rgba(255, 255, 255, 0.22),
+		inset 0 0 0 1px rgba(255, 255, 255, 0.08),
+		0 10px 30px rgba(0, 0, 0, 0.32);
+	backdrop-filter: blur(20px) saturate(140%);
+	-webkit-backdrop-filter: blur(20px) saturate(140%);
+	overflow: hidden;
+	border: none;
+	transition: transform .25s ease, box-shadow .25s ease, background .25s ease;
 }
-.app-container.v2 .btn-download.btn-primary:hover {
-	background: rgba(120, 120, 125, 0.55) !important;
-	box-shadow: var(--v2-bevel-strong);
+.app-container.v2 .result-clip-card:hover {
+	transform: translateY(-3px);
+	background:
+		radial-gradient(160% 100% at 50% -30%, rgba(255, 255, 255, 0.1), transparent 60%),
+		rgba(16, 16, 20, 0.52);
+	box-shadow:
+		inset 0 1px 0 rgba(255, 255, 255, 0.3),
+		inset 0 0 0 1px rgba(255, 255, 255, 0.12),
+		0 16px 40px rgba(0, 0, 0, 0.4);
+}
+
+/* Genuine light-glass inversion — frosted white/silver, not a
+   forced-white-text-on-dark-panel workaround. Never a gray or dark
+   smear: the fill is real white, thinned further for the same
+   airier-glass pass as the rest of the result page. */
+[data-theme="light"] .app-container.v2 .result-clip-card {
+	background:
+		radial-gradient(160% 100% at 50% -30%, rgba(255, 255, 255, 0.5), transparent 60%),
+		rgba(255, 255, 255, 0.4);
+	box-shadow:
+		inset 0 1px 0 rgba(255, 255, 255, 0.8),
+		inset 0 0 0 1px rgba(10, 10, 10, 0.08),
+		0 10px 26px rgba(0, 0, 0, 0.12);
+}
+[data-theme="light"] .app-container.v2 .result-clip-card:hover {
+	background:
+		radial-gradient(160% 100% at 50% -30%, rgba(255, 255, 255, 0.6), transparent 60%),
+		rgba(255, 255, 255, 0.52);
+	box-shadow:
+		inset 0 1px 0 rgba(255, 255, 255, 0.9),
+		inset 0 0 0 1px rgba(10, 10, 10, 0.1),
+		0 16px 34px rgba(0, 0, 0, 0.16);
+}
+
+/* A single-clip result gets the hero treatment (16:9-shaped preview);
+   a grid of several gets a shorter, denser preview so N cards still fit. */
+.app-container.v2 .result-clip-grid[data-count="1"] .result-clip-thumb { aspect-ratio: 16 / 9; }
+.app-container.v2 .result-clip-grid:not([data-count="1"]) .result-clip-thumb { aspect-ratio: 9 / 12; }
+
+.app-container.v2 .result-clip-thumb {
+	position: relative;
+	background: linear-gradient(135deg, #14141a 0%, #08080a 100%);
+	display: flex; align-items: center; justify-content: center;
+	overflow: hidden;
+}
+.app-container.v2 .result-clip-thumb-glow {
+	position: absolute; inset: -20%;
+	background: radial-gradient(closest-side, rgba(255,255,255,.18), transparent 70%);
+	pointer-events: none;
+	/* same breathing idiom as .btn-trailer-glow / the processing-page
+	   ambient glow, so the preview doesn't sit completely static */
+	animation: breathe 5s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+	.app-container.v2 .result-clip-thumb-glow { animation: none; }
+}
+
+/* Same warped-glass grain as the header experiment (.result-glass-fx),
+   reused on the clip thumbnail so the card reads as the same liquid-glass
+   material once a real video/poster fills this area later. Sits above the
+   placeholder gradient but below the play glyph / duration badge (no
+   z-index of its own, same convention as .result-clip-thumb-glow — DOM
+   order alone keeps it behind .result-clip-play's explicit z-index:2 and
+   behind .result-clip-duration), and never touches the real video pixels:
+   this is a thin translucent sheen composited on top, not a filter on
+   the video layer itself. */
+.app-container.v2 .result-clip-glass-fx {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	background: rgba(255, 255, 255, 0.02);
+	backdrop-filter: blur(0.5px);
+	-webkit-backdrop-filter: blur(0.5px);
+	filter: url(#sonya-glass-distort);
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10);
+}
+[data-theme="light"] .app-container.v2 .result-clip-glass-fx {
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), inset 0 -1px 0 rgba(10, 10, 10, 0.05);
+}
+@supports not (backdrop-filter: blur(1px)) {
+	.app-container.v2 .result-clip-glass-fx { background: rgba(255, 255, 255, 0.03); }
+}
+@media (max-width: 640px) {
+	.app-container.v2 .result-clip-glass-fx { opacity: 0.6; }
+}
+@media (prefers-reduced-transparency: reduce) {
+	.app-container.v2 .result-clip-glass-fx { display: none; }
+}
+
+.app-container.v2 .result-clip-play {
+	position: absolute;
+	top: 50%; left: 50%;
+	transform: translate(-50%, -50%);
+	width: 58px; height: 58px;
+	display: flex;
+	align-items: center; justify-content: center;
+	background:
+		radial-gradient(160% 160% at 50% -40%, rgba(255, 255, 255, 0.28), transparent 60%),
+		rgba(8,8,10,.55);
+	border-radius: 999px;
+	color: #fff;
+	font-size: 18px;
+	padding-left: 3px;
+	box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.4), var(--v2-bevel);
+	backdrop-filter: blur(16px);
+	-webkit-backdrop-filter: blur(16px);
+	z-index: 2;
+	pointer-events: none;
+}
+.app-container.v2 .result-clip-grid:not([data-count="1"]) .result-clip-play { width: 42px; height: 42px; font-size: 14px; }
+.app-container.v2 .result-clip-duration {
+	position: absolute;
+	top: 12px; right: 12px;
+	padding: 6px 12px;
+	background:
+		radial-gradient(160% 160% at 50% -60%, rgba(255, 255, 255, 0.16), transparent 60%),
+		rgba(6,6,8,.65);
+	border-radius: 999px;
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22), inset 0 0 0 1px rgba(255,255,255,.08);
+	color: var(--v2-text);
+	font-family: var(--v2-font-head);
+	font-weight: 300;
+	font-size: 11px;
+	letter-spacing: .14em;
+	text-transform: uppercase;
+	backdrop-filter: blur(12px);
+	-webkit-backdrop-filter: blur(12px);
+}
+/* "Клип N / скачать" strip is its own translucent glass panel, distinct
+   from the thumbnail above it — not just transparent padding sitting on
+   the card's own fill. */
+.app-container.v2 .result-clip-body {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	padding: 14px 16px;
+	background: rgba(0, 0, 0, 0.16);
+	border-top: 1px solid rgba(255, 255, 255, 0.06);
+	backdrop-filter: blur(10px);
+	-webkit-backdrop-filter: blur(10px);
+}
+[data-theme="light"] .app-container.v2 .result-clip-body {
+	background: rgba(255, 255, 255, 0.3);
+	border-top-color: rgba(10, 10, 10, 0.06);
+}
+.app-container.v2 .result-clip-label {
+	font-family: var(--v2-font-head);
+	font-weight: 400;
+	font-size: 15px;
+	letter-spacing: .05em;
+	color: var(--v2-text);
+}
+[data-theme="light"] .app-container.v2 .result-clip-label { color: #0a0a0a; }
+.app-container.v2 .result-clip-download {
+	display: inline-flex;
+	align-items: center; justify-content: center;
+	width: 36px; height: 36px;
+	flex-shrink: 0;
+	border-radius: 999px;
+	background: rgba(255,255,255,.06);
+	color: var(--v2-text-dim);
+	font-size: 13px;
+	transition: background .18s ease, color .18s ease;
+}
+.app-container.v2 .result-clip-download:hover { background: rgba(255,255,255,.12); color: var(--v2-text); }
+[data-theme="light"] .app-container.v2 .result-clip-download {
+	background: rgba(10, 10, 10, 0.06);
+	color: rgba(10, 10, 10, 0.55);
+}
+[data-theme="light"] .app-container.v2 .result-clip-download:hover {
+	background: rgba(10, 10, 10, 0.12);
+	color: #0a0a0a;
+}
+
+/* ── Actions row — secondary to the editor handoff CTA below (see
+   The handoff is the product's first-class path per PRODUCT.md; download
+   is the secondary, "I just want the file" action). Only ever rendered
+   when there's a real URL to point at — see renderResultActions(). ── */
+.app-container.v2 .result-actions { margin-top: 4px; }
+.app-container.v2 .result-download-all {
+	display: inline-flex;
+	align-items: center;
+	gap: 10px;
 }
 
 /* Handoff card */
@@ -3439,9 +3837,14 @@ body > .floating-controls--left {
 	position: relative;
 	margin-top: 16px;
 	padding: 22px 22px 20px;
-	background: var(--v2-surface);
+	/* explicit fill rather than the shared --v2-surface token — thinned
+	   for the result-page glass experiment without touching that token's
+	   other consumers app-wide. */
+	background:
+		radial-gradient(160% 90% at 50% -25%, rgba(255, 255, 255, 0.1), transparent 60%),
+		rgba(6, 6, 8, 0.44);
 	border-radius: var(--v2-radius-panel);
-	box-shadow: var(--v2-bevel);
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), var(--v2-bevel);
 	border: none;
 	backdrop-filter: blur(22px) saturate(140%);
 	-webkit-backdrop-filter: blur(22px) saturate(140%);
@@ -3452,13 +3855,42 @@ body > .floating-controls--left {
 	background: radial-gradient(600px 220px at 100% 0%, rgba(255,255,255,.12), transparent 60%);
 	pointer-events: none;
 }
+
+/* Same warped-glass grain as the header/clip-thumb experiment, so the
+   handoff card (the bottom "go to editor" panel) reads as the same
+   liquid-glass material as the rest of the result page. No z-index of
+   its own — DOM order alone keeps it behind .handoff-body / .handoff-cta,
+   same convention as .handoff-glow above. */
+.app-container.v2 .handoff-glass-fx {
+	position: absolute;
+	inset: 0;
+	pointer-events: none;
+	background: rgba(255, 255, 255, 0.02);
+	backdrop-filter: blur(0.5px);
+	-webkit-backdrop-filter: blur(0.5px);
+	filter: url(#sonya-glass-distort);
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.10);
+}
+[data-theme="light"] .app-container.v2 .handoff-glass-fx {
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.35), inset 0 -1px 0 rgba(10, 10, 10, 0.05);
+}
+@supports not (backdrop-filter: blur(1px)) {
+	.app-container.v2 .handoff-glass-fx { background: rgba(255, 255, 255, 0.03); }
+}
+@media (max-width: 640px) {
+	.app-container.v2 .handoff-glass-fx { opacity: 0.6; }
+}
+@media (prefers-reduced-transparency: reduce) {
+	.app-container.v2 .handoff-glass-fx { display: none; }
+}
+
 .app-container.v2 .handoff-body { position: relative; }
 .app-container.v2 .handoff-eyebrow {
 	display: inline-block;
-	font-family: var(--v2-font-head);
-	font-weight: 300;
+	font-family: var(--font-body);
+	font-weight: 600;
 	font-size: 11px;
-	letter-spacing: .28em;
+	letter-spacing: .18em;
 	text-transform: uppercase;
 	color: rgba(255, 255, 255, .55);
 	margin-bottom: 6px;
@@ -3472,31 +3904,40 @@ body > .floating-controls--left {
 	margin: 0 0 8px;
 }
 .app-container.v2 .handoff-desc {
-	font-family: var(--v2-font-head);
-	font-weight: 300;
+	font-family: var(--font-body);
+	font-weight: 400;
 	font-size: 13px;
-	letter-spacing: .02em;
-	line-height: 1.5;
+	letter-spacing: 0;
+	line-height: 1.55;
 	color: var(--v2-text-dim);
 	margin: 0 0 14px;
 }
+/* Compact feature tags, not a bare bullet list — matches the .score-badge
+   pill language elsewhere on this page instead of reading like draft copy. */
 .app-container.v2 .handoff-features {
 	list-style: none;
 	padding: 0;
 	margin: 0 0 18px;
-	display: flex; flex-direction: column; gap: 6px;
+	display: flex; flex-wrap: wrap; gap: 8px;
 }
 .app-container.v2 .handoff-features li {
-	display: flex; align-items: center; gap: 10px;
-	font-family: var(--v2-font-head);
-	font-weight: 300;
+	display: inline-flex; align-items: center; gap: 7px;
+	padding: 6px 12px 6px 10px;
+	border-radius: 999px;
+	background:
+		radial-gradient(160% 160% at 50% -60%, rgba(255, 255, 255, 0.12), transparent 60%),
+		rgba(255, 255, 255, 0.05);
+	box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), inset 0 0 0 1px rgba(255,255,255,.1);
+	backdrop-filter: blur(10px) saturate(130%);
+	-webkit-backdrop-filter: blur(10px) saturate(130%);
+	font-family: var(--font-body);
+	font-weight: 500;
 	font-size: 12px;
-	letter-spacing: .06em;
-	color: rgba(160, 160, 168, 0.6) !important;
+	letter-spacing: 0;
+	color: rgba(255, 255, 255, 0.65) !important;
 }
 .app-container.v2 .handoff-features i {
-	width: 24px;
-	color: rgba(160, 160, 168, 0.6) !important;
+	color: rgba(255, 255, 255, 0.65) !important;
 	font-size: 11px;
 }
 .app-container.v2 .handoff-cta {
@@ -3517,6 +3958,32 @@ body > .floating-controls--left {
 	box-shadow: var(--v2-bevel-soft);
 	transition: transform .2s ease, box-shadow .2s ease;
 }
+
+/* light theme: the card kept its dark --v2-surface fill with title/desc/
+   eyebrow forced black by the global wildcard — black-on-dark, unreadable.
+   Genuine light-glass inversion this time, not the forced-white workaround
+   used on .result-card/.type-card (see DESIGN.md known gaps). */
+[data-theme="light"] .app-container.v2 .handoff-card {
+	background:
+		radial-gradient(160% 90% at 50% -25%, rgba(255, 255, 255, 0.7), transparent 60%),
+		rgba(255, 255, 255, 0.42);
+	box-shadow:
+		inset 0 1px 0 rgba(255, 255, 255, 0.6),
+		inset -21.48px -21.48px 10.74px -21.48px rgba(10, 10, 10, 0.14),
+		inset  21.48px  21.48px 10.74px -21.48px rgba(10, 10, 10, 0.14);
+}
+/* the white corner glow reads as a wash of nothing on an already-light
+   card — hide it instead of inverting it, same treatment as .ambient-bg */
+[data-theme="light"] .app-container.v2 .handoff-glow { opacity: 0; }
+[data-theme="light"] .app-container.v2 .handoff-eyebrow { color: rgba(10, 10, 10, 0.55) !important; }
+[data-theme="light"] .app-container.v2 .handoff-title { color: #0a0a0a !important; }
+[data-theme="light"] .app-container.v2 .handoff-desc { color: rgba(10, 10, 10, 0.6) !important; }
+[data-theme="light"] .app-container.v2 .handoff-features li {
+	background: rgba(10, 10, 10, 0.05);
+	box-shadow: inset 0 0 0 1px rgba(10,10,10,.1);
+	color: rgba(10, 10, 10, 0.65) !important;
+}
+[data-theme="light"] .app-container.v2 .handoff-features i { color: rgba(10, 10, 10, 0.65) !important; }
 .app-container.v2 .handoff-cta:hover  { box-shadow: var(--v2-bevel-strong); }
 .app-container.v2 .handoff-cta:active { transform: scale(.98); }
 
@@ -3565,7 +4032,7 @@ body > .floating-controls--left {
 	.app-container.v2 .editor-stage,
 	.app-container.v2 .editor-timeline,
 	.app-container.v2 .editor-chip,
-	.app-container.v2 .result-card,
+	.app-container.v2 .result-clip-card,
 	.app-container.v2 .handoff-card,
 	.app-container.v2 .btn-primary {
 		backdrop-filter: blur(12px) saturate(135%);
@@ -3623,6 +4090,18 @@ body > .floating-controls--left {
   color: #fff !important;
 }
 
+.acct-btn:active { transform: translateY(0) scale(0.94); }
+
+/* Open state: button stays lit while its dropdown is open, so the two
+   read as one connected control rather than a button that forgot it
+   was clicked. */
+.acct-wrap:has(.acct-drop.is-open) .acct-btn {
+  background: rgba(20, 20, 22, 0.78) !important;
+  box-shadow:
+    inset -21.48px -21.48px 10.74px -21.48px rgba(255, 255, 255, 0.6),
+    inset  21.48px  21.48px 10.74px -21.48px rgba(255, 255, 255, 0.6) !important;
+}
+
 [data-theme="dark"] .acct-btn {
   background: rgba(8, 8, 10, .55);
   color: #fff;
@@ -3643,8 +4122,8 @@ body > .floating-controls--left {
 }
 
 .acct-initials {
-  font-size: 13px; font-weight: 700;
-  font-family: var(--font-display, 'Sora', sans-serif);
+  font-size: 13px; font-weight: 600;
+  font-family: 'Unbounded', var(--font-display, 'Sora', sans-serif);
   line-height: 1; letter-spacing: 0.02em;
   color: inherit;
 }
@@ -3664,10 +4143,10 @@ body > .floating-controls--left {
 .acct-drop {
   position: absolute; top: calc(100% + 10px); right: 0;
   min-width: 265px; padding: 10px;
-  background: rgba(0, 0, 0, 0.28);
+  background: rgba(10, 10, 12, 0.68);
   border-radius: 22px;
-  backdrop-filter: blur(14px) saturate(140%);
-  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  backdrop-filter: blur(24px) saturate(150%);
+  -webkit-backdrop-filter: blur(24px) saturate(150%);
   box-shadow:
     inset -21.48px -21.48px 10.74px -21.48px rgba(179, 179, 179, 0.72),
     inset  21.48px  21.48px 10.74px -21.48px rgba(179, 179, 179, 0.72),
@@ -3680,7 +4159,19 @@ body > .floating-controls--left {
 }
 .acct-drop.is-open { opacity: 1; pointer-events: auto; transform: translateY(0) scale(1); }
 
-[data-theme="light"] .acct-drop { color: #0a0a0a !important; }
+/* light theme: light glass shell — nested items already flip their
+   own colors to dark (.acct-drop-item etc. below), but the shell was
+   still inheriting the dark rgba(10,10,12,.68) bg, so that dark text
+   landed on a dark surface and disappeared. */
+[data-theme="light"] .acct-drop {
+  color: #0a0a0a !important;
+  background: rgba(255, 255, 255, 0.78) !important;
+  box-shadow:
+    inset -21.48px -21.48px 10.74px -21.48px rgba(10, 10, 10, 0.16),
+    inset  21.48px  21.48px 10.74px -21.48px rgba(10, 10, 10, 0.16),
+    0 10px 40px rgba(0, 0, 0, 0.14),
+    0 24px 60px rgba(0, 0, 0, 0.12);
+}
 
 .acct-drop-user { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 6px; }
 .acct-drop-email {
@@ -3742,10 +4233,12 @@ body > .floating-controls--left {
   transition: background .18s, transform .18s;
 }
 .acct-drop-item:hover { background: rgba(255, 255, 255, 0.08); transform: translateX(2px); }
+.acct-drop-item:active { background: rgba(255, 255, 255, 0.14); transform: translateX(2px) scale(0.98); }
 .acct-drop-item i { width: 16px; font-size: 12px; opacity: 0.70; color: inherit; }
 .acct-drop-item:hover i { opacity: 1; }
 [data-theme="light"] .acct-drop-item { color: rgba(10, 10, 10, 0.85) !important; }
 [data-theme="light"] .acct-drop-item:hover { background: rgba(10, 10, 10, 0.06); }
+[data-theme="light"] .acct-drop-item:active { background: rgba(10, 10, 10, 0.10); }
 
 .acct-drop-upgrade {
   background: rgba(20, 20, 22, 0.62);
@@ -3772,186 +4265,239 @@ body > .floating-controls--left {
 .acct-drop-logout:hover { background: rgba(220, 80, 80, 0.14); }
 [data-theme="light"] .acct-drop-logout:hover { background: rgba(176, 48, 48, 0.08); }
 
-/* ── 3. SHARED MODAL OVERLAY (paywall / legal) ───────────────── */
+/* ── 3. SHARED MODAL OVERLAY (paywall / legal) ─────────────────
+   Same monochrome glass language as .sonya-auth-card / .acct-drop
+   (see notes on those blocks) — no gold/beige/cream. Overlay scrim
+   is theme-independent because the app shell behind it (.app-container.v2)
+   already renders as a dark cinematic surface in both themes. ── */
 .sonya-modal-overlay {
   position: fixed; inset: 0; z-index: 10000;
   display: flex; align-items: center; justify-content: center; padding: 20px;
-  background: rgba(100,75,40,0.45);
-  backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+  background: rgba(4, 4, 6, 0.55);
+  backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
   opacity: 0; pointer-events: none;
   transition: opacity .28s var(--ease-out, ease);
 }
-[data-theme="dark"] .sonya-modal-overlay { background: rgba(0,0,0,0.72); }
 .sonya-modal-overlay.is-open { opacity: 1; pointer-events: auto; }
 
 .sonya-modal {
   position: relative; width: 100%; max-width: 420px;
   padding: 32px 28px 28px;
-  background: rgba(255,252,243,0.97);
-  border: 1px solid rgba(110,75,28,0.10);
-  border-radius: 22px;
-  box-shadow: 0 20px 60px rgba(110,80,40,0.14), 0 4px 16px rgba(110,80,40,0.08);
-  backdrop-filter: blur(20px) saturate(140%);
-  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  background: rgba(10, 10, 12, 0.62);
+  border-radius: 28px;
+  box-shadow:
+    inset -21.48px -21.48px 10.74px -21.48px rgba(179, 179, 179, 0.72),
+    inset  21.48px  21.48px 10.74px -21.48px rgba(179, 179, 179, 0.72),
+    0 10px 40px rgba(0, 0, 0, 0.35),
+    0 30px 80px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(28px) saturate(150%);
+  -webkit-backdrop-filter: blur(28px) saturate(150%);
+  color: #fff;
   transform: scale(0.96) translateY(8px); opacity: 0;
   transition: transform .32s var(--ease-out, ease), opacity .32s var(--ease-out, ease);
 }
-[data-theme="dark"] .sonya-modal {
-  background: rgba(28,23,18,0.96);
-  border-color: rgba(232,197,142,0.16);
-  box-shadow: 0 28px 78px rgba(0,0,0,0.58), 0 8px 22px rgba(0,0,0,0.35);
-}
 .sonya-modal-overlay.is-open .sonya-modal { transform: scale(1) translateY(0); opacity: 1; }
+
+/* light theme: light glass surface — was inheriting the dark-theme
+   rgba(10,10,12,.62) bg with only text flipped to black, which read
+   as a dark gray blob with near-invisible text. Mirrors the fix
+   already applied to .sonya-auth-card / .acct-drop. */
+[data-theme="light"] .sonya-modal {
+  color: #0a0a0a;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow:
+    inset -21.48px -21.48px 10.74px -21.48px rgba(10, 10, 10, 0.16),
+    inset  21.48px  21.48px 10.74px -21.48px rgba(10, 10, 10, 0.16),
+    0 10px 40px rgba(0, 0, 0, 0.22),
+    0 30px 80px rgba(0, 0, 0, 0.26);
+}
 
 .sonya-modal-close {
   position: absolute; top: 14px; right: 14px;
   width: 34px; height: 34px; border-radius: 999px;
-  background: rgba(0,0,0,0.04); border: 1px solid rgba(0,0,0,0.08);
-  color: rgba(18,12,6,0.50); display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, 0.28); border: 0;
+  color: rgba(255, 255, 255, 0.72); display: flex; align-items: center; justify-content: center;
   cursor: pointer; font-size: 13px;
-  transition: background .18s, color .18s, transform .18s;
+  box-shadow:
+    inset -10px -10px 6px -10px rgba(179, 179, 179, 0.55),
+    inset  10px  10px 6px -10px rgba(179, 179, 179, 0.55);
+  transition: background .18s, color .18s, transform .18s, box-shadow .22s;
 }
-.sonya-modal-close:hover { color: #b03040; transform: rotate(90deg); }
-[data-theme="dark"] .sonya-modal-close {
-  background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.09);
-  color: rgba(242,234,219,0.55);
+.sonya-modal-close i { color: inherit !important; }
+.sonya-modal-close:hover {
+  color: #fff; transform: rotate(90deg);
+  background: rgba(20, 20, 22, 0.55);
+  box-shadow:
+    inset -10px -10px 6px -10px rgba(255, 255, 255, 0.85),
+    inset  10px  10px 6px -10px rgba(255, 255, 255, 0.85);
 }
-[data-theme="dark"] .sonya-modal-close i { color: rgba(242,234,219,0.55) !important; }
-[data-theme="dark"] .sonya-modal-close:hover { background: rgba(248,113,113,.12); color: #f87171; }
+[data-theme="light"] .sonya-modal-close {
+  color: rgba(10, 10, 10, 0.72) !important;
+  background: rgba(10, 10, 10, 0.06);
+  box-shadow:
+    inset -10px -10px 6px -10px rgba(10, 10, 10, 0.18),
+    inset  10px  10px 6px -10px rgba(10, 10, 10, 0.18);
+}
+[data-theme="light"] .sonya-modal-close:hover {
+  color: #0a0a0a !important;
+  background: rgba(10, 10, 10, 0.10);
+  box-shadow:
+    inset -10px -10px 6px -10px rgba(10, 10, 10, 0.24),
+    inset  10px  10px 6px -10px rgba(10, 10, 10, 0.24);
+}
 
 /* ── 4. PAYWALL MODAL ────────────────────────────────────────── */
 .paywall-modal { text-align: center; max-width: 400px; padding: 36px 28px 28px; }
 .paywall-icon {
   width: 58px; height: 58px; border-radius: 999px; margin: 0 auto 18px;
-  display: flex; align-items: center; justify-content: center; font-size: 23px;
-  background: linear-gradient(135deg, rgba(232,197,142,0.18), rgba(200,163,103,0.08));
-  border: 1px solid rgba(110,75,28,0.16);
-  color: rgba(110,68,24,0.88);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.15), 0 10px 28px rgba(110,80,40,0.14);
+  display: flex; align-items: center; justify-content: center; font-size: 22px;
+  background: rgba(0, 0, 0, 0.28);
+  color: #fff;
+  box-shadow:
+    inset -14px -14px 8px -14px rgba(179, 179, 179, 0.55),
+    inset  14px  14px 8px -14px rgba(179, 179, 179, 0.55);
 }
-.paywall-icon i { color: rgba(110,68,24,0.88) !important; }
-[data-theme="dark"] .paywall-icon {
-  background: linear-gradient(135deg, rgba(232,197,142,0.20), rgba(200,163,103,0.10));
-  border-color: rgba(232,197,142,0.24);
-  color: rgba(232,197,142,0.92);
-  box-shadow: inset 0 1px 0 rgba(255,220,160,0.14), 0 10px 28px rgba(0,0,0,0.28);
-}
-[data-theme="dark"] .paywall-icon i { color: rgba(232,197,142,0.92) !important; }
+.paywall-icon i { color: #fff !important; }
+[data-theme="light"] .paywall-icon { color: #0a0a0a; }
+[data-theme="light"] .paywall-icon i { color: #0a0a0a !important; }
 
 .paywall-title {
-  font-size: 21px; font-weight: 700; margin: 0 0 8px; letter-spacing: -0.01em;
-  color: rgba(18,12,6,0.96);
-  font-family: var(--font-display, 'Sora', sans-serif);
+  font-size: 21px; font-weight: 400; margin: 0 0 8px; letter-spacing: 0.02em;
+  color: #fff;
+  font-family: 'Unbounded', 'Sora', system-ui, sans-serif;
 }
-[data-theme="dark"] .paywall-title { color: rgba(242,234,219,0.96) !important; }
+[data-theme="light"] .paywall-title { color: #0a0a0a !important; }
 
 .paywall-desc {
-  font-size: 13.5px; color: rgba(18,12,6,0.55); margin: 0 0 16px; line-height: 1.58;
+  font-size: 13.5px; color: rgba(255, 255, 255, 0.62); margin: 0 0 16px; line-height: 1.58;
   font-family: var(--font-body, 'Inter', sans-serif);
 }
-[data-theme="dark"] .paywall-desc { color: rgba(242,234,219,0.58) !important; }
+[data-theme="light"] .paywall-desc { color: rgba(10, 10, 10, 0.6) !important; }
 
 .paywall-price {
   display: inline-flex; align-items: baseline; gap: 4px;
   padding: 9px 18px; margin: 0 0 20px; border-radius: 999px;
-  background: rgba(110,75,28,0.06); border: 1px solid rgba(110,75,28,0.12);
+  background: rgba(0, 0, 0, 0.32);
+  box-shadow:
+    inset -10px -10px 6px -10px rgba(179, 179, 179, 0.45),
+    inset  10px  10px 6px -10px rgba(179, 179, 179, 0.45);
 }
-[data-theme="dark"] .paywall-price { background: rgba(232,197,142,0.08); border-color: rgba(232,197,142,0.14); }
+[data-theme="light"] .paywall-price {
+  background: rgba(255, 255, 255, 0.55) !important;
+  box-shadow:
+    inset -10px -10px 6px -10px rgba(10, 10, 10, 0.18),
+    inset  10px  10px 6px -10px rgba(10, 10, 10, 0.18);
+}
 .paywall-price-value {
-  font-size: 22px; font-weight: 700; color: rgba(18,12,6,0.96); letter-spacing: -0.01em;
-  font-family: var(--font-display, 'Sora', sans-serif);
+  font-size: 22px; font-weight: 500; color: #fff; letter-spacing: 0.01em;
+  font-family: 'Unbounded', 'Sora', system-ui, sans-serif;
 }
-[data-theme="dark"] .paywall-price-value { color: rgba(242,234,219,0.96) !important; }
+[data-theme="light"] .paywall-price-value { color: #0a0a0a !important; }
 .paywall-price-period {
-  font-size: 12.5px; font-weight: 500; color: rgba(18,12,6,0.50);
+  font-size: 12.5px; font-weight: 500; color: rgba(255, 255, 255, 0.55);
   font-family: var(--font-body, 'Inter', sans-serif);
 }
-[data-theme="dark"] .paywall-price-period { color: rgba(242,234,219,0.52) !important; }
+[data-theme="light"] .paywall-price-period { color: rgba(10, 10, 10, 0.55) !important; }
 
 .paywall-features {
   display: flex; flex-direction: column; gap: 10px; text-align: left;
-  padding: 14px 16px; margin: 0 0 20px; border-radius: 14px;
-  background: rgba(0,0,0,0.03); border: 1px solid rgba(0,0,0,0.05);
+  padding: 14px 16px; margin: 0 0 20px; border-radius: 16px;
+  background: rgba(0, 0, 0, 0.20);
+  box-shadow:
+    inset -10px -10px 6px -10px rgba(179, 179, 179, 0.32),
+    inset  10px  10px 6px -10px rgba(179, 179, 179, 0.32);
 }
-[data-theme="dark"] .paywall-features { background: rgba(255,255,255,0.04); border-color: rgba(255,255,255,0.06); }
+[data-theme="light"] .paywall-features {
+  background: rgba(255, 255, 255, 0.40) !important;
+  box-shadow:
+    inset -10px -10px 6px -10px rgba(10, 10, 10, 0.14),
+    inset  10px  10px 6px -10px rgba(10, 10, 10, 0.14);
+}
 .paywall-features span {
   display: flex; align-items: center; gap: 10px;
-  font-size: 13px; color: rgba(18,12,6,0.86);
+  font-size: 13px; color: rgba(255, 255, 255, 0.85);
   font-family: var(--font-body, 'Inter', sans-serif);
 }
-[data-theme="dark"] .paywall-features span { color: rgba(242,234,219,0.86) !important; }
+[data-theme="light"] .paywall-features span { color: rgba(10, 10, 10, 0.85) !important; }
 .paywall-features i {
-  font-size: 10px; width: 22px; height: 22px; border-radius: 999px;
-  background: rgba(232,197,142,0.12); border: 1px solid rgba(232,197,142,0.20);
+  font-size: 9px; width: 22px; height: 22px; border-radius: 999px;
+  background: rgba(255, 255, 255, 0.10);
   display: inline-flex; align-items: center; justify-content: center;
-  color: rgba(110,68,24,0.88); flex-shrink: 0;
+  color: #fff; flex-shrink: 0;
 }
-[data-theme="dark"] .paywall-features i {
-  background: rgba(232,197,142,0.12); border-color: rgba(232,197,142,0.18);
-  color: rgba(232,197,142,0.92) !important;
+[data-theme="light"] .paywall-features i {
+  background: rgba(10, 10, 10, 0.08);
+  color: #0a0a0a !important;
 }
 
 .paywall-tg-btn {
   display: flex; align-items: center; justify-content: center; gap: 10px;
-  width: 100%; padding: 14px 18px; margin-bottom: 10px; border: none; border-radius: 14px;
+  width: 100%; height: 52px; padding: 0 18px; margin-bottom: 10px; border: none; border-radius: 9999px;
   background: #2AABEE; color: #fff !important;
-  font-size: 14.5px; font-weight: 700; cursor: pointer;
-  font-family: var(--font-display, 'Sora', sans-serif);
+  font-size: 14px; font-weight: 600; letter-spacing: 0.02em; cursor: pointer;
+  font-family: 'Unbounded', 'Sora', system-ui, sans-serif;
   box-shadow: 0 8px 24px rgba(42,171,238,0.28);
   transition: background .2s, transform .15s, box-shadow .2s;
 }
 .paywall-tg-btn i { color: #fff !important; font-size: 16px; }
 .paywall-tg-btn:hover { background: #1a9fe0; transform: translateY(-1px); box-shadow: 0 12px 32px rgba(42,171,238,0.34); }
 .paywall-later-btn {
-  width: 100%; padding: 12px 18px; background: transparent; cursor: pointer;
-  border: 1px solid rgba(110,75,28,0.12); border-radius: 14px;
-  color: rgba(18,12,6,0.50); font-size: 13.5px; font-weight: 500;
-  font-family: var(--font-display, 'Sora', sans-serif);
-  transition: border-color .2s, color .2s, background .2s;
+  width: 100%; height: 46px; padding: 0 18px; background: rgba(0, 0, 0, 0.20); cursor: pointer;
+  border: 0; border-radius: 9999px;
+  color: rgba(255, 255, 255, 0.62); font-size: 13.5px; font-weight: 500;
+  font-family: var(--font-body, 'Inter', sans-serif);
+  box-shadow:
+    inset -10px -10px 6px -10px rgba(179, 179, 179, 0.32),
+    inset  10px  10px 6px -10px rgba(179, 179, 179, 0.32);
+  transition: color .2s, background .2s, box-shadow .2s;
 }
-.paywall-later-btn:hover { border-color: rgba(110,75,28,0.24); color: rgba(18,12,6,0.86); background: rgba(110,75,28,0.04); }
-[data-theme="dark"] .paywall-later-btn { border-color: rgba(232,197,142,0.14); color: rgba(242,234,219,0.52); }
-[data-theme="dark"] .paywall-later-btn:hover { border-color: rgba(232,197,142,0.28); color: rgba(242,234,219,0.88); background: rgba(232,197,142,0.05); }
+.paywall-later-btn:hover { color: #fff; background: rgba(20, 20, 22, 0.5); }
+[data-theme="light"] .paywall-later-btn {
+  background: rgba(255, 255, 255, 0.4) !important;
+  color: rgba(10, 10, 10, 0.55) !important;
+  box-shadow:
+    inset -10px -10px 6px -10px rgba(10, 10, 10, 0.14),
+    inset  10px  10px 6px -10px rgba(10, 10, 10, 0.14);
+}
+[data-theme="light"] .paywall-later-btn:hover { color: #0a0a0a !important; background: rgba(255, 255, 255, 0.6) !important; }
 
 /* ── 6. TOAST ────────────────────────────────────────────────── */
 .sonya-toast {
   position: fixed; bottom: 28px; left: 50%;
   transform: translateX(-50%) translateY(20px);
-  background: rgba(255,252,243,0.96); border: 1px solid rgba(110,75,28,0.14);
-  color: rgba(18,12,6,0.96);
+  background: rgba(20, 20, 22, 0.72);
+  color: #fff;
   padding: 13px 22px; border-radius: 999px;
   font-size: 13.5px; font-weight: 500;
   font-family: var(--font-body, 'Inter', sans-serif);
   backdrop-filter: blur(18px) saturate(140%); -webkit-backdrop-filter: blur(18px) saturate(140%);
-  box-shadow: 0 14px 40px rgba(110,80,40,0.18), 0 4px 12px rgba(110,80,40,0.08);
+  box-shadow:
+    inset -14px -14px 8px -14px rgba(179, 179, 179, 0.4),
+    inset  14px  14px 8px -14px rgba(179, 179, 179, 0.4),
+    0 14px 40px rgba(0, 0, 0, 0.38);
   z-index: 11000; opacity: 0; pointer-events: none;
   max-width: calc(100vw - 48px); text-align: center;
   display: inline-flex; align-items: center; gap: 9px;
   transition: opacity .26s var(--ease-out, ease), transform .26s var(--ease-out, ease);
 }
 .sonya-toast.is-visible { opacity: 1; transform: translateX(-50%) translateY(0); }
-[data-theme="dark"] .sonya-toast {
-  background: rgba(22,17,12,0.95); border-color: rgba(232,197,142,0.18);
-  color: rgba(242,234,219,0.96);
-  box-shadow: 0 14px 40px rgba(0,0,0,0.38), 0 4px 12px rgba(0,0,0,0.20);
-}
-.sonya-toast--success { color: #1a7a48; border-color: rgba(26,122,72,0.20); }
-[data-theme="dark"] .sonya-toast--success { color: #88d4a8; border-color: rgba(100,210,150,0.22); }
-.sonya-toast--error {
-  color: #b03040; border-color: rgba(170,40,55,0.20);
-}
-[data-theme="dark"] .sonya-toast--error {
-  color: #f88080; border-color: rgba(248,80,80,0.24);
-  background: rgba(28,12,12,0.96);
-}
+[data-theme="light"] .sonya-toast { background: rgba(255, 255, 255, 0.85); color: #0a0a0a; }
+.sonya-toast--success { color: #88d4a8; }
+[data-theme="light"] .sonya-toast--success { color: #1a7a48; }
+.sonya-toast--error { color: #f88080; }
+[data-theme="light"] .sonya-toast--error { color: #b03040; }
 
 
 /* ============================================================
-   SONYA AUTH MODAL  ·  v7  matches .hero2-* exactly
+   SONYA AUTH MODAL  ·  v8  matches .hero2-* exactly
    · same glass tokens as .hero2-input / .hero2-tab / .hero2-cta
-   · NO backdrop-filter on overlay (cosmic video bg stays sharp)
+   · overlay now carries its own dim + blur scrim so the wordmark and
+     cosmic video bg behind it read as pushed-back depth, not as
+     visual noise competing with the card's text (v7 left the overlay
+     fully transparent; too much bled through the card)
    · spotlight: when modal is open, page content fades out but
-     SONYA wordmark + cosmic video bg remain visible
+     SONYA wordmark + cosmic video bg remain visible — now softened
+     by the overlay scrim rather than showing at full strength
    · class-based show/hide (.is-open on overlay)
    ============================================================ */
 
@@ -4005,11 +4551,21 @@ body.sonya-auth-open .hero2-wordmark {
   justify-content: center;
   padding: clamp(220px, 32vh, 360px) 20px 32px;
 
-  background: transparent;
+  /* Dims and softens whatever sits behind the card (wordmark, video)
+     so it reads as depth, not as competing content. */
+  background: rgba(4, 4, 6, 0.5);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 
   opacity: 0;
   pointer-events: none;
-  transition: opacity 220ms ease-out;
+  /* backdrop-filter transitions alongside opacity so the blur ramps in
+     instead of snapping to full strength the instant opacity leaves 0 —
+     that snap is what read as a harsh flash on open. will-change
+     pre-promotes the compositing layer since the overlay is always in
+     the DOM, so the browser doesn't build it lazily on first reveal. */
+  transition: opacity 220ms ease-out, backdrop-filter 220ms ease-out, -webkit-backdrop-filter 220ms ease-out;
+  will-change: opacity, backdrop-filter;
   overflow-y: auto;
 }
 
@@ -4033,10 +4589,17 @@ body.sonya-auth-open .hero2-wordmark {
   padding: 64px 36px 24px;
   border-radius: 32px;
 
-  background: rgba(0, 0, 0, 0.28);
-  backdrop-filter: blur(14px) saturate(140%);
-  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  /* Puffy/liquid glass: a big soft top highlight layered into the fill
+     (simulates a domed, lit-from-above surface) plus a crisp 1px top
+     rim-light in the shadow stack, on top of the existing diagonal
+     bevel — together they read as inflated glass, not a flat panel. */
+  background:
+    radial-gradient(140% 70% at 50% -15%, rgba(255, 255, 255, 0.14), transparent 62%),
+    rgba(10, 10, 12, 0.62);
+  backdrop-filter: blur(26px) saturate(150%);
+  -webkit-backdrop-filter: blur(26px) saturate(150%);
   box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.3),
     inset -21.48px -21.48px 10.74px -21.48px rgba(179, 179, 179, 0.72),
     inset  21.48px  21.48px 10.74px -21.48px rgba(179, 179, 179, 0.72),
     0 10px 40px rgba(0, 0, 0, 0.35),
@@ -4044,19 +4607,45 @@ body.sonya-auth-open .hero2-wordmark {
   color: #fff;
   font-family: 'Unbounded', 'Sora', system-ui, sans-serif;
 
-  /* Only animate transform — no opacity flicker on backdrop-filter.
-     Card's visibility is fully controlled by parent overlay opacity. */
+  /* opacity is deliberately NOT transitioned: fading this element's own
+     opacity (or inheriting a fade from the parent overlay's opacity)
+     both let backdrop-filter lag a few frames behind the fade, so the
+     card renders unblurred for a moment and then the blur "pops" in
+     mid-animation — the exact glitch this is fixing. Instead opacity
+     snaps instantly with the .is-open class (already fully blurred on
+     the very first frame it's visible), and only transform animates,
+     so there's nothing for the blur to lag behind. */
+  opacity: 0;
   transform: translateY(8px) scale(0.985);
   transition: transform 280ms cubic-bezier(0.22,1,0.36,1);
-  will-change: transform;
+  will-change: transform, backdrop-filter;
 }
 
 .sonya-auth-overlay.is-open .sonya-auth-card {
+  opacity: 1;
   transform: translateY(0) scale(1);
 }
 
-/* light theme: only text color is inverted (bg/shadow are the same) */
-[data-theme="light"] .sonya-auth-card { color: #0a0a0a; }
+/* light theme: light glass surface — was inheriting the dark-theme
+   rgba(10,10,12,.62) bg with only text flipped to black, which read
+   as a dark gray blob with near-invisible text. Mirrors the light
+   overrides already used on .paywall-price / .acct-drop-plan below. */
+[data-theme="light"] .sonya-auth-card {
+  color: #0a0a0a;
+  /* more translucent than a standard dense modal on purpose — the video
+     behind should read through and give the glass a gray cast, not sit
+     as a flat opaque white card. Same puffy top-highlight layer as dark
+     theme, just brighter, since the base fill is already light. */
+  background:
+    radial-gradient(140% 70% at 50% -15%, rgba(255, 255, 255, 0.85), transparent 62%),
+    rgba(255, 255, 255, 0.42);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.75),
+    inset -21.48px -21.48px 10.74px -21.48px rgba(10, 10, 10, 0.16),
+    inset  21.48px  21.48px 10.74px -21.48px rgba(10, 10, 10, 0.16),
+    0 10px 40px rgba(0, 0, 0, 0.22),
+    0 30px 80px rgba(0, 0, 0, 0.26);
+}
 
 /* ── 3. Close button (same .hero2-input glass shrunk) ────────── */
 .sonya-auth-close {
@@ -4093,8 +4682,20 @@ body.sonya-auth-open .hero2-wordmark {
     inset  10px  10px 6px -10px rgba(255, 255, 255, 0.85);
 }
 
-[data-theme="light"] .sonya-auth-close { color: rgba(10, 10, 10, 0.72) !important; }
-[data-theme="light"] .sonya-auth-close:hover { color: #0a0a0a !important; }
+[data-theme="light"] .sonya-auth-close {
+  color: rgba(10, 10, 10, 0.72) !important;
+  background: rgba(10, 10, 10, 0.06);
+  box-shadow:
+    inset -10px -10px 6px -10px rgba(10, 10, 10, 0.18),
+    inset  10px  10px 6px -10px rgba(10, 10, 10, 0.18);
+}
+[data-theme="light"] .sonya-auth-close:hover {
+  color: #0a0a0a !important;
+  background: rgba(10, 10, 10, 0.10);
+  box-shadow:
+    inset -10px -10px 6px -10px rgba(10, 10, 10, 0.28),
+    inset  10px  10px 6px -10px rgba(10, 10, 10, 0.28);
+}
 
 /* ── 4. Tabs (replica of .hero2-tabs / .hero2-tab.active) ─────── */
 .sonya-auth-tabs {
@@ -4107,9 +4708,13 @@ body.sonya-auth-open .hero2-wordmark {
   width: 100%;
   border-radius: 9999px;
 
-  /* matches .hero2-tabs shared rule (without backdrop-filter — card already blurs) */
-  background: rgba(0, 0, 0, 0.28);
+  /* matches .hero2-tabs shared rule (without backdrop-filter — card already blurs),
+     plus the same puffy top-highlight layer used across this card. */
+  background:
+    radial-gradient(160% 100% at 50% -40%, rgba(255, 255, 255, 0.10), transparent 60%),
+    rgba(0, 0, 0, 0.28);
   box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.18),
     inset -21.48px -21.48px 10.74px -21.48px rgba(179, 179, 179, 0.55),
     inset  21.48px  21.48px 10.74px -21.48px rgba(179, 179, 179, 0.55);
 }
@@ -4122,36 +4727,43 @@ body.sonya-auth-open .hero2-wordmark {
   padding: 13px 18px;
   border: 0;
   border-radius: 9999px;
-  background: rgba(6, 6, 8, 0.55);
-  color: rgba(255, 255, 255, 0.64);
+  /* Unselected: no slab of its own, same principle as .hero2-tab —
+     only the active choice reads as filled. */
+  background: transparent;
+  color: rgba(255, 255, 255, 0.58);
   font-family: 'Unbounded', 'Sora', system-ui, sans-serif;
   font-weight: 400;
   font-size: 13px;
   letter-spacing: 0.06em;
   cursor: pointer;
-  box-shadow:
-    inset -14px -14px 8px -14px rgba(179, 179, 179, 0.55),
-    inset  14px  14px 8px -14px rgba(179, 179, 179, 0.55);
-  transition: color 180ms ease, background 220ms ease, box-shadow 220ms ease, transform 180ms ease;
+  box-shadow: none;
+  transition: color 200ms ease, background 260ms ease, box-shadow 260ms ease, transform 160ms ease;
 }
 
-.sonya-auth-tab:hover { color: rgba(255, 255, 255, 0.85); }
+.sonya-auth-tab:hover { color: rgba(255, 255, 255, 0.82); background: rgba(255, 255, 255, 0.05); }
+.sonya-auth-tab:active { transform: scale(0.98); }
 
 .sonya-auth-tab.is-active {
   color: #fff;
-  background: rgba(20, 20, 22, 0.72);
+  background:
+    radial-gradient(160% 140% at 50% -60%, rgba(255, 255, 255, 0.35), transparent 60%),
+    rgba(20, 20, 22, 0.78);
   box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.6),
     inset -14px -14px 8px -14px rgba(255, 255, 255, 0.95),
     inset  14px  14px 8px -14px rgba(255, 255, 255, 0.60),
     0 6px 20px rgba(0, 0, 0, 0.35);
 }
+.sonya-auth-tab.is-active:hover { background: rgba(24, 24, 26, 0.82); }
 
-/* light theme: only text color, exact same as the page tabs */
+/* Confirmed exception to Theme Parity, matching .hero2-tabs: these stay
+   dark glass in both themes — user wants gray/dark tabs here, not an
+   inverted white pill. Only the text forces to black in light theme;
+   background/bevel/puffy-highlight are shared with dark theme above. */
 [data-theme="light"] .sonya-auth-tab,
 [data-theme="light"] .sonya-auth-tab.is-active { color: #0a0a0a; }
 [data-theme="light"] .sonya-auth-tab { color: rgba(10, 10, 10, 0.55); }
 [data-theme="light"] .sonya-auth-tab:hover { color: rgba(10, 10, 10, 0.85); }
-[data-theme="light"] .sonya-auth-tab.is-active { color: #0a0a0a; }
 
 /* ── 5. Banner ───────────────────────────────────────────────── */
 .sonya-auth-banner {
@@ -4160,7 +4772,7 @@ body.sonya-auth-open .hero2-wordmark {
   border-radius: 16px;
   background: rgba(0, 0, 0, 0.28);
   color: rgba(255, 255, 255, 0.85);
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: var(--font-body);
   font-size: 13px;
   line-height: 1.5;
   text-align: center;
@@ -4169,7 +4781,13 @@ body.sonya-auth-open .hero2-wordmark {
     inset  10px  10px 6px -10px rgba(179, 179, 179, 0.32);
 }
 
-[data-theme="light"] .sonya-auth-banner { color: rgba(10, 10, 10, 0.85); }
+[data-theme="light"] .sonya-auth-banner {
+  color: rgba(10, 10, 10, 0.85);
+  background: rgba(10, 10, 10, 0.06);
+  box-shadow:
+    inset -10px -10px 6px -10px rgba(10, 10, 10, 0.14),
+    inset  10px  10px 6px -10px rgba(10, 10, 10, 0.14);
+}
 
 /* ── 6. Views ────────────────────────────────────────────────── */
 .sonya-auth-view { display: none; }
@@ -4184,11 +4802,11 @@ body.sonya-auth-open .hero2-wordmark {
 }
 
 .sonya-auth-title {
-  margin: 0 0 6px;
+  margin: 0 0 8px;
   font-family: 'Unbounded', 'Sora', system-ui, sans-serif;
-  font-weight: 300;
-  font-size: 22px;
-  letter-spacing: 0.06em;
+  font-weight: 400;
+  font-size: 23px;
+  letter-spacing: 0.03em;
   color: #fff;
   text-align: center;
 }
@@ -4196,11 +4814,11 @@ body.sonya-auth-open .hero2-wordmark {
 [data-theme="light"] .sonya-auth-title { color: #0a0a0a; }
 
 .sonya-auth-subtitle {
-  margin: 0 0 22px;
-  font-family: 'Unbounded', 'Sora', system-ui, sans-serif;
-  font-weight: 300;
+  margin: 0 0 24px;
+  font-family: var(--font-body);
+  font-weight: 400;
   font-size: 13.5px;
-  letter-spacing: 0.04em;
+  letter-spacing: 0;
   line-height: 1.5;
   color: rgba(255, 255, 255, 0.55);
   text-align: center;
@@ -4218,18 +4836,56 @@ body.sonya-auth-open .hero2-wordmark {
   margin-bottom: 14px;
   border-radius: 9999px;
 
-  background: rgba(0, 0, 0, 0.28);
+  background:
+    radial-gradient(160% 120% at 50% -50%, rgba(255, 255, 255, 0.10), transparent 60%),
+    rgba(0, 0, 0, 0.28);
   box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
     inset -21.48px -21.48px 10.74px -21.48px rgba(179, 179, 179, 0.72),
     inset  21.48px  21.48px 10.74px -21.48px rgba(179, 179, 179, 0.72);
   transition: background 220ms ease, box-shadow 220ms ease;
 }
 
 .sonya-auth-field:focus-within {
-  background: rgba(20, 20, 22, 0.55);
+  background:
+    radial-gradient(160% 120% at 50% -50%, rgba(255, 255, 255, 0.22), transparent 60%),
+    rgba(20, 20, 22, 0.55);
   box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
     inset -21.48px -21.48px 10.74px -21.48px rgba(255, 255, 255, 0.85),
     inset  21.48px  21.48px 10.74px -21.48px rgba(255, 255, 255, 0.85);
+  /* Focus ring lives on the capsule, not the raw <input> — outline
+     auto-follows this element's own border-radius: 9999px, so it
+     reads as a pill, never a rectangle. */
+  outline: 2px solid rgba(255, 255, 255, 0.85);
+  outline-offset: 3px;
+}
+
+[data-theme="light"] .sonya-auth-field {
+  background:
+    radial-gradient(160% 120% at 50% -50%, rgba(255, 255, 255, 0.55), transparent 60%),
+    rgba(10, 10, 10, 0.06);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.4),
+    inset -21.48px -21.48px 10.74px -21.48px rgba(10, 10, 10, 0.16),
+    inset  21.48px  21.48px 10.74px -21.48px rgba(10, 10, 10, 0.16);
+}
+[data-theme="light"] .sonya-auth-field:focus-within {
+  background:
+    radial-gradient(160% 120% at 50% -50%, rgba(255, 255, 255, 0.8), transparent 60%),
+    rgba(255, 255, 255, 0.6);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    inset -21.48px -21.48px 10.74px -21.48px rgba(10, 10, 10, 0.28),
+    inset  21.48px  21.48px 10.74px -21.48px rgba(10, 10, 10, 0.28);
+  outline-color: rgba(10, 10, 10, 0.75);
+}
+
+/* The inner input has no border-radius of its own (the capsule shape
+   belongs to .sonya-auth-field) — never let it carry its own focus
+   ring, or the ring renders as a rectangle poking out of the pill. */
+.sonya-auth-input:focus-visible {
+  outline: none;
 }
 
 .sonya-auth-field-ic {
@@ -4246,10 +4902,10 @@ body.sonya-auth-open .hero2-wordmark {
   border: 0;
   outline: 0;
   color: #fff !important;
-  font-family: 'Unbounded', 'Sora', system-ui, sans-serif;
-  font-weight: 300;
+  font-family: var(--font-body);
+  font-weight: 400;
   font-size: 15px;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
 }
 
 .sonya-auth-input::placeholder { color: rgba(255, 255, 255, 0.60); }
@@ -4265,11 +4921,12 @@ body.sonya-auth-open .hero2-wordmark {
 
 .sonya-auth-input--code {
   text-align: center;
-  font-family: 'Unbounded', 'Sora', system-ui, monospace;
+  font-family: var(--font-body), monospace;
   font-size: 22px;
-  font-weight: 400;
+  font-weight: 500;
   letter-spacing: 0.42em;
   padding-left: 0.42em;
+  font-variant-numeric: tabular-nums;
 }
 
 /* ── 8. Primary CTA — replica of .hero2-cta ──────────────────── */
@@ -4287,14 +4944,17 @@ body.sonya-auth-open .hero2-wordmark {
   position: relative;
   overflow: hidden;
 
-  background: rgba(0, 0, 0, 0.28);
+  background:
+    radial-gradient(160% 140% at 50% -50%, rgba(255, 255, 255, 0.18), transparent 60%),
+    rgba(0, 0, 0, 0.28);
   color: #fff;
   font-family: 'Unbounded', 'Sora', system-ui, sans-serif;
-  font-weight: 400;
+  font-weight: 500;
   font-size: 13px;
-  letter-spacing: 0.10em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
   box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.3),
     inset -21.48px -21.48px 10.74px -21.48px rgba(179, 179, 179, 0.72),
     inset  21.48px  21.48px 10.74px -21.48px rgba(179, 179, 179, 0.72),
     0 10px 40px rgba(0, 0, 0, 0.35);
@@ -4303,14 +4963,17 @@ body.sonya-auth-open .hero2-wordmark {
 
 .sonya-auth-cta:hover {
   transform: translateY(-1px);
-  background: rgba(20, 20, 22, 0.62);
+  background:
+    radial-gradient(160% 140% at 50% -50%, rgba(255, 255, 255, 0.3), transparent 60%),
+    rgba(20, 20, 22, 0.62);
   box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.5),
     inset -21.48px -21.48px 10.74px -21.48px rgba(255, 255, 255, 0.92),
     inset  21.48px  21.48px 10.74px -21.48px rgba(255, 255, 255, 0.92),
     0 14px 50px rgba(0, 0, 0, 0.45);
 }
 
-.sonya-auth-cta:active { transform: translateY(0); }
+.sonya-auth-cta:active { transform: translateY(0) scale(0.98); }
 
 .sonya-auth-cta:disabled {
   opacity: 0.55;
@@ -4318,13 +4981,33 @@ body.sonya-auth-open .hero2-wordmark {
   transform: none;
 }
 
-[data-theme="light"] .sonya-auth-cta { color: #0a0a0a; }
+[data-theme="light"] .sonya-auth-cta {
+  color: #0a0a0a;
+  background:
+    radial-gradient(160% 140% at 50% -50%, rgba(255, 255, 255, 0.85), transparent 60%),
+    rgba(10, 10, 10, 0.08);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.6),
+    inset -21.48px -21.48px 10.74px -21.48px rgba(10, 10, 10, 0.18),
+    inset  21.48px  21.48px 10.74px -21.48px rgba(10, 10, 10, 0.18),
+    0 10px 40px rgba(0, 0, 0, 0.10);
+}
+[data-theme="light"] .sonya-auth-cta:hover {
+  background:
+    radial-gradient(160% 140% at 50% -50%, rgba(255, 255, 255, 0.95), transparent 60%),
+    rgba(10, 10, 10, 0.13);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.8),
+    inset -21.48px -21.48px 10.74px -21.48px rgba(10, 10, 10, 0.30),
+    inset  21.48px  21.48px 10.74px -21.48px rgba(10, 10, 10, 0.30),
+    0 14px 50px rgba(0, 0, 0, 0.14);
+}
 
 /* ── 9. Switch link ──────────────────────────────────────────── */
 .sonya-auth-switch {
   margin-top: 18px;
   text-align: center;
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: var(--font-body);
   font-size: 13px;
   color: rgba(255, 255, 255, 0.55);
 }
@@ -4380,7 +5063,7 @@ body.sonya-auth-open .hero2-wordmark {
   display: flex;
   gap: 11px;
   align-items: flex-start;
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: var(--font-body);
   font-size: 12.5px;
   line-height: 1.45;
   color: rgba(255, 255, 255, 0.78);
@@ -4390,6 +5073,13 @@ body.sonya-auth-open .hero2-wordmark {
 }
 
 [data-theme="light"] .sonya-auth-consent { color: rgba(10, 10, 10, 0.78) !important; }
+
+[data-theme="light"] .sonya-auth-consents {
+  background: rgba(10, 10, 10, 0.05);
+  box-shadow:
+    inset -10px -10px 6px -10px rgba(10, 10, 10, 0.12),
+    inset  10px  10px 6px -10px rgba(10, 10, 10, 0.12);
+}
 
 .sonya-auth-consent input {
   position: absolute;
@@ -4474,7 +5164,7 @@ body.sonya-auth-open .hero2-wordmark {
   border-radius: 14px;
   background: rgba(220, 80, 80, 0.18);
   color: #ff9090;
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: var(--font-body);
   font-size: 12.5px;
   line-height: 1.45;
   text-align: center;
@@ -4493,7 +5183,7 @@ body.sonya-auth-open .hero2-wordmark {
   display: flex;
   align-items: center;
   gap: 10px;
-  font-family: 'Inter', system-ui, sans-serif;
+  font-family: var(--font-body);
   font-size: 11.5px;
   line-height: 1.5;
   color: rgba(255, 255, 255, 0.42);

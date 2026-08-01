@@ -234,8 +234,16 @@ import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.m
 		cancelAnimationFrame(raf);
 	}
 
+	function isSphereVisible() {
+		const wrap = canvas.closest('.sonya-sphere-wrap');
+		if (!wrap) return true;
+		// The v2 UI hides this wrap and shows title/status/progress-bar instead —
+		// don't keep rendering an invisible WebGL scene every frame.
+		return getComputedStyle(wrap).display !== 'none';
+	}
+
 	function sync() {
-		if (page.classList.contains('active')) start();
+		if (page.classList.contains('active') && isSphereVisible()) start();
 		else stop();
 	}
 
@@ -257,7 +265,7 @@ import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.1/build/three.m
 	// Pause when tab/window backgrounded
 	document.addEventListener('visibilitychange', () => {
 		if (document.hidden) stop();
-		else if (page.classList.contains('active')) start();
+		else sync();
 	});
 
 	whenReady(sync);

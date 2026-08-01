@@ -413,7 +413,6 @@ const elements = {
         btnBack2: document.getElementById('btn-back-2'),
         btnBack3: document.getElementById('btn-back-3'),
         btnGenerate: document.getElementById('btn-generate'),
-        btnDownload: document.getElementById('btn-download'),
         btnNewProject: document.getElementById('btn-new-project'),
         btnTrailer: document.getElementById('btn-trailer'),
 
@@ -434,8 +433,11 @@ const elements = {
         progressBar: document.getElementById('progress-bar'),
 
         // Result
-        resultCount: document.getElementById('result-count'),
-        resultSize: document.getElementById('result-size')
+        resultHeadline: document.getElementById('result-headline'),
+        resultSub: document.getElementById('result-sub'),
+        resultTags: document.getElementById('result-tags'),
+        resultClipGrid: document.getElementById('result-clip-grid'),
+        resultActions: document.getElementById('result-actions')
 };
 
 // =====================================================
@@ -567,13 +569,214 @@ function updateNextButton2State() {
 // implementation at the bottom of this file (SONYA_REAL_POLLING_PATCH_V2),
 // which overrides `simulateProcessing` as soon as this script loads.
 
-function updateResultInfo() {
-        // Simulated result data
-        const videosCount = Math.floor(Math.random() * 8) + 5;
-        const sizeInMB = Math.floor(Math.random() * 200) + 100;
+// =====================================================
+// Result rendering — driven entirely by what a generation
+// actually produced (clipType + real clip URL(s)). No invented
+// scores, no random counts: a field we don't have is a field
+// we don't show, not a placeholder dash.
+//
+// Every node here is built via createElement/textContent/href
+// property assignment — never innerHTML with anything derived
+// from a clip (url, in particular, only ever reaches the DOM
+// through isSafeResultUrl() + a direct .href/.src assignment,
+// the same pattern showRealResult() below already uses).
+// =====================================================
 
-        elements.resultCount.textContent = videosCount;
-        elements.resultSize.textContent = sizeInMB + ' MB';
+// Backend-controlled URL (S3 presigned result link) must never be trusted
+// as-is: only an absolute https: URL, or a same-origin URL (any scheme
+// the page itself is already served over), is allowed. Rejects
+// javascript:, data:, vbscript:, and any malformed value -- those get an
+// opaque/null URL.origin from the URL constructor, which can never equal
+// window.location.origin, so both branches below fail closed.
+function isSafeResultUrl(rawUrl) {
+        if (typeof rawUrl !== 'string' || !rawUrl.trim()) return false;
+        let parsed;
+        try {
+                parsed = new URL(rawUrl, window.location.href);
+        } catch (_) {
+                return false;
+        }
+        if (parsed.protocol === 'https:') return true;
+        if (parsed.origin === window.location.origin) return true;
+        return false;
+}
+
+const RESULT_MODE_LABELS = {
+        viral: 'Вирусные клипы',
+        educational: 'Образовательные клипы',
+        storytelling: 'Сторителлинг',
+        hooks: 'Хуки',
+        streamer: 'Клипы стримера',
+        filmbreaker: 'Кинематографичный трейлер'
+};
+
+function resultModeLabel(clipType) {
+        return RESULT_MODE_LABELS[clipType] || 'Короткие клипы';
+}
+
+function resultDefaultAspect(clipType) {
+        return clipType === 'filmbreaker' ? '16:9' : '9:16';
+}
+
+function formatClipDuration(seconds) {
+        if (!Number.isFinite(seconds) || seconds < 0) return null;
+        const m = Math.floor(seconds / 60);
+        const s = Math.floor(seconds % 60);
+        return m + ':' + String(s).padStart(2, '0');
+}
+
+function pluralizeClips(n) {
+        const mod10 = n % 10, mod100 = n % 100;
+        if (mod10 === 1 && mod100 !== 11) return 'клип';
+        if ([2, 3, 4].includes(mod10) && ![12, 13, 14].includes(mod100)) return 'клипа';
+        return 'клипов';
+}
+
+function renderResultHeadline({ clipType, count }) {
+        if (!elements.resultHeadline || !elements.resultSub) return;
+        const modeLabel = resultModeLabel(clipType);
+
+        if (count <= 1) {
+                elements.resultHeadline.textContent = clipType === 'filmbreaker' ? 'Трейлер готов' : 'Клип готов';
+                elements.resultSub.textContent = modeLabel + ' · готов к экспорту';
+        } else {
+                elements.resultHeadline.textContent = 'Готово: ' + count + ' ' + pluralizeClips(count);
+                elements.resultSub.textContent = modeLabel + ' · готовы к экспорту';
+        }
+}
+
+function renderResultTags({ clipType, aspect, count }) {
+        if (!elements.resultTags) return;
+        const tags = [
+                { icon: 'fa-clapperboard', label: resultModeLabel(clipType) },
+                { icon: 'fa-expand', label: aspect || resultDefaultAspect(clipType), soft: true }
+        ];
+        if (count > 1) tags.push({ icon: 'fa-layer-group', label: count + ' ' + pluralizeClips(count), soft: true });
+
+        while (elements.resultTags.firstChild) elements.resultTags.removeChild(elements.resultTags.firstChild);
+        tags.forEach(t => {
+                const span = document.createElement('span');
+                span.className = 'score-badge' + (t.soft ? ' score-badge--soft' : '');
+                const icon = document.createElement('i');
+                icon.className = 'fa-solid ' + t.icon;
+                span.appendChild(icon);
+                span.appendChild(document.createTextNode(' ' + t.label));
+                elements.resultTags.appendChild(span);
+        });
+}
+
+// clip: { url, label, duration } — url is validated here via
+// isSafeResultUrl() before it ever touches an .href, exactly like
+// showRealResult() does for the single-clip legacy box.
+function renderResultClips(clips) {
+        if (!elements.resultClipGrid) return;
+        const grid = elements.resultClipGrid;
+        grid.dataset.count = String(clips.length);
+        while (grid.firstChild) grid.removeChild(grid.firstChild);
+
+        clips.forEach((clip, i) => {
+                const safeUrl = isSafeResultUrl(clip.url) ? clip.url : '';
+                const duration = formatClipDuration(clip.duration);
+                const label = clip.label || ('Клип ' + (i + 1));
+
+                const card = document.createElement('div');
+                card.className = 'result-clip-card';
+
+                const thumb = document.createElement(safeUrl ? 'a' : 'div');
+                thumb.className = 'result-clip-thumb';
+                if (safeUrl) {
+                        thumb.href = safeUrl;
+                        thumb.target = '_blank';
+                        thumb.rel = 'noopener';
+                }
+                const glow = document.createElement('div');
+                glow.className = 'result-clip-thumb-glow';
+                const fx = document.createElement('div');
+                fx.className = 'result-clip-glass-fx';
+                fx.setAttribute('aria-hidden', 'true');
+                const play = document.createElement('span');
+                play.className = 'result-clip-play';
+                const playIcon = document.createElement('i');
+                playIcon.className = 'fa-solid fa-play';
+                play.appendChild(playIcon);
+                thumb.appendChild(glow);
+                thumb.appendChild(fx);
+                thumb.appendChild(play);
+                if (duration) {
+                        const durEl = document.createElement('span');
+                        durEl.className = 'result-clip-duration';
+                        durEl.textContent = duration;
+                        thumb.appendChild(durEl);
+                }
+
+                const body = document.createElement('div');
+                body.className = 'result-clip-body';
+                const labelEl = document.createElement('span');
+                labelEl.className = 'result-clip-label';
+                labelEl.textContent = label;
+                body.appendChild(labelEl);
+                if (safeUrl) {
+                        const dl = document.createElement('a');
+                        dl.className = 'result-clip-download';
+                        dl.href = safeUrl;
+                        dl.target = '_blank';
+                        dl.rel = 'noopener';
+                        dl.setAttribute('aria-label', 'Скачать ' + label);
+                        const dlIcon = document.createElement('i');
+                        dlIcon.className = 'fa-solid fa-download';
+                        dl.appendChild(dlIcon);
+                        body.appendChild(dl);
+                }
+
+                card.appendChild(thumb);
+                card.appendChild(body);
+                grid.appendChild(card);
+        });
+}
+
+function renderResultActions({ clips, archiveUrl }) {
+        if (!elements.resultActions) return;
+        while (elements.resultActions.firstChild) elements.resultActions.removeChild(elements.resultActions.firstChild);
+
+        // Only ever show a bulk-download affordance when we actually have
+        // something real (and safe) to point it at — a single validated
+        // clip URL, or a genuine, validated archive URL from the backend.
+        // Never a dead/simulated button.
+        const safeArchiveUrl = isSafeResultUrl(archiveUrl) ? archiveUrl : '';
+        const safeSingleUrl = clips.length === 1 && isSafeResultUrl(clips[0].url) ? clips[0].url : '';
+
+        let href = '', iconClass = '', label = '';
+        if (safeArchiveUrl && clips.length > 1) {
+                href = safeArchiveUrl; iconClass = 'fa-file-zipper'; label = 'Скачать всё';
+        } else if (safeSingleUrl) {
+                href = safeSingleUrl; iconClass = 'fa-download'; label = 'Скачать';
+        }
+        if (!href) return;
+
+        const link = document.createElement('a');
+        link.className = 'btn-secondary result-download-all';
+        link.href = href;
+        link.target = '_blank';
+        link.rel = 'noopener';
+        const icon = document.createElement('i');
+        icon.className = 'fa-solid ' + iconClass;
+        const labelSpan = document.createElement('span');
+        labelSpan.textContent = label;
+        link.appendChild(icon);
+        link.appendChild(labelSpan);
+        elements.resultActions.appendChild(link);
+}
+
+// data: { clips: [{url, label, duration}], clipType, aspect, archiveUrl }
+function renderSonyaResult(data) {
+        const clips = Array.isArray(data.clips) ? data.clips : [];
+        const clipType = data.clipType || appState.clipType || '';
+        const count = clips.length;
+
+        renderResultHeadline({ clipType, count });
+        renderResultTags({ clipType, aspect: data.aspect, count });
+        renderResultClips(clips);
+        renderResultActions({ clips, archiveUrl: data.archiveUrl || null });
 }
 
 // =====================================================
@@ -618,20 +821,6 @@ function sendDataToBot(data) {
         } else {
                 // Fallback for testing outside Telegram
                 alert('Data would be sent to bot:\n' + JSON.stringify(data, null, 2));
-        }
-}
-
-function requestZipDownload() {
-        const data = {
-                action: 'download_zip',
-                ...collectFormData()
-        };
-
-        sendDataToBot(data);
-
-        // Show confirmation
-        if (tg) {
-                tg.showAlert('Архив отправлен в чат!');
         }
 }
 
@@ -961,9 +1150,6 @@ function initEventListeners() {
                 if (e.key === 'Enter') submitGenerationJob();
         });
 
-        // Download ZIP button
-        elements.btnDownload.addEventListener('click', requestZipDownload);
-
         // New project button
         elements.btnNewProject.addEventListener('click', () => {
                 // Reset state
@@ -1198,6 +1384,28 @@ document.addEventListener('DOMContentLoaded', init);
 
   }
 
+  // The backend doesn't report a numeric percentage, only a coarse status —
+  // so the bar advances in fixed steps per known status rather than tracking
+  // real progress. queued/claimed/processing/mode_running/completed map to
+  // 5 rungs; unknown statuses hold the last-known position instead of
+  // resetting, so the bar never visibly jumps backward.
+  function progressForStatus(job) {
+    const st = String(job && job.status || '').toLowerCase();
+    if (st === 'queued') return 12;
+    if (st === 'claimed') return 32;
+    if (st === 'processing') return 58;
+    if (st === 'mode_running') return 85;
+    if (st === 'completed') return 100;
+    return null;
+  }
+
+  function setProgress(pct) {
+    if (pct == null) return;
+    document.querySelectorAll('#progress-bar, .progress-bar').forEach(el => {
+      el.style.width = pct + '%';
+    });
+  }
+
   async function getJson(url) {
     const res = await fetch(url, { credentials: 'include' });
     let data = {};
@@ -1205,89 +1413,66 @@ document.addEventListener('DOMContentLoaded', init);
     return { res, data };
   }
 
-  // Backend-controlled URL (S3 presigned result link) must never be trusted
-  // as-is: only an absolute https: URL, or a same-origin URL (any scheme
-  // the page itself is already served over), is allowed. Rejects
-  // javascript:, data:, vbscript:, and any malformed value -- those get an
-  // opaque/null URL.origin from the URL constructor, which can never equal
-  // window.location.origin, so both branches below fail closed.
-  function isSafeResultUrl(rawUrl) {
-    if (typeof rawUrl !== 'string' || !rawUrl.trim()) return false;
-    let parsed;
-    try {
-      parsed = new URL(rawUrl, window.location.href);
-    } catch (_) {
-      return false;
-    }
-    if (parsed.protocol === 'https:') return true;
-    if (parsed.origin === window.location.origin) return true;
-    return false;
-  }
-
+  // isSafeResultUrl() is defined once, at top level (used by both this
+  // polling patch and renderResultClips()/renderResultActions()) -- see the
+  // Result rendering section above. Every url here reaches the DOM only via
+  // the grid's own .href/.src property assignments; never innerHTML.
   function showRealResult(result, job) {
     localStorage.removeItem('sonya_active_job_id');
     if (typeof resetGenerationLock === 'function') resetGenerationLock();
 
-    const rawUrl =
+    if (typeof showPage === 'function') {
+      showPage('result');
+    }
+
+    // The current API only ever returns one URL per job, but
+    // renderSonyaResult() and its grid already handle N clips — the moment
+    // result.clips arrives as an array (backend adds series support), this
+    // needs no change here beyond passing it through.
+    const rawSingleUrl =
       result.url ||
       result.result_url ||
       result.download_url ||
       result.presigned_url ||
       result.signed_url ||
       '';
-    const url = isSafeResultUrl(rawUrl) ? rawUrl : '';
 
-    window.SONYA_LAST_RESULT_URL = url;
+    const clips = Array.isArray(result.clips) && result.clips.length
+      ? result.clips.map(function (c, i) {
+          return {
+            url: c.url || c.result_url || c.download_url || '',
+            label: c.label || null,
+            duration: c.duration || null
+          };
+        })
+      : (rawSingleUrl ? [{ url: rawSingleUrl, label: null, duration: null }] : []);
+
+    // Unsafe entries are dropped here (not just skipped at render time) so
+    // window.SONYA_LAST_RESULT_URL and the grid can never end up holding a
+    // rejected url under any code path.
+    const safeClips = clips.filter(function (c) { return isSafeResultUrl(c.url); });
+
+    window.SONYA_LAST_RESULT_URL = safeClips[0] ? safeClips[0].url : '';
     window.SONYA_LAST_COMPLETED_JOB = job;
 
-    if (typeof showPage === 'function') {
-      showPage('result');
+    if (typeof renderSonyaResult === 'function') {
+      renderSonyaResult({
+        clips: safeClips,
+        clipType: (typeof appState !== 'undefined' && appState.clipType) || undefined,
+        aspect: result.aspect || result.aspect_ratio || null,
+        archiveUrl: result.archive_url || result.zip_url || null
+      });
     }
 
-    let box = document.getElementById('sonya-real-result');
-    if (!box) {
-      box = document.createElement('div');
-      box.id = 'sonya-real-result';
-      box.style.cssText = 'margin:24px auto;max-width:760px;padding:20px;border:1px solid rgba(255,255,255,.14);border-radius:20px;background:rgba(255,255,255,.05);color:#fff;text-align:center;position:relative;z-index:20;';
-      document.body.appendChild(box);
-    }
-
-    // Rebuild contents via DOM APIs only -- never innerHTML with anything
-    // derived from the backend response. url has already been validated by
-    // isSafeResultUrl(); .src/.href are plain property assignments (never
-    // parsed as markup), not string concatenation into an HTML template.
-    while (box.firstChild) box.removeChild(box.firstChild);
-
-    if (url) {
-      const title = document.createElement('div');
-      title.style.cssText = 'font-size:22px;margin-bottom:14px;';
-      title.textContent = 'Видео готово';
-
-      const video = document.createElement('video');
-      video.controls = true;
-      video.style.cssText = 'width:100%;max-height:520px;border-radius:16px;background:#000;';
-      video.src = url;
-
-      const linkWrap = document.createElement('div');
-      linkWrap.style.cssText = 'margin-top:16px;';
-      const link = document.createElement('a');
-      link.href = url;
-      link.target = '_blank';
-      link.rel = 'noopener';
-      link.style.cssText = 'color:#fff;text-decoration:underline;font-size:18px;';
-      link.textContent = 'Скачать видео';
-      linkWrap.appendChild(link);
-
-      box.appendChild(title);
-      box.appendChild(video);
-      box.appendChild(linkWrap);
-    } else {
-      const msg = document.createElement('div');
-      msg.style.cssText = 'font-size:20px;';
-      msg.textContent = rawUrl
+    if (!safeClips.length) {
+      // No safe clip to show: fall back to a plain-text notice in the
+      // result headline/sub area (textContent only -- never innerHTML)
+      // rather than a populated grid.
+      const msg = clips.length
         ? 'Видео готово, но получена небезопасная ссылка на результат. Обратитесь в поддержку. Job: ' + (pickJobId(job) || '')
         : 'Видео готово, но ссылка результата не найдена. Job: ' + (pickJobId(job) || '');
-      box.appendChild(msg);
+      if (elements.resultHeadline) elements.resultHeadline.textContent = 'Видео готово';
+      if (elements.resultSub) elements.resultSub.textContent = msg;
     }
   }
 
@@ -1308,6 +1493,7 @@ document.addEventListener('DOMContentLoaded', init);
 
     localStorage.setItem('sonya_active_job_id', jobId);
     setText('Видео в очереди');
+    setProgress(12);
 
     try {
       for (let i = 0; i < 720; i++) {
@@ -1321,8 +1507,10 @@ document.addEventListener('DOMContentLoaded', init);
 
         const st = String(job.status || '').toLowerCase();
         setText(statusText(job));
+        setProgress(progressForStatus(job));
 
         if (st === 'completed') {
+          setProgress(100);
           const result = await getJson(API_BASE + '/generation/jobs/' + jobId + '/result-url');
           showRealResult(result.data || {}, job);
           return;

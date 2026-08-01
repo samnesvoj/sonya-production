@@ -18,19 +18,25 @@ async function flush(ticks = 8) {
 }
 
 // ── XSS: unsafe result URL rendering ─────────────────────────────────────
+//
+// showRealResult() lives inside the polling IIFE; it's driven the same way
+// production code reaches it -- through the poll loop's completed path --
+// by monkey-patching fetch to return status=completed then a malicious
+// result URL. It now renders into the redesigned result grid
+// (#result-clip-grid / #result-actions) via renderSonyaResult() instead of
+// the old ad-hoc #sonya-real-result box, but the security contract is
+// identical: never innerHTML with backend-derived data, and any URL that
+// fails isSafeResultUrl() must never reach a href/src anywhere.
+
+function walk(el, out = []) {
+  out.push(el);
+  el.children.forEach((c) => walk(c, out));
+  return out;
+}
 
 test('malicious javascript: result URL is not inserted as HTML or executable href', () => {
   const { sandbox, document } = loadApp();
-  const showRealResult = sandbox.window.__test_showRealResult || sandbox.showRealResult;
-  // showRealResult lives inside the polling IIFE; exposed for tests via
-  // window.sonyaPollJob's sibling hook is not present, so we drive it the
-  // same way production code does: through the poll loop's completed path.
-  // To keep this test focused and fast, call the exported entry point that
-  // production uses to reach it: simulate a completed job by monkey-
-  // patching fetch to return status=completed then a malicious result URL.
-  const calls = [];
   sandbox.window.fetch = async (url) => {
-    calls.push(url);
     if (url.endsWith('/result-url')) {
       return { ok: true, status: 200, json: async () => ({ url: 'javascript:alert(1)' }) };
     }
@@ -39,25 +45,23 @@ test('malicious javascript: result URL is not inserted as HTML or executable hre
   sandbox.fetch = sandbox.window.fetch;
 
   return sandbox.window.sonyaPollJob('job-1').then(() => {
-    const box = document.getElementById('sonya-real-result');
-    assert.ok(box, 'result box should be created');
+    const grid = document.getElementById('result-clip-grid');
+    const actions = document.getElementById('result-actions');
 
     // Never inserted via innerHTML.
-    assert.equal(box.innerHTML, '', 'innerHTML must never be used for result rendering');
+    assert.equal(grid.innerHTML, '', 'innerHTML must never be used for the clip grid');
+    assert.equal(actions.innerHTML, '', 'innerHTML must never be used for result actions');
+    // An unsafe clip is dropped entirely -- no card, no dead action link.
+    assert.equal(grid.children.length, 0, 'unsafe clip must not produce a card');
+    assert.equal(actions.children.length, 0, 'unsafe clip must not produce an action link');
 
-    // No <a> or <video> child carries the malicious scheme anywhere.
-    const walk = (el, out) => {
-      out.push(el);
-      el.children.forEach((c) => walk(c, out));
-      return out;
-    };
-    const all = walk(box, []);
-    for (const el of all) {
+    // No element anywhere in the result area carries the malicious scheme.
+    for (const el of [...walk(grid), ...walk(actions)]) {
       if (el.href) assert.ok(!String(el.href).startsWith('javascript:'), 'no href carries javascript:');
       if (el.src) assert.ok(!String(el.src).startsWith('javascript:'), 'no src carries javascript:');
     }
-    // A safe rejection message is shown instead.
-    assert.match(box.textContent, /небезопасн/i);
+    // A safe rejection message is shown instead, as plain text.
+    assert.match(document.getElementById('result-sub').textContent, /небезопасн/i);
   });
 });
 
@@ -72,14 +76,17 @@ test('malicious data: result URL is rejected the same way', () => {
   sandbox.fetch = sandbox.window.fetch;
 
   return sandbox.window.sonyaPollJob('job-1').then(() => {
-    const box = document.getElementById('sonya-real-result');
-    assert.equal(box.innerHTML, '');
-    assert.doesNotMatch(box.textContent, /<script>/i);
-    assert.match(box.textContent, /небезопасн/i);
+    const grid = document.getElementById('result-clip-grid');
+    const actions = document.getElementById('result-actions');
+    assert.equal(grid.innerHTML, '');
+    assert.equal(actions.innerHTML, '');
+    assert.equal(grid.children.length, 0);
+    assert.doesNotMatch(document.getElementById('result-sub').textContent, /<script>/i);
+    assert.match(document.getElementById('result-sub').textContent, /небезопасн/i);
   });
 });
 
-test('a normal https result URL renders a working video + download link', () => {
+test('a normal https result URL renders a working clip card and download link, never via innerHTML', () => {
   const { sandbox, document } = loadApp();
   const GOOD_URL = 'https://s3.example.com/bucket/output.mp4?sig=abc';
   sandbox.window.fetch = async (url) => {
@@ -91,20 +98,23 @@ test('a normal https result URL renders a working video + download link', () => 
   sandbox.fetch = sandbox.window.fetch;
 
   return sandbox.window.sonyaPollJob('job-1').then(() => {
-    const box = document.getElementById('sonya-real-result');
-    assert.equal(box.innerHTML, '', 'still built via DOM APIs, not innerHTML');
+    const grid = document.getElementById('result-clip-grid');
+    const actions = document.getElementById('result-actions');
 
-    const video = box.children.find((c) => c.tagName === 'VIDEO');
-    const link = box.children
-      .flatMap((c) => (c.tagName === 'A' ? [c] : c.children))
-      .find((c) => c.tagName === 'A');
+    assert.equal(grid.innerHTML, '', 'still built via DOM APIs, not innerHTML');
+    assert.equal(actions.innerHTML, '', 'still built via DOM APIs, not innerHTML');
+    assert.equal(grid.children.length, 1, 'one clip card should be rendered');
 
-    assert.ok(video, 'video element should exist');
-    assert.equal(video.src, GOOD_URL);
-    assert.ok(link, 'download link should exist');
-    assert.equal(link.href, GOOD_URL);
-    assert.equal(link.target, '_blank');
-    assert.equal(link.rel, 'noopener');
+    const cardLink = walk(grid.children[0]).find((c) => c.tagName === 'A' && c.href === GOOD_URL);
+    assert.ok(cardLink, 'clip card should carry a link to the validated URL');
+    assert.equal(cardLink.target, '_blank');
+    assert.equal(cardLink.rel, 'noopener');
+
+    const actionLink = actions.children.find((c) => c.tagName === 'A');
+    assert.ok(actionLink, 'a download action should exist for the single clip');
+    assert.equal(actionLink.href, GOOD_URL);
+    assert.equal(actionLink.target, '_blank');
+    assert.equal(actionLink.rel, 'noopener');
   });
 });
 

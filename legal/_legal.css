@@ -1,322 +1,466 @@
-/* =========================================================
-   SONYA — legal page shell
+/* ============================================================
+   SONYA — legal document shell ("The Screening Room", Read mode)
    Shared across /legal/*.html
-   Cosmic gradient bg + glass article card + neat typography
-   Light/dark themes via [data-theme]
-   ========================================================= */
+   Achromatic liquid glass over a deep gradient stage, machined
+   inset bevel, Unbounded display / Onest body — same material
+   language as .app-container.v2 in app.js/styles.css.
+   No gold, no accent hue. Dark obsidian glass <-> light frosted
+   silver glass; only the bevel/fill direction inverts per theme.
+   ============================================================ */
 
 * { box-sizing: border-box; }
 
+:root {
+	--lg-font-display: 'Unbounded', 'Sora', system-ui, sans-serif;
+	--lg-font-body: 'Onest', 'Inter', system-ui, -apple-system, sans-serif;
+
+	--lg-bevel:
+		inset -21.48px -21.48px 10.74px -21.48px rgba(179, 179, 179, 0.55),
+		inset  21.48px  21.48px 10.74px -21.48px rgba(179, 179, 179, 0.55);
+	--lg-bevel-soft:
+		inset -14px -14px 8px -14px rgba(179, 179, 179, 0.32),
+		inset  14px  14px 8px -14px rgba(179, 179, 179, 0.32);
+	--lg-bevel-strong:
+		inset -21.48px -21.48px 10.74px -21.48px rgba(255, 255, 255, 0.85),
+		inset  21.48px  21.48px 10.74px -21.48px rgba(255, 255, 255, 0.85);
+
+	--lg-void: #050507;
+	--lg-surface-dense: rgba(10, 10, 12, 0.62);
+	--lg-surface-soft: rgba(255, 255, 255, 0.03);
+	--lg-text: #ffffff;
+	--lg-text-dim: rgba(255, 255, 255, 0.62);
+	--lg-text-mute: rgba(255, 255, 255, 0.55);
+	--lg-hairline: rgba(255, 255, 255, 0.08);
+	--lg-ambient: 0 10px 40px rgba(0, 0, 0, 0.35), 0 30px 80px rgba(0, 0, 0, 0.45);
+}
+
+[data-theme="light"] {
+	--lg-bevel:
+		inset -21.48px -21.48px 10.74px -21.48px rgba(10, 10, 10, 0.16),
+		inset  21.48px  21.48px 10.74px -21.48px rgba(10, 10, 10, 0.16);
+	--lg-bevel-soft:
+		inset -14px -14px 8px -14px rgba(10, 10, 10, 0.12),
+		inset  14px  14px 8px -14px rgba(10, 10, 10, 0.12);
+	--lg-bevel-strong:
+		inset -21.48px -21.48px 10.74px -21.48px rgba(10, 10, 10, 0.22),
+		inset  21.48px  21.48px 10.74px -21.48px rgba(10, 10, 10, 0.22);
+
+	--lg-void: #F3F3F4;
+	--lg-surface-dense: rgba(255, 255, 255, 0.72);
+	--lg-surface-soft: rgba(10, 10, 10, 0.028);
+	--lg-text: #0a0a0a;
+	--lg-text-dim: rgba(10, 10, 10, 0.58);
+	--lg-text-mute: rgba(10, 10, 10, 0.52);
+	--lg-hairline: rgba(10, 10, 10, 0.08);
+	--lg-ambient: 0 10px 40px rgba(0, 0, 0, 0.14), 0 26px 70px rgba(0, 0, 0, 0.12);
+}
+
 html, body {
-  margin: 0;
-  padding: 0;
-  min-height: 100%;
-  background: #050507;
-  color: #f4eee2;
-  font-family: 'Inter', system-ui, -apple-system, Segoe UI, sans-serif;
-  font-weight: 400;
-  font-size: 15.5px;
-  line-height: 1.65;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+	margin: 0;
+	padding: 0;
+	min-height: 100%;
 }
 
-[data-theme="light"] body {
-  background: #f4eee2;
-  color: #1a1410;
+body {
+	background: var(--lg-void);
+	color: var(--lg-text);
+	font-family: var(--lg-font-body);
+	font-weight: 400;
+	font-size: 15px;
+	line-height: 1.65;
+	-webkit-font-smoothing: antialiased;
+	-moz-osx-font-smoothing: grayscale;
+	transition: background 320ms ease, color 320ms ease;
 }
 
-/* ─── 1. Cosmic background ─────────────────────────────── */
+/* Deliberate keyboard focus ring, matching the main app — replaces
+   the browser default so it reads on glass in either theme. */
+a:focus-visible,
+button:focus-visible {
+	outline: 2px solid rgba(255, 255, 255, 0.85);
+	outline-offset: 3px;
+}
+[data-theme="light"] a:focus-visible,
+[data-theme="light"] button:focus-visible {
+	outline-color: rgba(10, 10, 10, 0.75);
+}
+
+/* ─── 1. Stage backdrop ─────────────────────────────────────
+   No literal cinema video here — long-form legal text is a Read
+   surface, and an autoplaying video behind body copy would fight
+   comprehension. Depth instead comes from layered achromatic
+   radial glow + a fine grain, the same atmospheric intent as the
+   cinema stage without the motion or weight. */
 .legal-bg {
-  position: fixed;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  overflow: hidden;
-  background:
-    radial-gradient(80% 60% at 50% 20%, rgba(80, 70, 60, 0.32), transparent 60%),
-    radial-gradient(60% 50% at 80% 80%, rgba(40, 50, 80, 0.22), transparent 60%),
-    linear-gradient(180deg, #0a0807 0%, #050507 100%);
+	position: fixed;
+	inset: 0;
+	z-index: 0;
+	pointer-events: none;
+	overflow: hidden;
+	background:
+		radial-gradient(70% 55% at 50% -8%, rgba(255, 255, 255, 0.07), transparent 60%),
+		radial-gradient(60% 45% at 85% 100%, rgba(255, 255, 255, 0.04), transparent 65%),
+		linear-gradient(180deg, #08080a 0%, var(--lg-void) 55%, #08080a 100%);
 }
 
 [data-theme="light"] .legal-bg {
-  background:
-    radial-gradient(80% 60% at 50% 20%, rgba(255, 230, 200, 0.55), transparent 60%),
-    radial-gradient(60% 50% at 80% 80%, rgba(220, 230, 255, 0.45), transparent 60%),
-    linear-gradient(180deg, #f8f3e8 0%, #ede6d4 100%);
+	background:
+		radial-gradient(70% 55% at 50% -8%, rgba(255, 255, 255, 0.9), transparent 60%),
+		radial-gradient(60% 45% at 85% 100%, rgba(10, 10, 10, 0.035), transparent 65%),
+		linear-gradient(180deg, #FAFAFB 0%, var(--lg-void) 55%, #EAEAEC 100%);
 }
 
 .legal-bg::after {
-  content: '';
-  position: absolute;
-  inset: -2px;
-  background-image: radial-gradient(rgba(255, 255, 255, 0.04) 1px, transparent 1px);
-  background-size: 3px 3px;
-  opacity: 0.5;
-  mix-blend-mode: screen;
+	content: '';
+	position: absolute;
+	inset: -2px;
+	background-image: radial-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+	background-size: 3px 3px;
+	opacity: 0.4;
+	mix-blend-mode: overlay;
 }
 
-[data-theme="light"] .legal-bg::after { opacity: 0.18; }
+[data-theme="light"] .legal-bg::after {
+	background-image: radial-gradient(rgba(10, 10, 10, 0.05) 1px, transparent 1px);
+	opacity: 0.3;
+}
 
-/* ─── 2. Header ─────────────────────────────────────────── */
+/* ─── 2. Header chrome ──────────────────────────────────────
+   Same pill-glass + bevel recipe as .app-container.v2 .btn-back
+   / .floating-controls--right .theme-toggle. Unlike the main
+   app's chrome today, the toggle here genuinely inverts per
+   theme (Theme Parity Rule) rather than staying dark-glass-always. */
 .legal-header {
-  position: relative;
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 22px clamp(20px, 4vw, 36px);
-  max-width: 880px;
-  margin: 0 auto;
+	position: relative;
+	z-index: 2;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 14px;
+	padding: 20px clamp(20px, 4vw, 36px);
+	max-width: 880px;
+	margin: 0 auto;
 }
 
 .legal-back {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  height: 40px;
-  padding: 0 18px;
-  border-radius: 9999px;
-  background: rgba(0, 0, 0, 0.28);
-  color: rgba(255, 255, 255, 0.85);
-  font-family: 'Unbounded', 'Inter', sans-serif;
-  font-weight: 400;
-  font-size: 12.5px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  text-decoration: none;
-  box-shadow:
-    inset -14px -14px 8px -14px rgba(179, 179, 179, 0.55),
-    inset  14px  14px 8px -14px rgba(179, 179, 179, 0.55);
-  backdrop-filter: blur(14px) saturate(140%);
-  -webkit-backdrop-filter: blur(14px) saturate(140%);
-  transition: background 220ms ease, transform 180ms ease;
+	display: inline-flex;
+	align-items: center;
+	gap: 10px;
+	height: 46px;
+	padding: 0 20px 0 18px;
+	border-radius: 9999px;
+	background: var(--lg-surface-dense);
+	color: var(--lg-text);
+	font-family: var(--lg-font-display);
+	font-weight: 400;
+	font-size: 12.5px;
+	letter-spacing: 0.08em;
+	text-transform: uppercase;
+	text-decoration: none;
+	box-shadow: var(--lg-bevel-soft);
+	backdrop-filter: blur(18px) saturate(140%);
+	-webkit-backdrop-filter: blur(18px) saturate(140%);
+	transition: background 220ms ease, box-shadow 220ms ease, transform 180ms ease;
 }
+.legal-back i { font-size: 12px; opacity: 0.85; }
 
 .legal-back:hover {
-  background: rgba(20, 20, 22, 0.55);
-  transform: translateY(-1px);
+	transform: translateY(-1px);
+	box-shadow: var(--lg-bevel);
 }
-
-[data-theme="light"] .legal-back { color: rgba(20, 14, 8, 0.85); }
-[data-theme="light"] .legal-back:hover { color: #1a1410; }
+[data-theme="light"] .legal-back:hover { background: rgba(255, 255, 255, 0.85); }
+.legal-back:active { transform: translateY(0) scale(0.97); }
 
 .legal-brand {
-  font-family: 'Unbounded', 'Inter', sans-serif;
-  font-weight: 300;
-  font-size: 18px;
-  letter-spacing: 0.32em;
-  color: rgba(255, 255, 255, 0.85);
-  text-transform: uppercase;
+	font-family: var(--lg-font-display);
+	font-weight: 300;
+	font-size: 17px;
+	letter-spacing: 0.32em;
+	color: var(--lg-text-dim);
+	text-transform: uppercase;
+	pointer-events: none;
 }
 
-[data-theme="light"] .legal-brand { color: rgba(20, 14, 8, 0.85); }
+.legal-theme-toggle {
+	width: 46px;
+	height: 46px;
+	flex-shrink: 0;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 9999px;
+	background: var(--lg-surface-dense);
+	color: var(--lg-text);
+	font-size: 15px;
+	cursor: pointer;
+	box-shadow: var(--lg-bevel-soft);
+	backdrop-filter: blur(18px) saturate(140%);
+	-webkit-backdrop-filter: blur(18px) saturate(140%);
+	transition: background 220ms ease, box-shadow 220ms ease, transform 180ms ease;
+}
+.legal-theme-toggle i {
+	transition: transform 320ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+.legal-theme-toggle:hover {
+	box-shadow: var(--lg-bevel);
+}
+[data-theme="light"] .legal-theme-toggle:hover { background: rgba(255, 255, 255, 0.85); }
+.legal-theme-toggle:hover i { transform: rotate(24deg); }
+.legal-theme-toggle:active { transform: scale(0.94); }
 
-/* ─── 3. Article card ───────────────────────────────────── */
+/* ─── 3. Article shell ──────────────────────────────────────
+   One dense glass panel holds the whole reading column — this is
+   the passive-vs-dense call from the Theme Parity Rule: text-heavy
+   content sitting on a moving/gradient backdrop gets dense tier so
+   the backdrop never competes with body copy. */
 .legal-article {
-  position: relative;
-  z-index: 1;
-  max-width: 880px;
-  margin: 16px auto 64px;
-  padding: clamp(28px, 5vw, 56px) clamp(22px, 5vw, 56px);
-  border-radius: 32px;
-  background: rgba(0, 0, 0, 0.28);
-  backdrop-filter: blur(14px) saturate(140%);
-  -webkit-backdrop-filter: blur(14px) saturate(140%);
-  box-shadow:
-    inset -21.48px -21.48px 10.74px -21.48px rgba(179, 179, 179, 0.55),
-    inset  21.48px  21.48px 10.74px -21.48px rgba(179, 179, 179, 0.55),
-    0 30px 80px rgba(0, 0, 0, 0.45),
-    0 8px 24px rgba(0, 0, 0, 0.25);
+	position: relative;
+	z-index: 1;
+	max-width: 880px;
+	margin: 8px auto 72px;
+	padding: 0;
+	border-radius: 32px;
+	background: var(--lg-surface-dense);
+	backdrop-filter: blur(22px) saturate(140%);
+	-webkit-backdrop-filter: blur(22px) saturate(140%);
+	box-shadow: var(--lg-bevel), var(--lg-ambient);
+	overflow: hidden;
 }
 
-/* ─── 4. Typography ─────────────────────────────────────── */
+.legal-article-head {
+	padding: clamp(32px, 6vw, 56px) clamp(24px, 5vw, 56px) clamp(20px, 4vw, 32px);
+}
+
+/* ─── 4. Typography ─────────────────────────────────────────
+   Uppercase-Display Rule: Unbounded above body size is always
+   uppercase + wide-tracked, in both themes. */
 .legal-eyebrow {
-  display: inline-block;
-  font-family: 'Unbounded', 'Inter', sans-serif;
-  font-weight: 400;
-  font-size: 11px;
-  letter-spacing: 0.32em;
-  text-transform: uppercase;
-  color: rgba(255, 255, 255, 0.55);
-  margin: 0 0 14px;
+	display: inline-block;
+	font-family: var(--lg-font-display);
+	font-weight: 400;
+	font-size: 11px;
+	letter-spacing: 0.32em;
+	text-transform: uppercase;
+	color: var(--lg-text-mute);
+	margin: 0 0 16px;
 }
-
-[data-theme="light"] .legal-eyebrow { color: rgba(20, 14, 8, 0.55); }
 
 .legal-article h1 {
-  font-family: 'Unbounded', 'Inter', sans-serif;
-  font-weight: 300;
-  font-size: clamp(28px, 5vw, 40px);
-  letter-spacing: 0.02em;
-  line-height: 1.1;
-  margin: 0 0 12px;
-  color: #fff;
+	font-family: var(--lg-font-display);
+	font-weight: 300;
+	font-size: clamp(28px, 6.4vw, 42px);
+	letter-spacing: 0.04em;
+	line-height: 1.08;
+	text-transform: uppercase;
+	margin: 0 0 14px;
+	color: var(--lg-text);
+	/* faint etched/inset read, matching the "machined glass" display
+	   language rather than a flat printed headline */
+	text-shadow: 0 1px 0 rgba(255, 255, 255, 0.06);
 }
-
-[data-theme="light"] .legal-article h1 { color: #1a1410; }
+[data-theme="light"] .legal-article h1 { text-shadow: 0 1px 0 rgba(255, 255, 255, 0.6); }
 
 .legal-meta {
-  font-size: 13px;
-  font-weight: 400;
-  color: rgba(255, 255, 255, 0.55);
-  margin: 0 0 36px;
-  letter-spacing: 0.02em;
+	font-size: 13px;
+	font-weight: 400;
+	color: var(--lg-text-mute);
+	margin: 0;
+	letter-spacing: 0.02em;
 }
 
-[data-theme="light"] .legal-meta { color: rgba(20, 14, 8, 0.55); }
-
 .legal-article h2 {
-  font-family: 'Unbounded', 'Inter', sans-serif;
-  font-weight: 400;
-  font-size: 20px;
-  letter-spacing: 0.02em;
-  line-height: 1.3;
-  margin: 36px 0 14px;
-  color: #fff;
-  display: flex;
-  align-items: baseline;
-  gap: 14px;
+	font-family: var(--lg-font-display);
+	font-weight: 400;
+	/* reuses the documented CTA-label step (clamp(17px,4.2vw,22px)) —
+	   DESIGN.md's ramp has no dedicated in-document sub-heading size,
+	   and this tier's "17-22px Unbounded, uppercase, tracked" shape is
+	   the closest existing rung rather than inventing a new one. */
+	font-size: clamp(17px, 4.2vw, 22px);
+	letter-spacing: 0.05em;
+	text-transform: uppercase;
+	line-height: 1.3;
+	margin: 0 0 16px;
+	color: var(--lg-text);
+	display: flex;
+	align-items: baseline;
+	gap: 14px;
 }
 
 .legal-article h2::before {
-  content: attr(data-num);
-  font-family: 'Unbounded', monospace;
-  font-size: 12px;
-  font-weight: 300;
-  color: rgba(255, 220, 170, 0.65);
-  letter-spacing: 0.04em;
-  flex-shrink: 0;
-  min-width: 26px;
+	content: attr(data-num);
+	font-family: var(--lg-font-display);
+	font-size: 12px;
+	font-weight: 300;
+	color: var(--lg-text-mute);
+	letter-spacing: 0.04em;
+	flex-shrink: 0;
+	min-width: 24px;
 }
-
-[data-theme="light"] .legal-article h2 { color: #1a1410; }
-[data-theme="light"] .legal-article h2::before { color: rgba(140, 95, 40, 0.85); }
 
 .legal-article h3 {
-  font-family: 'Inter', sans-serif;
-  font-weight: 600;
-  font-size: 15px;
-  margin: 22px 0 8px;
-  color: rgba(255, 255, 255, 0.92);
+	font-family: var(--lg-font-body);
+	font-weight: 600;
+	font-size: 15px;
+	margin: 22px 0 8px;
+	color: var(--lg-text);
 }
-
-[data-theme="light"] .legal-article h3 { color: #1a1410; }
 
 .legal-article p,
 .legal-article li {
-  margin: 0 0 14px;
-  color: rgba(255, 255, 255, 0.85);
+	margin: 0 0 14px;
+	color: var(--lg-text-dim);
 }
-
-[data-theme="light"] .legal-article p,
-[data-theme="light"] .legal-article li { color: rgba(20, 14, 8, 0.85); }
 
 .legal-article ul,
 .legal-article ol {
-  margin: 0 0 16px;
-  padding-left: 22px;
+	margin: 0 0 4px;
+	padding-left: 22px;
 }
 
 .legal-article li { margin-bottom: 8px; }
+.legal-article p:last-child,
+.legal-article ul:last-child,
+.legal-article ol:last-child { margin-bottom: 0; }
 
-.legal-article strong { color: #fff; font-weight: 600; }
-[data-theme="light"] .legal-article strong { color: #1a1410; }
+.legal-article strong { color: var(--lg-text); font-weight: 600; }
+
+.legal-article code {
+	font-family: ui-monospace, 'SF Mono', Consolas, monospace;
+	font-size: 0.92em;
+	padding: 2px 6px;
+	border-radius: 6px;
+	background: rgba(255, 255, 255, 0.07);
+	color: var(--lg-text);
+}
+[data-theme="light"] .legal-article code { background: rgba(10, 10, 10, 0.06); }
 
 .legal-article a {
-  color: #fff;
-  text-decoration: underline;
-  text-decoration-color: rgba(255, 255, 255, 0.32);
-  text-underline-offset: 3px;
-  transition: text-decoration-color 200ms ease;
+	color: var(--lg-text);
+	text-decoration: underline;
+	text-decoration-color: rgba(255, 255, 255, 0.32);
+	text-underline-offset: 3px;
+	transition: text-decoration-color 200ms ease;
+}
+.legal-article a:hover { text-decoration-color: rgba(255, 255, 255, 0.9); }
+[data-theme="light"] .legal-article a { text-decoration-color: rgba(10, 10, 10, 0.32); }
+[data-theme="light"] .legal-article a:hover { text-decoration-color: rgba(10, 10, 10, 0.85); }
+
+/* ─── 5. Sections — nested glass, not stacked heavy cards ───
+   A passive content card (thin hairline + soft top highlight),
+   the same family used for .result-clip-card, reused at a flatter
+   density so ten sections in a row stay calm and readable instead
+   of ten competing bevel panels. */
+.legal-section {
+	position: relative;
+	margin: 0 clamp(24px, 5vw, 56px) 14px;
+	padding: clamp(22px, 4vw, 30px) clamp(20px, 3.6vw, 28px);
+	border-radius: 22px;
+	background: var(--lg-surface-soft);
+	box-shadow:
+		inset 0 1px 0 rgba(255, 255, 255, 0.10),
+		inset 0 0 0 1px var(--lg-hairline);
+}
+[data-theme="light"] .legal-section {
+	box-shadow:
+		inset 0 1px 0 rgba(255, 255, 255, 0.7),
+		inset 0 0 0 1px var(--lg-hairline);
 }
 
-.legal-article a:hover { text-decoration-color: rgba(255, 255, 255, 0.85); }
+.legal-section:last-of-type { margin-bottom: clamp(28px, 5vw, 44px); }
 
-[data-theme="light"] .legal-article a {
-  color: #1a1410;
-  text-decoration-color: rgba(20, 14, 8, 0.32);
-}
-
-[data-theme="light"] .legal-article a:hover {
-  text-decoration-color: rgba(20, 14, 8, 0.85);
-}
-
-/* ─── 5. Highlight blocks ───────────────────────────────── */
+/* ─── 6. Highlight callouts ─────────────────────────────────
+   Sits a density tier above the section it lives in — the active/
+   emphasis tier, same relationship .acct-drop-plan.is-pro has to
+   .acct-drop. */
 .legal-callout {
-  margin: 18px 0 22px;
-  padding: 16px 22px;
-  border-radius: 18px;
-  background: rgba(0, 0, 0, 0.22);
-  box-shadow:
-    inset -10px -10px 6px -10px rgba(179, 179, 179, 0.32),
-    inset  10px  10px 6px -10px rgba(179, 179, 179, 0.32);
-  font-size: 14px;
-  line-height: 1.5;
-  color: rgba(255, 255, 255, 0.78);
+	margin: 0 clamp(24px, 5vw, 56px) 22px;
+	padding: 16px 22px;
+	border-radius: 18px;
+	background: rgba(255, 255, 255, 0.06);
+	box-shadow: var(--lg-bevel-soft);
+	font-size: 14px;
+	line-height: 1.55;
+	color: var(--lg-text-dim);
+}
+[data-theme="light"] .legal-callout { background: rgba(255, 255, 255, 0.55); }
+
+.legal-section .legal-callout {
+	margin: 14px 0 0;
+	padding: 14px 18px;
 }
 
-[data-theme="light"] .legal-callout {
-  background: rgba(255, 255, 255, 0.32);
-  color: rgba(20, 14, 8, 0.78);
-}
+.legal-callout strong { color: var(--lg-text); }
 
-.legal-callout strong { color: #fff; }
-[data-theme="light"] .legal-callout strong { color: #1a1410; }
-
-/* TODO marker — visible reminder */
+/* TODO marker — a functional flag for legal review, not a brand
+   accent, so it stays achromatic (dashed outline) rather than the
+   retired ember gold. */
 .legal-todo {
-  display: inline-block;
-  padding: 1px 7px;
-  border-radius: 6px;
-  background: rgba(255, 200, 90, 0.22);
-  color: #ffd380;
-  font-family: 'Unbounded', monospace;
-  font-size: 11.5px;
-  font-weight: 500;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
+	display: inline-block;
+	padding: 1px 8px;
+	border-radius: 6px;
+	border: 1px dashed rgba(255, 255, 255, 0.4);
+	color: var(--lg-text);
+	background: rgba(255, 255, 255, 0.06);
+	font-family: var(--lg-font-display);
+	font-size: 11px;
+	font-weight: 400;
+	letter-spacing: 0.04em;
+	text-transform: uppercase;
 }
-
 [data-theme="light"] .legal-todo {
-  background: rgba(180, 110, 20, 0.16);
-  color: #8a5a16;
+	border-color: rgba(10, 10, 10, 0.32);
+	background: rgba(10, 10, 10, 0.05);
 }
 
-/* ─── 6. Footer ─────────────────────────────────────────── */
+/* ─── 7. Footer ─────────────────────────────────────────────── */
 .legal-footer {
-  position: relative;
-  z-index: 2;
-  max-width: 880px;
-  margin: 0 auto;
-  padding: 0 clamp(20px, 4vw, 36px) 32px;
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.45);
-  text-align: center;
+	position: relative;
+	z-index: 2;
+	max-width: 880px;
+	margin: 0 auto;
+	padding: 0 clamp(20px, 4vw, 36px) 40px;
+	font-size: 12px;
+	color: var(--lg-text-mute);
+	text-align: center;
 }
 
-[data-theme="light"] .legal-footer { color: rgba(20, 14, 8, 0.55); }
+.legal-footer a {
+	color: inherit;
+	text-decoration: underline;
+	text-decoration-color: currentColor;
+	text-decoration-thickness: 1px;
+	opacity: 0.85;
+}
+.legal-footer a:hover { opacity: 1; }
 
-.legal-footer a { color: inherit; }
-
-/* ─── 7. Mobile ─────────────────────────────────────────── */
+/* ─── 8. Mobile ─────────────────────────────────────────────── */
 @media (max-width: 640px) {
-  body { font-size: 15px; }
-  .legal-header { padding: 16px; }
-  .legal-brand { font-size: 14px; letter-spacing: 0.28em; }
-  .legal-back { height: 36px; padding: 0 14px; font-size: 11.5px; }
-  .legal-article {
-    margin: 8px 12px 32px;
-    padding: 28px 22px;
-    border-radius: 24px;
-  }
-  .legal-article h1 { font-size: 26px; }
-  .legal-article h2 { font-size: 18px; flex-direction: column; gap: 4px; }
-  .legal-article h2::before { min-width: 0; }
+	body { font-size: 15px; }
+
+	.legal-header { padding: 14px 16px; }
+	.legal-brand { font-size: 13px; letter-spacing: 0.24em; }
+	.legal-back { height: 40px; padding: 0 16px 0 14px; font-size: 11px; }
+	.legal-back span { display: none; }
+	.legal-theme-toggle { width: 40px; height: 40px; font-size: 13px; }
+
+	.legal-article {
+		margin: 4px 10px 48px;
+		border-radius: 26px;
+	}
+	.legal-article-head { padding: 28px 20px 18px; }
+	.legal-article h1 { font-size: 25px; letter-spacing: 0.02em; }
+	.legal-article h2 { font-size: 17px; }
+
+	.legal-callout { margin-left: 16px; margin-right: 16px; }
+	.legal-section { margin-left: 16px; margin-right: 16px; padding: 18px 16px; border-radius: 18px; }
 }
 
-/* ─── 8. Reduced motion ─────────────────────────────────── */
+@media (max-width: 380px) {
+	.legal-brand { display: none; }
+}
+
+/* ─── 9. Reduced motion ─────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
-  * { transition: none !important; animation: none !important; }
+	* { transition: none !important; animation: none !important; }
+	.legal-theme-toggle i { transition: none !important; }
 }

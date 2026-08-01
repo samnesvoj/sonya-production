@@ -135,6 +135,25 @@ export class FakeElement extends EventTargetMixin {
   }
 }
 
+// Minimal text-node stand-in for document.createTextNode() -- app.js uses
+// it (via renderResultTags) exactly like a real DOM text node: appended as
+// a plain child, contributing to the parent's computed textContent, never
+// itself carrying markup.
+class FakeTextNode {
+  constructor(text) {
+    this.nodeType = 3;
+    this._text = String(text);
+    this.parentNode = null;
+    this.children = [];
+  }
+  get textContent() {
+    return this._text;
+  }
+  set textContent(v) {
+    this._text = String(v);
+  }
+}
+
 class FakeDocument extends EventTargetMixin {
   constructor() {
     super();
@@ -154,6 +173,9 @@ class FakeDocument extends EventTargetMixin {
     const el = new FakeElement(tag, this);
     this._all.push(el);
     return el;
+  }
+  createTextNode(text) {
+    return new FakeTextNode(text);
   }
   getElementById(id) {
     return this._byId.get(id) || null;
@@ -238,7 +260,6 @@ const REQUIRED_IDS = {
   'btn-back-2': 'button',
   'btn-back-3': 'button',
   'btn-generate': 'button',
-  'btn-download': 'button',
   'btn-new-project': 'button',
   'btn-trailer': 'button',
   'subtitles-toggle': 'input',
@@ -246,8 +267,11 @@ const REQUIRED_IDS = {
   'voiceover-toggle': 'input',
   'voice-options': 'div',
   'voice-select': 'select',
-  'result-count': 'span',
-  'result-size': 'span',
+  'result-headline': 'h1',
+  'result-sub': 'p',
+  'result-tags': 'div',
+  'result-clip-grid': 'div',
+  'result-actions': 'div',
 };
 
 /**

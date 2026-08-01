@@ -11,10 +11,11 @@
 		(function () {
 			try {
 				var t = localStorage.getItem('theme');
-				document.documentElement.setAttribute('data-theme', t || 'light');
+				window.__sonyaTheme = t || 'light';
 			} catch (e) {
-				document.documentElement.setAttribute('data-theme', 'light');
+				window.__sonyaTheme = 'light';
 			}
+			document.documentElement.setAttribute('data-theme', window.__sonyaTheme);
 		})();
 	</script>
 
@@ -32,16 +33,38 @@
 	<link rel="preconnect" href="https://fonts.googleapis.com">
 	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 	<link
-		href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Space+Grotesk:wght@500;600;700&family=Inter:wght@300;400;500;600;700&family=Unbounded:wght@200;300;400;500;600;700&family=Instrument+Serif:ital@0;1&display=swap"
+		href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Onest:wght@300;400;500;600;700&family=Unbounded:wght@200;300;400;500;600;700&display=swap"
 		rel="stylesheet">
 
-	<link rel="stylesheet" href="styles.css?v=20260507">
+	<link rel="stylesheet" href="styles.css?v=20260730a">
 
 	<!-- SONYA backend API base. External file → CSP-friendly. -->
 	<script src="config.js?v=20260507"></script>
 </head>
 
 <body>
+	<!-- Reusable SVG filter defs — never rendered directly, only referenced
+	     via CSS `filter: url(#sonya-glass-distort)`. This is the exact
+	     feTurbulence → feDisplacementMap chain from the reference Figma
+	     export (type/baseFrequency/numOctaves/seed/scale/channels kept
+	     verbatim); only the filter region was adapted from the original's
+	     fixed 1228×900 userSpaceOnUse box to objectBoundingBox percentages,
+	     so the same filter works on any real SONYA component regardless
+	     of its rendered size, instead of one hardcoded Figma frame. -->
+	<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+		<defs>
+			<filter id="sonya-glass-distort" filterUnits="objectBoundingBox" x="-30%" y="-30%" width="160%" height="160%" color-interpolation-filters="sRGB">
+				<feFlood flood-opacity="0" result="BackgroundImageFix"/>
+				<feBlend mode="normal" in="SourceGraphic" in2="BackgroundImageFix" result="shape"/>
+				<feTurbulence type="fractalNoise" baseFrequency="0.20000000298023224 0.20000000298023224" numOctaves="3" seed="7606"/>
+				<feDisplacementMap in="shape" scale="180" xChannelSelector="R" yChannelSelector="G" result="displacedImage"/>
+				<feMerge result="sonya-glass-distort-out">
+					<feMergeNode in="displacedImage"/>
+				</feMerge>
+			</filter>
+		</defs>
+	</svg>
+
 	<!-- Ambient background -->
 	<div class="ambient-bg" aria-hidden="true">
 		<div class="ambient-dune ambient-dune--a"></div>
@@ -61,6 +84,17 @@
 			data-light-src="bg-light.mp4">
 			<source id="cinema-video-source" src="hf_20260419_161836_77c00607-b936-40e5-b41d-240635ddc9d9 (1).mp4" type="video/mp4">
 		</video>
+		<script>
+			(function () {
+				if (window.__sonyaTheme !== 'light') return;
+				var video = document.getElementById('cinema-video');
+				var source = document.getElementById('cinema-video-source');
+				if (video && source) {
+					source.src = video.dataset.lightSrc;
+					video.load();
+				}
+			})();
+		</script>
 		<div class="cinema-overlay cinema-overlay--tint"></div>
 		<div class="cinema-overlay cinema-overlay--gradient"></div>
 		<div class="cinema-overlay cinema-overlay--vignette"></div>
@@ -159,7 +193,7 @@
 						<label class="hero2-input-row hero2-input-row--file" id="upload-zone" for="file-input">
 							<i class="fa-solid fa-folder-open hero2-input-icon" aria-hidden="true"></i>
 							<span class="hero2-input-placeholder">Выберите видео-файл</span>
-							<input type="file" id="file-input" accept="video/*" hidden>
+							<input type="file" id="file-input" accept="video/*" class="visually-hidden">
 						</label>
 						<div class="hero2-input-row hero2-input-row--file hidden" id="file-info">
 							<i class="fa-solid fa-film hero2-input-icon" aria-hidden="true"></i>
@@ -540,70 +574,49 @@
 		═══════════════════════════════════════════ -->
 		<section class="page" id="page-result">
 			<header class="page-header page-header--result">
+				<!-- Decorative only: warped-glass layer + embossed brand word behind
+				     the real headline. Never carries content, never intercepts
+				     clicks — see DESIGN.md "Result Header Glass Experiment". -->
+				<div class="result-glass-fx" aria-hidden="true"></div>
+				<span class="result-glass-word" aria-hidden="true">sonya</span>
+
 				<div class="result-header-left">
-					<h1 class="result-headline">Готово</h1>
-					<p class="result-sub">Short-form готов к экспорту</p>
+					<h1 class="result-headline" id="result-headline">Готово</h1>
+					<p class="result-sub" id="result-sub">Short-form готов к экспорту</p>
 				</div>
 				<span class="success-pill">
 					<i class="fa-solid fa-circle-check"></i>
-					Complete
+					Успешно
 				</span>
 			</header>
 
 			<div class="page-content result-content">
 
-				<div class="result-grid">
-					<!-- Trailer-style hero card -->
-					<div class="result-card result-card--hero">
-						<div class="result-card-thumb">
-							<div class="result-card-thumb-glow"></div>
-							<span class="result-card-play"><i class="fa-solid fa-play"></i></span>
-							<span class="result-card-ratio">16:9 · Trailer</span>
-							<span class="result-card-duration">01:12</span>
-						</div>
-						<div class="result-card-body">
-							<h3 class="result-card-title">Cinematic trailer</h3>
-							<div class="result-card-metrics">
-								<span class="score-badge"><i class="fa-solid fa-bolt"></i> Virality 92</span>
-								<span class="score-badge score-badge--soft"><i class="fa-solid fa-eye"></i> Hook 87</span>
-							</div>
-						</div>
-					</div>
+				<!-- Real, derived-from-generation tags — no invented scores.
+				     Populated by renderSonyaResult() in app.js. -->
+				<div class="result-tags" id="result-tags" aria-label="Параметры генерации"></div>
 
-	
-					<!-- Archive -->
-					<div class="result-card result-card--archive">
-						<div class="result-archive-stats">
-							<div class="result-stat">
-								<span class="stat-value" id="result-count">—</span>
-								<span class="stat-label">клипов</span>
-							</div>
-							<div class="result-stat">
-								<span class="stat-value" id="result-size">—</span>
-								<span class="stat-label">архив</span>
-							</div>
-						</div>
-						<button class="btn-primary btn-download" id="btn-download">
-							<span class="btn-icon"><i class="fa-solid fa-file-zipper"></i></span>
-							<span class="btn-label">Скачать архив</span>
-						</button>
-					</div>
+				<!-- One card per real clip URL. 1 clip today (the only shape the
+				     backend actually returns); ready for 4/8 the moment the API
+				     returns result.clips as an array — see app.js renderSonyaResult(). -->
+				<div class="result-clip-grid" id="result-clip-grid" data-count="1"></div>
 
-				</div>
+				<div class="result-actions" id="result-actions"></div>
 
 				<!-- Editor Handoff — premium product feature -->
 				<section class="handoff-card">
 					<div class="handoff-glow" aria-hidden="true"></div>
+					<div class="handoff-glass-fx" aria-hidden="true"></div>
 					<div class="handoff-body">
-						<span class="handoff-eyebrow">Continue editing</span>
+						<span class="handoff-eyebrow">Продолжить работу</span>
 						<h3 class="handoff-title">Доработать в редакторе</h3>
 						<p class="handoff-desc">
 							Таймлайн, склейки, субтитры и тайминги — в полноценном video editor.
 						</p>
 						<ul class="handoff-features">
-							<li><i class="fa-solid fa-scissors"></i> Frame-accurate cuts</li>
-							<li><i class="fa-solid fa-closed-captioning"></i> Caption tuning</li>
-							<li><i class="fa-solid fa-sliders"></i> Color & audio</li>
+							<li><i class="fa-solid fa-scissors"></i><span>Точные склейки по кадрам</span></li>
+							<li><i class="fa-solid fa-closed-captioning"></i><span>Тонкая настройка субтитров</span></li>
+							<li><i class="fa-solid fa-sliders"></i><span>Цвет и звук</span></li>
 						</ul>
 					</div>
 					<button class="handoff-cta" id="btn-open-editor" type="button">
@@ -855,7 +868,7 @@
 
 	<!-- Three.js for cinematic 3D sphere on processing page -->
 	<script src="app.js?v=202607261605"></script>
-	<script type="module" src="sphere.js?v=202607261620"></script>
+	<script type="module" src="sphere.js?v=202607291200"></script>
 	<script src="auth.js?v=202607261335"></script>
 </body>
 

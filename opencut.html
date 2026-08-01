@@ -16,8 +16,18 @@
 	<link rel="preconnect" href="https://fonts.googleapis.com">
 	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 	<link
-		href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Space+Grotesk:wght@500;600;700&family=Inter:wght@300;400;500;600;700&family=Unbounded:wght@200;300;400;500;600;700&display=swap"
+		href="https://fonts.googleapis.com/css2?family=Onest:wght@300;400;500;600;700&family=Unbounded:wght@200;300;400;500;600;700&display=swap"
 		rel="stylesheet">
+
+	<!-- Shared "Screening Room" glass tokens (bevel, radii, type) — same shell used by /legal/*.html -->
+	<link rel="stylesheet" href="legal/_legal.css?v=20260731">
+
+	<script>
+		(function () {
+			const t = localStorage.getItem('theme');
+			document.documentElement.setAttribute('data-theme', t || 'dark');
+		})();
+	</script>
 
 	<style>
 		* {
@@ -30,39 +40,61 @@
 			width: 100%;
 			height: 100%;
 			overflow: hidden;
-			background: #0B0907;
-			font-family: 'Inter', sans-serif;
-			color: #fff;
 		}
 
-		/* ── Background video (авторский фон SONYA) ── */
-		.cinema-bg {
+		body {
+			background: var(--lg-void);
+			color: var(--lg-text);
+			font-family: var(--lg-font-body);
+		}
+
+		/* ── Background video — same global cinema stage as index.html:
+		   dark/light source pair, tint + gradient + vignette + grain
+		   overlays, swapped by switchCinemaVideo() on theme change ── */
+		.cinema-stage {
 			position: fixed;
 			inset: 0;
 			z-index: 0;
+			overflow: hidden;
 			pointer-events: none;
+			/* Theme-aware fallback while the video decodes its first frame —
+			   was hardcoded near-black, which flashed dark under a light theme. */
+			background: var(--lg-void);
 		}
-
-		.cinema-bg video {
+		.cinema-video {
+			position: absolute;
+			inset: 0;
 			width: 100%;
 			height: 100%;
 			object-fit: cover;
-			opacity: 0.18;
+			filter: saturate(0.9) contrast(1.02) brightness(0.95);
+			background: var(--lg-void);
 		}
+		.cinema-overlay { position: absolute; inset: 0; pointer-events: none; }
+		.cinema-overlay--tint {
+			background: linear-gradient(180deg, rgba(6, 6, 8, 0.05) 0%, rgba(6, 6, 8, 0.18) 100%);
+		}
+		.cinema-overlay--gradient {
+			background: radial-gradient(ellipse at 50% 40%, transparent 0%, rgba(6, 6, 8, 0.2) 100%);
+		}
+		.cinema-overlay--vignette {
+			background: radial-gradient(ellipse at 50% 50%, transparent 60%, rgba(0, 0, 0, 0.35) 100%);
+		}
+		.cinema-overlay--grain { opacity: 0; }
 
-		.cinema-bg::after {
-			content: '';
-			position: absolute;
-			inset: 0;
+		/* Neutral gray tint, not the warm-paper wash index.html uses elsewhere —
+		   this page stays strictly achromatic gray/black in both themes. */
+		[data-theme="light"] .cinema-overlay--tint { background: rgba(255, 255, 255, 0.18); }
+		[data-theme="light"] .cinema-overlay--gradient {
 			background: linear-gradient(
-				180deg,
-				rgba(11, 9, 7, 0.72) 0%,
-				rgba(11, 9, 7, 0.35) 40%,
-				rgba(11, 9, 7, 0.55) 100%
+				to bottom,
+				rgba(243, 243, 244, 0.55) 0%,
+				rgba(243, 243, 244, 0.10) 40%,
+				rgba(243, 243, 244, 0.55) 100%
 			);
 		}
 
-		/* ── Layout ── */
+		/* ── Page layout ── */
 		.editor-page {
 			position: relative;
 			z-index: 1;
@@ -73,71 +105,81 @@
 			height: 100dvh;
 		}
 
-		/* ── Header bar ── */
+		/* ── Header bar — dense glass, same recipe as .legal-article ── */
 		.editor-topbar {
+			position: relative;
+			z-index: 5;
 			flex-shrink: 0;
 			display: flex;
 			align-items: center;
-			gap: 12px;
-			padding: 10px 16px;
-			background: rgba(11, 9, 7, 0.72);
-			backdrop-filter: blur(20px);
-			-webkit-backdrop-filter: blur(20px);
-			border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+			gap: 10px;
+			padding: 12px 18px;
+			background: var(--lg-surface-dense);
+			backdrop-filter: blur(20px) saturate(140%);
+			-webkit-backdrop-filter: blur(20px) saturate(140%);
+			box-shadow: inset 0 -1px 0 var(--lg-hairline);
 		}
 
-		.topbar-back {
-			display: flex;
+		/* Circular glass icon button — reused for every icon-only control on this page */
+		.editor-icon-btn {
+			display: inline-flex;
 			align-items: center;
 			justify-content: center;
-			width: 36px;
-			height: 36px;
-			border-radius: 10px;
-			background: rgba(255, 255, 255, 0.06);
-			border: 1px solid rgba(255, 255, 255, 0.1);
-			color: rgba(255, 255, 255, 0.75);
-			cursor: pointer;
+			width: 40px;
+			height: 40px;
 			flex-shrink: 0;
-			transition: background 0.18s, color 0.18s;
+			border-radius: 9999px;
+			background: var(--lg-surface-dense);
+			border: none;
+			color: var(--lg-text);
+			/* puffy top-highlight + bevel — same layered recipe as the
+			   main page's v2 buttons, for the same "diamond-cut glass" force */
+			box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.26), var(--lg-bevel-soft);
+			backdrop-filter: blur(18px) saturate(140%);
+			-webkit-backdrop-filter: blur(18px) saturate(140%);
+			cursor: pointer;
 			text-decoration: none;
 			font-size: 14px;
+			transition: box-shadow 0.2s ease, transform 0.2s ease, background 0.2s ease;
 		}
-
-		.topbar-back:hover,
-		.topbar-back:active {
-			background: rgba(255, 255, 255, 0.12);
-			color: #fff;
+		.editor-icon-btn:hover { box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.4), var(--lg-bevel); }
+		.editor-icon-btn:active { transform: scale(0.94); }
+		.editor-icon-btn.is-active {
+			box-shadow: var(--lg-bevel-strong);
+			color: #0A84FF;
 		}
 
 		.topbar-brand {
 			display: flex;
 			align-items: center;
-			gap: 8px;
+			gap: 10px;
 			flex: 1;
 			min-width: 0;
 		}
 
 		.topbar-wordmark {
-			font-family: 'Unbounded', sans-serif;
+			font-family: var(--lg-font-display);
 			font-size: 13px;
-			font-weight: 600;
-			letter-spacing: 0.08em;
-			color: #fff;
+			font-weight: 500;
+			letter-spacing: 0.22em;
+			text-transform: uppercase;
+			color: var(--lg-text);
 			white-space: nowrap;
 		}
 
 		.topbar-sep {
 			width: 1px;
-			height: 16px;
-			background: rgba(255,255,255,0.18);
+			height: 14px;
+			background: var(--lg-text);
+			opacity: 0.18;
 			flex-shrink: 0;
 		}
 
 		.topbar-label {
-			font-family: 'Space Grotesk', sans-serif;
-			font-size: 12px;
-			font-weight: 500;
-			color: rgba(255, 255, 255, 0.55);
+			font-family: var(--lg-font-body);
+			font-size: 12.5px;
+			font-weight: 400;
+			color: var(--lg-text-mute);
 			white-space: nowrap;
 			overflow: hidden;
 			text-overflow: ellipsis;
@@ -145,23 +187,375 @@
 
 		.topbar-badge {
 			flex-shrink: 0;
-			font-family: 'Space Grotesk', sans-serif;
-			font-size: 10px;
-			font-weight: 600;
-			letter-spacing: 0.06em;
+			font-family: var(--lg-font-display);
+			font-size: 11px;
+			font-weight: 400;
+			letter-spacing: 0.12em;
 			text-transform: uppercase;
-			color: rgba(255,255,255,0.9);
-			background: linear-gradient(135deg, rgba(180,120,255,0.25), rgba(100,160,255,0.18));
-			border: 1px solid rgba(180,120,255,0.3);
-			border-radius: 6px;
-			padding: 3px 8px;
+			color: var(--lg-text-dim);
+			background: var(--lg-surface-soft);
+			box-shadow: var(--lg-bevel-soft);
+			border-radius: 9999px;
+			padding: 5px 12px;
 		}
 
-		/* ── Iframe wrapper ── */
-		.editor-frame-wrap {
-			flex: 1;
+		/* only meaningful once a left/right panel exists to toggle — hidden on desktop
+		   where both panels are permanently docked */
+		.topbar-drawer-btn { display: none; }
+
+		/* ══════════════════════════════════════════════════════════
+		   Workspace — left panel / canvas / right panel
+		   Static, Figma-styled shell wrapping the real editor iframe.
+		   Layout only — no montage/backend logic lives here.
+		   ══════════════════════════════════════════════════════════ */
+		.editor-workspace {
 			position: relative;
+			flex: 1;
 			min-height: 0;
+			display: flex;
+			align-items: stretch;
+		}
+
+		.ed-scrim {
+			display: none;
+			position: fixed;
+			inset: 0;
+			z-index: 8;
+			/* same theme-independent overlay scrim as .sonya-auth-overlay (DESIGN.md) */
+			background: rgba(4, 4, 6, 0.55);
+			backdrop-filter: blur(10px);
+			-webkit-backdrop-filter: blur(10px);
+		}
+
+		/* ── Shared panel shell (left = media/layers, right = properties) ── */
+		.ed-panel {
+			position: relative;
+			flex-shrink: 0;
+			width: 280px;
+			display: flex;
+			flex-direction: column;
+			overflow-y: auto;
+			background: var(--lg-surface-dense);
+			backdrop-filter: blur(20px) saturate(140%);
+			-webkit-backdrop-filter: blur(20px) saturate(140%);
+		}
+		.ed-panel--left  { box-shadow: inset -1px 0 0 var(--lg-hairline); }
+		.ed-panel--right { box-shadow: inset  1px 0 0 var(--lg-hairline); }
+
+		/* Same grainy glass texture as the cinema overlay, on the panel's
+		   own material — pointer-events:none so it never blocks taps. */
+		.ed-panel::before {
+			content: '';
+			position: absolute;
+			inset: 0;
+			pointer-events: none;
+			opacity: 0.06;
+			mix-blend-mode: overlay;
+			background-image: url("data:image/svg+xml;utf8,<svg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2'/><feColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0.7 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+		}
+
+		.ed-block {
+			padding: 14px 12px;
+			border-bottom: 1px solid var(--lg-hairline);
+		}
+		.ed-block:last-child { border-bottom: none; }
+
+		.ed-block-head {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			padding: 0 8px 10px;
+		}
+		.ed-block-title {
+			font-family: var(--lg-font-display);
+			font-size: 11px;
+			font-weight: 500;
+			letter-spacing: 0.1em;
+			text-transform: uppercase;
+			color: var(--lg-text-mute);
+		}
+		.ed-block-actions { display: flex; gap: 4px; }
+
+		/* small round icon buttons used inside panels (32px, per Figma "Button - Symbol") */
+		.ed-mini-btn {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			width: 30px;
+			height: 30px;
+			border-radius: 9999px;
+			background: transparent;
+			border: none;
+			color: var(--lg-text-dim);
+			font-size: 12.5px;
+			cursor: pointer;
+			transition: background 0.18s ease, color 0.18s ease, transform 0.15s ease;
+		}
+		.ed-mini-btn:hover { background: var(--lg-surface-soft); color: var(--lg-text); }
+		.ed-mini-btn.is-active { color: #0A84FF; background: rgba(10, 132, 255, 0.14); }
+
+		/* ── Segmented control (Modes row, both panels) ── */
+		.ed-tabs {
+			display: inline-flex;
+			gap: 2px;
+			padding: 3px;
+			border-radius: 9999px;
+			background: var(--lg-surface-soft);
+			box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), var(--lg-bevel-soft);
+		}
+		.ed-tab {
+			padding: 8px 16px;
+			border-radius: 9999px;
+			border: none;
+			background: transparent;
+			color: var(--lg-text-mute);
+			font-family: var(--lg-font-body);
+			font-size: 12.5px;
+			font-weight: 500;
+			cursor: pointer;
+			transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease, transform 0.15s ease;
+		}
+		.ed-tab.is-active {
+			background: var(--lg-surface-dense);
+			color: var(--lg-text);
+			box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.3), var(--lg-bevel-soft);
+		}
+
+		/* ── Media bin rows (left panel) ── */
+		.ed-media-row {
+			display: flex;
+			align-items: center;
+			gap: 10px;
+			padding: 12px 10px;
+			border-radius: 14px;
+			font-size: 13px;
+			color: var(--lg-text-dim);
+			cursor: pointer;
+			transition: background 0.18s ease, transform 0.15s ease;
+		}
+		.ed-media-row:hover { background: var(--lg-surface-soft); }
+		.ed-media-row i.ed-check { color: #0A84FF; font-size: 12px; flex-shrink: 0; transition: opacity 0.18s ease; }
+		.ed-media-row i.ed-node { font-size: 12px; width: 14px; color: var(--lg-text-mute); flex-shrink: 0; }
+		.ed-media-row.is-off { color: var(--lg-text-mute); }
+		.ed-media-row.is-off i.ed-check { opacity: 0.25; }
+
+		/* ── Layer / track tree (left panel) ── */
+		.ed-tree-row {
+			display: flex;
+			align-items: center;
+			gap: 10px;
+			padding: 11px 10px;
+			border-radius: 14px;
+			font-size: 13px;
+			color: var(--lg-text-dim);
+			cursor: pointer;
+			transition: background 0.18s ease, transform 0.15s ease;
+		}
+		.ed-tree-row:hover { background: var(--lg-surface-soft); }
+		.ed-tree-row.is-selected { background: rgba(10, 132, 255, 0.12); color: var(--lg-text); }
+		.ed-tree-row i.ed-chevron { font-size: 9px; width: 10px; color: var(--lg-text-mute); flex-shrink: 0; }
+		.ed-tree-row i.ed-node    { font-size: 12px; width: 14px; color: var(--lg-text-mute); flex-shrink: 0; }
+		.ed-tree-row.is-selected i { color: #0A84FF; }
+		.ed-tree-row--child { padding-left: 30px; }
+		.ed-tree-row--root  { font-weight: 500; color: var(--lg-text); }
+
+		/* Press feedback — every tappable control in the workspace shares this */
+		.ed-mini-btn:active,
+		.ed-tab:active,
+		.ed-media-row:active,
+		.ed-tree-row:active,
+		.ed-tool-btn:active,
+		.ed-aspect-btn:active,
+		.ed-export-btn:active { transform: scale(0.94); }
+		.ed-switch { cursor: pointer; transition: transform 0.15s ease; }
+		.ed-switch:active { transform: scale(0.92); }
+
+		/* ── Alignment row (right panel) ── */
+		.ed-align-row { display: flex; flex-wrap: wrap; gap: 4px; padding: 4px 4px 12px; }
+
+		/* ── Property "chip" rows (right panel): label left, input(s) right ── */
+		.ed-prop-row {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			margin-top: 8px;
+		}
+		.ed-prop-row:first-of-type { margin-top: 0; }
+
+		.ed-field {
+			flex: 1;
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			height: 36px;
+			padding: 0 10px;
+			border-radius: 8px;
+			background: var(--lg-surface-soft);
+			box-shadow: inset 0 0 0 1px var(--lg-hairline);
+			font-size: 12.5px;
+			color: var(--lg-text);
+			min-width: 0;
+		}
+		.ed-field-label {
+			color: var(--lg-text-mute);
+			font-size: 11px;
+			font-weight: 500;
+			text-transform: uppercase;
+			flex-shrink: 0;
+		}
+		.ed-field-value { margin-left: auto; color: var(--lg-text-dim); font-variant-numeric: tabular-nums; }
+		.ed-field.ed-field--icon { flex: 0 0 36px; justify-content: center; padding: 0; color: var(--lg-text-mute); }
+
+		.ed-swatch {
+			width: 16px; height: 16px;
+			border-radius: 4px;
+			background: #fff;
+			box-shadow: inset 0 0 0 1px var(--lg-hairline);
+			flex-shrink: 0;
+		}
+
+		.ed-toggle-row {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			padding: 10px 2px 2px;
+			font-size: 12.5px;
+			color: var(--lg-text-dim);
+		}
+		.ed-switch {
+			width: 34px; height: 20px;
+			border-radius: 9999px;
+			background: var(--lg-surface-soft);
+			box-shadow: inset 0 0 0 1px var(--lg-hairline);
+			position: relative;
+			flex-shrink: 0;
+		}
+		.ed-switch::after {
+			content: '';
+			position: absolute;
+			top: 2px; left: 2px;
+			width: 16px; height: 16px;
+			border-radius: 50%;
+			background: var(--lg-text-mute);
+		}
+		.ed-switch.is-on { background: rgba(10, 132, 255, 0.35); }
+		.ed-switch.is-on::after { left: 16px; background: #0A84FF; }
+
+		/* Export row gets slightly more visual weight — the one primary action here */
+		.ed-export-btn {
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			gap: 10px;
+			width: 100%;
+			padding: 12px;
+			border-radius: 9999px;
+			border: none;
+			background: var(--lg-surface-dense);
+			box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.3), var(--lg-bevel);
+			color: var(--lg-text);
+			font-family: var(--lg-font-display);
+			font-size: 12px;
+			font-weight: 500;
+			letter-spacing: 0.08em;
+			text-transform: uppercase;
+			cursor: pointer;
+			transition: box-shadow 0.2s ease, transform 0.2s ease;
+		}
+		.ed-export-btn:hover { box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.45), var(--lg-bevel-strong); }
+		.ed-export-btn:active { transform: scale(0.98); }
+
+		/* ══════════════════════════════════════════════════════════
+		   Canvas — center column, wraps the real iframe
+		   ══════════════════════════════════════════════════════════ */
+		.editor-canvas {
+			position: relative;
+			flex: 1;
+			min-width: 0;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			padding: 20px;
+			background:
+				radial-gradient(60% 50% at 50% 0%, var(--lg-surface-soft), transparent 70%);
+		}
+
+		/* Floating vertical tool rail — decorative, mirrors the Figma "Tab Bar" */
+		.ed-tool-rail {
+			position: absolute;
+			top: 50%;
+			left: 16px;
+			transform: translateY(-50%);
+			z-index: 3;
+			display: flex;
+			flex-direction: column;
+			gap: 6px;
+			padding: 8px;
+			border-radius: 9999px;
+			background: var(--lg-surface-dense);
+			box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.26), var(--lg-bevel-soft);
+			backdrop-filter: blur(18px) saturate(140%);
+			-webkit-backdrop-filter: blur(18px) saturate(140%);
+		}
+		.ed-tool-btn {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			width: 38px; height: 38px;
+			border-radius: 9999px;
+			border: none;
+			background: transparent;
+			color: var(--lg-text-mute);
+			font-size: 14px;
+			cursor: pointer;
+			transition: background 0.18s ease, color 0.18s ease, box-shadow 0.18s ease, transform 0.15s ease;
+		}
+		.ed-tool-btn:hover { background: var(--lg-surface-soft); color: var(--lg-text); }
+		.ed-tool-btn.is-active {
+			background: rgba(10, 132, 255, 0.16);
+			color: #0A84FF;
+			box-shadow: var(--lg-bevel-soft);
+		}
+
+		/* Aspect-ratio chip row — floats bottom-center of the canvas */
+		.ed-aspect-row {
+			position: absolute;
+			bottom: 16px;
+			left: 50%;
+			transform: translateX(-50%);
+			z-index: 3;
+			display: inline-flex;
+			gap: 2px;
+			padding: 3px;
+			border-radius: 9999px;
+			background: var(--lg-surface-dense);
+			box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.26), var(--lg-bevel-soft);
+			backdrop-filter: blur(18px) saturate(140%);
+			-webkit-backdrop-filter: blur(18px) saturate(140%);
+		}
+		.ed-aspect-btn {
+			padding: 8px 14px;
+			border-radius: 9999px;
+			border: none;
+			background: transparent;
+			color: var(--lg-text-mute);
+			font-family: var(--lg-font-display);
+			font-size: 11px;
+			font-weight: 500;
+			letter-spacing: 0.04em;
+			cursor: pointer;
+			transition: background 0.18s ease, color 0.18s ease, transform 0.15s ease;
+		}
+		.ed-aspect-btn.is-active { background: var(--lg-surface-soft); color: var(--lg-text); }
+
+		/* Frame the real editor surface sits inside — rounded "canvas card" */
+		.editor-frame-wrap {
+			position: relative;
+			width: 100%;
+			height: 100%;
+			border-radius: 20px;
+			overflow: hidden;
+			box-shadow: var(--lg-bevel-soft), 0 20px 60px rgba(0, 0, 0, 0.35);
 		}
 
 		.editor-iframe {
@@ -169,7 +563,7 @@
 			height: 100%;
 			border: none;
 			display: block;
-			background: #111;
+			background: var(--lg-void);
 		}
 
 		/* ── Loading overlay ── */
@@ -181,9 +575,9 @@
 			align-items: center;
 			justify-content: center;
 			gap: 20px;
-			background: rgba(11, 9, 7, 0.9);
-			backdrop-filter: blur(12px);
-			-webkit-backdrop-filter: blur(12px);
+			background: var(--lg-surface-dense);
+			backdrop-filter: blur(22px) saturate(140%);
+			-webkit-backdrop-filter: blur(22px) saturate(140%);
 			transition: opacity 0.4s, visibility 0.4s;
 		}
 
@@ -193,11 +587,12 @@
 		}
 
 		.loading-spinner {
-			width: 44px;
-			height: 44px;
+			width: 42px;
+			height: 42px;
 			border-radius: 50%;
-			border: 2px solid rgba(255,255,255,0.08);
-			border-top-color: rgba(180,120,255,0.75);
+			border: 2px solid var(--lg-hairline);
+			border-top-color: var(--lg-text);
+			opacity: 0.85;
 			animation: spin 0.9s linear infinite;
 		}
 
@@ -206,11 +601,11 @@
 		}
 
 		.loading-text {
-			font-family: 'Space Grotesk', sans-serif;
+			font-family: var(--lg-font-body);
 			font-size: 13px;
-			font-weight: 500;
-			color: rgba(255,255,255,0.55);
-			letter-spacing: 0.03em;
+			font-weight: 400;
+			color: var(--lg-text-mute);
+			letter-spacing: 0.02em;
 		}
 
 		/* ── Error state (if iframe blocked) ── */
@@ -224,7 +619,9 @@
 			gap: 16px;
 			padding: 32px;
 			text-align: center;
-			background: rgba(11, 9, 7, 0.92);
+			background: var(--lg-surface-dense);
+			backdrop-filter: blur(22px) saturate(140%);
+			-webkit-backdrop-filter: blur(22px) saturate(140%);
 		}
 
 		.editor-error.visible {
@@ -232,20 +629,24 @@
 		}
 
 		.error-icon {
-			font-size: 40px;
-			color: rgba(255,255,255,0.25);
+			font-size: 36px;
+			color: var(--lg-text-mute);
+			opacity: 0.7;
 		}
 
 		.error-title {
-			font-family: 'Sora', sans-serif;
-			font-size: 18px;
-			font-weight: 700;
-			color: #fff;
+			font-family: var(--lg-font-display);
+			font-size: 15px;
+			font-weight: 500;
+			letter-spacing: 0.04em;
+			text-transform: uppercase;
+			color: var(--lg-text);
 		}
 
 		.error-desc {
+			font-family: var(--lg-font-body);
 			font-size: 13px;
-			color: rgba(255,255,255,0.55);
+			color: var(--lg-text-dim);
 			line-height: 1.6;
 			max-width: 300px;
 		}
@@ -253,34 +654,80 @@
 		.error-btn {
 			display: inline-flex;
 			align-items: center;
-			gap: 8px;
-			padding: 12px 24px;
-			border-radius: 14px;
-			background: linear-gradient(135deg, rgba(180,120,255,0.22), rgba(100,160,255,0.16));
-			border: 1px solid rgba(180,120,255,0.35);
-			color: #fff;
-			font-family: 'Space Grotesk', sans-serif;
-			font-size: 14px;
-			font-weight: 600;
+			gap: 10px;
+			padding: 13px 26px;
+			border-radius: 9999px;
+			background: var(--lg-surface-dense);
+			box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.3), var(--lg-bevel);
+			color: var(--lg-text);
+			font-family: var(--lg-font-display);
+			font-size: 12.5px;
+			font-weight: 500;
+			letter-spacing: 0.08em;
+			text-transform: uppercase;
 			cursor: pointer;
 			text-decoration: none;
-			transition: background 0.18s;
+			backdrop-filter: blur(18px) saturate(140%);
+			-webkit-backdrop-filter: blur(18px) saturate(140%);
+			transition: box-shadow 0.2s ease, transform 0.2s ease;
 		}
 
-		.error-btn:hover {
-			background: linear-gradient(135deg, rgba(180,120,255,0.35), rgba(100,160,255,0.28));
+		.error-btn:hover { box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.45), var(--lg-bevel-strong); }
+		.error-btn:active { transform: scale(0.97); }
+
+		/* ══════════════════════════════════════════════════════════
+		   Mobile — panels become slide-in drawers over the canvas
+		   ══════════════════════════════════════════════════════════ */
+		@media (max-width: 900px) {
+			.topbar-drawer-btn { display: inline-flex; }
+
+			.ed-panel {
+				position: fixed;
+				top: 0;
+				bottom: 0;
+				z-index: 9;
+				width: min(84vw, 320px);
+				box-shadow: var(--lg-ambient);
+				transition: transform 0.28s ease;
+			}
+			.ed-panel--left  { left: 0; transform: translateX(-100%); }
+			.ed-panel--right { right: 0; transform: translateX(100%); }
+			.ed-panel.is-open { transform: translateX(0); }
+
+			.ed-scrim.is-open { display: block; }
+
+			.ed-tool-rail { left: 10px; }
+			.editor-canvas { padding: 12px; }
 		}
 	</style>
 </head>
 
 <body>
 
-	<!-- Авторский фон SONYA -->
-	<div class="cinema-bg" aria-hidden="true">
-		<video autoplay muted loop playsinline preload="auto"
-			disablepictureinpicture disableremoteplayback>
-			<source src="hf_20260419_161836_77c00607-b936-40e5-b41d-240635ddc9d9 (1).mp4" type="video/mp4">
+	<!-- Авторский фон SONYA — тот же global cinema stage, что на главном экране -->
+	<div class="cinema-stage" aria-hidden="true">
+		<video class="cinema-video" id="cinema-video"
+			autoplay muted loop playsinline preload="auto"
+			disablepictureinpicture disableremoteplayback
+			data-dark-src="hf_20260419_161836_77c00607-b936-40e5-b41d-240635ddc9d9 (1).mp4"
+			data-light-src="bg-light.mp4">
+			<source id="cinema-video-source" src="hf_20260419_161836_77c00607-b936-40e5-b41d-240635ddc9d9 (1).mp4" type="video/mp4">
 		</video>
+		<script>
+			(function () {
+				if (document.documentElement.getAttribute('data-theme') !== 'light') return;
+				var video = document.getElementById('cinema-video');
+				var source = document.getElementById('cinema-video-source');
+				if (video && source) {
+					source.src = video.dataset.lightSrc;
+					video.load();
+				}
+			})();
+		</script>
+		<div class="cinema-overlay cinema-overlay--tint"></div>
+		<div class="cinema-overlay cinema-overlay--gradient"></div>
+		<div class="cinema-overlay cinema-overlay--vignette"></div>
+		<div class="cinema-overlay cinema-overlay--grain"></div>
 	</div>
 
 	<!-- Page layout -->
@@ -288,8 +735,11 @@
 
 		<!-- Header bar -->
 		<div class="editor-topbar">
-			<button class="topbar-back" id="btn-back" aria-label="Назад к результатам" title="Назад к результатам">
+			<button class="editor-icon-btn" id="btn-back" aria-label="Назад к результатам" title="Назад к результатам">
 				<i class="fa-solid fa-arrow-left"></i>
+			</button>
+			<button class="editor-icon-btn topbar-drawer-btn" id="btn-open-left" aria-label="Медиа и слои" title="Медиа и слои">
+				<i class="fa-solid fa-layer-group"></i>
 			</button>
 			<div class="topbar-brand">
 				<span class="topbar-wordmark">SONYA</span>
@@ -297,36 +747,224 @@
 				<span class="topbar-label">Editor</span>
 			</div>
 			<span class="topbar-badge">Post-Edit</span>
+			<button class="editor-icon-btn topbar-drawer-btn" id="btn-open-right" aria-label="Свойства" title="Свойства">
+				<i class="fa-solid fa-sliders"></i>
+			</button>
+			<button class="editor-icon-btn legal-theme-toggle" id="editor-theme-toggle" type="button" aria-label="Переключить тему">
+				<i class="fa-solid fa-circle-half-stroke"></i>
+			</button>
 		</div>
 
-		<!-- Editor iframe wrapper -->
-		<div class="editor-frame-wrap">
-			<iframe
-				id="opencut-iframe"
-				class="editor-iframe"
-				src=""
-				allow="clipboard-read; clipboard-write; fullscreen"
-				title="OpenCut Editor"
-			></iframe>
+		<!-- Workspace: media/layers · canvas · properties -->
+		<div class="editor-workspace">
 
-			<!-- Loading overlay -->
-			<div class="editor-loading" id="editor-loading">
-				<div class="loading-spinner"></div>
-				<span class="loading-text">Загружаем редактор…</span>
+			<div class="ed-scrim" id="ed-scrim" aria-hidden="true"></div>
+
+			<!-- ── Left panel: media bin + layer tree ── -->
+			<aside class="ed-panel ed-panel--left" id="ed-panel-left">
+				<div class="ed-block">
+					<div class="ed-tabs">
+						<button class="ed-tab is-active" type="button">Таймлайн</button>
+						<button class="ed-tab" type="button">Медиа</button>
+					</div>
+				</div>
+
+				<div class="ed-block">
+					<div class="ed-block-head">
+						<span class="ed-block-title">Медиа</span>
+						<div class="ed-block-actions">
+							<button class="ed-mini-btn" type="button" aria-label="Загрузить"><i class="fa-solid fa-upload"></i></button>
+							<button class="ed-mini-btn" type="button" aria-label="Добавить"><i class="fa-solid fa-plus"></i></button>
+						</div>
+					</div>
+					<div class="ed-media-row"><i class="fa-solid fa-check ed-check"></i><i class="fa-solid fa-film ed-node"></i> Клип 1</div>
+					<div class="ed-media-row"><i class="fa-solid fa-check ed-check"></i><i class="fa-solid fa-music ed-node"></i> Озвучка</div>
+					<div class="ed-media-row"><i class="fa-solid fa-check ed-check"></i><i class="fa-solid fa-closed-captioning ed-node"></i> Субтитры</div>
+				</div>
+
+				<div class="ed-block">
+					<div class="ed-block-head">
+						<span class="ed-block-title">Слои</span>
+					</div>
+					<div class="ed-tree-row ed-tree-row--root"><i class="fa-solid fa-hashtag ed-node"></i> Проект</div>
+					<div class="ed-tree-row ed-tree-row--root"><i class="fa-solid fa-hashtag ed-node"></i> Таймлайн</div>
+					<div class="ed-tree-row ed-tree-row--child is-selected"><i class="fa-solid fa-chevron-down ed-chevron"></i><i class="fa-solid fa-film ed-node"></i> Видеодорожка</div>
+					<div class="ed-tree-row ed-tree-row--child"><i class="fa-solid fa-chevron-down ed-chevron"></i><i class="fa-solid fa-hashtag ed-node"></i> Текст-оверлей</div>
+					<div class="ed-tree-row ed-tree-row--child"><i class="fa-solid fa-chevron-down ed-chevron"></i><i class="fa-solid fa-hashtag ed-node"></i> Стикеры</div>
+					<div class="ed-tree-row ed-tree-row--child"><i class="fa-solid fa-chevron-down ed-chevron"></i><i class="fa-solid fa-hashtag ed-node"></i> Переходы</div>
+					<div class="ed-tree-row ed-tree-row--child"><i class="fa-solid fa-chevron-down ed-chevron"></i><i class="fa-solid fa-hashtag ed-node"></i> Аудиодорожка</div>
+					<div class="ed-tree-row ed-tree-row--child"><i class="fa-solid fa-chevron-down ed-chevron"></i><i class="fa-solid fa-hashtag ed-node"></i> Финальный кадр</div>
+					<div class="ed-tree-row ed-tree-row--child"><i class="fa-solid fa-chevron-down ed-chevron"></i><i class="fa-solid fa-closed-captioning ed-node"></i> Субтитры</div>
+					<div class="ed-tree-row ed-tree-row--root"><i class="fa-solid fa-hashtag ed-node"></i> Экспорт-пресеты</div>
+					<div class="ed-tree-row ed-tree-row--root"><i class="fa-solid fa-hashtag ed-node"></i> Архив проекта</div>
+				</div>
+			</aside>
+
+			<!-- ── Canvas: the real editor lives here, inside an iframe ── -->
+			<div class="editor-canvas">
+
+				<div class="ed-tool-rail">
+					<button class="ed-tool-btn is-active" type="button" aria-label="Курсор"><i class="fa-solid fa-arrow-pointer"></i></button>
+					<button class="ed-tool-btn" type="button" aria-label="Кадр"><i class="fa-solid fa-crop-simple"></i></button>
+					<button class="ed-tool-btn" type="button" aria-label="Текст"><i class="fa-solid fa-font"></i></button>
+					<button class="ed-tool-btn" type="button" aria-label="Стикер"><i class="fa-solid fa-shapes"></i></button>
+					<button class="ed-tool-btn" type="button" aria-label="Рисование"><i class="fa-solid fa-pencil"></i></button>
+					<button class="ed-tool-btn" type="button" aria-label="Разделить"><i class="fa-solid fa-scissors"></i></button>
+					<button class="ed-tool-btn" type="button" aria-label="Заметка"><i class="fa-solid fa-comment"></i></button>
+				</div>
+
+				<div class="ed-aspect-row">
+					<button class="ed-aspect-btn is-active" type="button">9:16</button>
+					<button class="ed-aspect-btn" type="button">1:1</button>
+					<button class="ed-aspect-btn" type="button">16:9</button>
+				</div>
+
+				<div class="editor-frame-wrap">
+					<iframe
+						id="opencut-iframe"
+						class="editor-iframe"
+						src=""
+						allow="clipboard-read; clipboard-write; fullscreen"
+						title="OpenCut Editor"
+					></iframe>
+
+					<!-- Loading overlay -->
+					<div class="editor-loading" id="editor-loading">
+						<div class="loading-spinner"></div>
+						<span class="loading-text">Загружаем редактор…</span>
+					</div>
+
+					<!-- Error overlay (shown if iframe fails to load) -->
+					<div class="editor-error" id="editor-error">
+						<i class="fa-solid fa-video-slash error-icon"></i>
+						<p class="error-title">Редактор недоступен</p>
+						<p class="error-desc">
+							Не удалось загрузить OpenCut. Откройте его в браузере, нажав кнопку ниже.
+						</p>
+						<a class="error-btn" id="error-open-btn" href="#" target="_blank" rel="noopener">
+							<i class="fa-solid fa-arrow-up-right-from-square"></i>
+							Открыть в браузере
+						</a>
+					</div>
+				</div>
 			</div>
 
-			<!-- Error overlay (shown if iframe fails to load) -->
-			<div class="editor-error" id="editor-error">
-				<i class="fa-solid fa-video-slash error-icon"></i>
-				<p class="error-title">Редактор недоступен</p>
-				<p class="error-desc">
-					Не удалось загрузить OpenCut. Откройте его в браузере, нажав кнопку ниже.
-				</p>
-				<a class="error-btn" id="error-open-btn" href="#" target="_blank" rel="noopener">
-					<i class="fa-solid fa-arrow-up-right-from-square"></i>
-					Открыть в браузере
-				</a>
-			</div>
+			<!-- ── Right panel: properties ── -->
+			<aside class="ed-panel ed-panel--right" id="ed-panel-right">
+				<div class="ed-block">
+					<div class="ed-tabs">
+						<button class="ed-tab is-active" type="button">Свойства</button>
+						<button class="ed-tab" type="button">Анимация</button>
+					</div>
+				</div>
+
+				<div class="ed-block">
+					<div class="ed-align-row">
+						<button class="ed-mini-btn" type="button" aria-label="По левому краю"><i class="fa-solid fa-align-left"></i></button>
+						<button class="ed-mini-btn" type="button" aria-label="По центру"><i class="fa-solid fa-align-center"></i></button>
+						<button class="ed-mini-btn" type="button" aria-label="По правому краю"><i class="fa-solid fa-align-right"></i></button>
+						<button class="ed-mini-btn" type="button" aria-label="По верхнему краю" style="transform: rotate(90deg);"><i class="fa-solid fa-align-left"></i></button>
+						<button class="ed-mini-btn" type="button" aria-label="По центру вертикали" style="transform: rotate(90deg);"><i class="fa-solid fa-align-center"></i></button>
+						<button class="ed-mini-btn" type="button" aria-label="По нижнему краю" style="transform: rotate(90deg);"><i class="fa-solid fa-align-right"></i></button>
+						<button class="ed-mini-btn" type="button" aria-label="По размеру кадра"><i class="fa-solid fa-expand"></i></button>
+					</div>
+				</div>
+
+				<div class="ed-block">
+					<div class="ed-block-head">
+						<span class="ed-block-title">Клип</span>
+						<div class="ed-block-actions">
+							<button class="ed-mini-btn" type="button" aria-label="Переименовать"><i class="fa-solid fa-pen"></i></button>
+							<button class="ed-mini-btn" type="button" aria-label="Дублировать"><i class="fa-solid fa-copy"></i></button>
+							<button class="ed-mini-btn" type="button" aria-label="Закрепить"><i class="fa-solid fa-lock"></i></button>
+						</div>
+					</div>
+					<div class="ed-prop-row">
+						<span class="ed-field"><span class="ed-field-label">X</span><span class="ed-field-value">240</span></span>
+						<span class="ed-field"><span class="ed-field-label">Y</span><span class="ed-field-value">480</span></span>
+					</div>
+					<div class="ed-prop-row">
+						<span class="ed-field"><span class="ed-field-label">W</span><span class="ed-field-value">1080</span></span>
+						<span class="ed-field"><span class="ed-field-label">H</span><span class="ed-field-value">1920</span></span>
+						<span class="ed-field ed-field--icon"><i class="fa-solid fa-link"></i></span>
+					</div>
+					<div class="ed-prop-row">
+						<span class="ed-field"><i class="fa-solid fa-rotate" style="font-size:11px;color:var(--lg-text-mute);"></i><span class="ed-field-value">0°</span></span>
+						<span class="ed-field"><i class="fa-solid fa-border-radius" style="font-size:11px;color:var(--lg-text-mute);"></i><span class="ed-field-value">0</span></span>
+						<span class="ed-field ed-field--icon"><i class="fa-solid fa-crop-simple"></i></span>
+					</div>
+					<div class="ed-toggle-row">
+						Обрезать по кадру
+						<span class="ed-switch is-on"></span>
+					</div>
+				</div>
+
+				<div class="ed-block">
+					<div class="ed-prop-row" style="margin-top:0;">
+						<span class="ed-field"><span class="ed-field-label">Скорость</span><span class="ed-field-value">1.0x</span></span>
+						<span class="ed-field ed-field--icon"><i class="fa-solid fa-gauge"></i></span>
+					</div>
+					<div class="ed-prop-row">
+						<span class="ed-field"><span class="ed-field-label">Громкость</span><span class="ed-field-value">100%</span></span>
+						<span class="ed-field ed-field--icon"><i class="fa-solid fa-volume-high"></i></span>
+					</div>
+				</div>
+
+				<div class="ed-block">
+					<div class="ed-block-head">
+						<span class="ed-block-title">Слой</span>
+					</div>
+					<div class="ed-prop-row" style="margin-top:0;">
+						<span class="ed-field" style="flex:2;"><span class="ed-field-value" style="margin-left:0;">Обычный</span><i class="fa-solid fa-chevron-down" style="font-size:9px;margin-left:auto;color:var(--lg-text-mute);"></i></span>
+						<span class="ed-field" style="flex:1;"><span class="ed-field-value" style="margin-left:0;">100%</span></span>
+						<span class="ed-field ed-field--icon"><i class="fa-solid fa-eye"></i></span>
+					</div>
+				</div>
+
+				<div class="ed-block">
+					<div class="ed-block-head">
+						<span class="ed-block-title">Цвет текста</span>
+					</div>
+					<div class="ed-prop-row" style="margin-top:0;">
+						<span class="ed-field" style="flex:2;">
+							<span class="ed-swatch"></span>
+							<span class="ed-field-value" style="margin-left:0;">FFFFFF</span>
+							<span class="ed-field-value">100%</span>
+						</span>
+						<span class="ed-field ed-field--icon"><i class="fa-solid fa-eye"></i></span>
+						<span class="ed-field ed-field--icon"><i class="fa-solid fa-xmark"></i></span>
+					</div>
+				</div>
+
+				<div class="ed-block">
+					<div class="ed-block-head">
+						<span class="ed-block-title">Обводка текста</span>
+						<div class="ed-block-actions">
+							<button class="ed-mini-btn" type="button" aria-label="Добавить обводку"><i class="fa-solid fa-plus"></i></button>
+						</div>
+					</div>
+				</div>
+
+				<div class="ed-block">
+					<div class="ed-block-head">
+						<span class="ed-block-title">Эффекты</span>
+						<div class="ed-block-actions">
+							<button class="ed-mini-btn" type="button" aria-label="Добавить эффект"><i class="fa-solid fa-plus"></i></button>
+						</div>
+					</div>
+				</div>
+
+				<div class="ed-block">
+					<div class="ed-block-head">
+						<span class="ed-block-title">Экспорт</span>
+					</div>
+					<button class="ed-export-btn" type="button">
+						<i class="fa-solid fa-arrow-up-from-bracket"></i>
+						Экспортировать видео
+					</button>
+				</div>
+			</aside>
+
 		</div>
 
 	</div>
@@ -339,7 +977,7 @@
 		//   1. URL param  ?editor_url=https://my-opencut.vercel.app
 		//   2. Constant below (set this to your deployed OpenCut URL)
 		// ──────────────────────────────────────────────────────
-		const OPENCUT_DEFAULT_URL = 'https://edit.sonya-e.com';
+		const OPENCUT_DEFAULT_URL = 'https://edit.sonya.group';
 
 		const params   = new URLSearchParams(window.location.search);
 		const editorUrl = params.get('editor_url') || OPENCUT_DEFAULT_URL;
@@ -379,6 +1017,104 @@
 				window.location.href = 'index.html';
 			}
 		});
+
+		// Cinema background video — swap dark/light source, same helper as app.js's switchCinemaVideo()
+		function switchCinemaVideo(theme) {
+			const video  = document.getElementById('cinema-video');
+			const source = document.getElementById('cinema-video-source');
+			if (!video || !source) return;
+			const src = theme === 'light'
+				? (video.dataset.lightSrc || 'bg-light.mp4')
+				: (video.dataset.darkSrc || "hf_20260419_161836_77c00607-b936-40e5-b41d-240635ddc9d9 (1).mp4");
+			if (source.getAttribute('src') !== src) {
+				source.setAttribute('src', src);
+				video.load();
+				video.play().catch(() => {});
+			}
+		}
+		switchCinemaVideo(document.documentElement.getAttribute('data-theme'));
+
+		// Theme toggle — same persisted-preference pattern as /legal/*.html
+		(function () {
+			const btn = document.getElementById('editor-theme-toggle');
+			if (!btn) return;
+			btn.addEventListener('click', function () {
+				const next = document.documentElement.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+				document.documentElement.setAttribute('data-theme', next);
+				localStorage.setItem('theme', next);
+				switchCinemaVideo(next);
+			});
+		})();
+
+		// Left/right panel drawers — decorative UI shell only, no editor state involved
+		(function () {
+			const scrim      = document.getElementById('ed-scrim');
+			const panelLeft  = document.getElementById('ed-panel-left');
+			const panelRight = document.getElementById('ed-panel-right');
+			const btnLeft    = document.getElementById('btn-open-left');
+			const btnRight   = document.getElementById('btn-open-right');
+
+			function closeDrawers() {
+				panelLeft.classList.remove('is-open');
+				panelRight.classList.remove('is-open');
+				scrim.classList.remove('is-open');
+			}
+			function toggleDrawer(panel) {
+				const willOpen = !panel.classList.contains('is-open');
+				closeDrawers();
+				if (willOpen) {
+					panel.classList.add('is-open');
+					scrim.classList.add('is-open');
+				}
+			}
+
+			btnLeft?.addEventListener('click', () => toggleDrawer(panelLeft));
+			btnRight?.addEventListener('click', () => toggleDrawer(panelRight));
+			scrim.addEventListener('click', closeDrawers);
+		})();
+
+		// Decorative panel controls — visual state + tap feedback only.
+		// This is a static UI shell (no real montage engine wired up yet);
+		// real select/tool/property logic gets attached here separately.
+		(function () {
+			// single-select groups: tabs, tool rail, aspect chips, tree rows, media rows
+			function wireGroup(selector, activeClass) {
+				document.querySelectorAll(selector).forEach((group) => {
+					group.addEventListener('click', (e) => {
+						const item = e.target.closest('[data-ed-item]') || e.target.closest('.ed-tab, .ed-tool-btn, .ed-aspect-btn, .ed-tree-row, .ed-media-row');
+						if (!item || !group.contains(item)) return;
+						group.querySelectorAll('.' + activeClass).forEach((el) => el.classList.remove(activeClass));
+						item.classList.add(activeClass);
+					});
+				});
+			}
+			wireGroup('.ed-tabs', 'is-active');
+			wireGroup('.ed-tool-rail', 'is-active');
+			wireGroup('.ed-aspect-row', 'is-active');
+
+			// layer tree rows select independently of the media bin list
+			document.querySelectorAll('.ed-block').forEach((block) => {
+				const rows = block.querySelectorAll('.ed-tree-row');
+				if (!rows.length) return;
+				rows.forEach((row) => {
+					row.addEventListener('click', () => {
+						rows.forEach((r) => r.classList.remove('is-selected'));
+						row.classList.add('is-selected');
+					});
+				});
+			});
+
+			// standalone toggles: mini icon buttons (eye/lock/pin-style), media checklist, switches
+			document.querySelectorAll('.ed-mini-btn').forEach((btn) => {
+				btn.addEventListener('click', () => btn.classList.toggle('is-active'));
+			});
+			document.querySelectorAll('.ed-media-row').forEach((row) => {
+				row.addEventListener('click', () => row.classList.toggle('is-off'));
+			});
+			document.querySelectorAll('.ed-switch').forEach((sw) => {
+				sw.addEventListener('click', () => sw.classList.toggle('is-on'));
+			});
+		})();
 
 		// Telegram WebApp setup
 		const tg = window.Telegram?.WebApp;
