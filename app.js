@@ -1,73 +1,11 @@
 /**
  * SONYA Mini App - Main JavaScript
- * Telegram Mini App for Video Shorts Generation
+ *
+ * Shared, unmodified, by both entry points (/ and /miniapp/) — this file
+ * must stay free of any dependency on the Telegram client or its SDK.
+ * That integration lives entirely in a separate runtime bridge file, only
+ * ever loaded by the Telegram-specific entry point.
  */
-
-// =====================================================
-// Telegram WebApp Integration
-// =====================================================
-
-let tg = null;
-
-
-function isTelegramMiniAppLaunch() {
-        const params = new URLSearchParams(window.location.search);
-        const hash = window.location.hash || '';
-
-        return Boolean(
-                params.get('tgWebAppData') ||
-                params.get('tgWebAppVersion') ||
-                hash.includes('tgWebAppData=') ||
-                hash.includes('tgWebAppVersion=')
-        );
-}
-
-function loadTelegramSdk() {
-        return new Promise((resolve, reject) => {
-                if (window.Telegram?.WebApp) {
-                        resolve(window.Telegram.WebApp);
-                        return;
-                }
-
-                const script = document.createElement('script');
-                script.src = 'https://telegram.org/js/telegram-web-app.js';
-                script.async = true;
-
-                script.onload = () => {
-                        if (window.Telegram?.WebApp) {
-                                resolve(window.Telegram.WebApp);
-                        } else {
-                                reject(new Error('Telegram WebApp SDK unavailable'));
-                        }
-                };
-
-                script.onerror = () => {
-                        reject(new Error('Telegram WebApp SDK failed to load'));
-                };
-
-                document.head.appendChild(script);
-        });
-}
-
-async function initializeTelegramIfNeeded() {
-        if (!isTelegramMiniAppLaunch()) {
-                return;
-        }
-
-        try {
-                tg = await loadTelegramSdk();
-
-                if (!tg?.initData) {
-                        tg = null;
-                        return;
-                }
-
-                initTelegramApp();
-        } catch (error) {
-                console.error('Telegram initialization failed', error);
-                tg = null;
-        }
-}
 
 // User profile data
 const userProfile = {
@@ -112,150 +50,47 @@ const SUBSCRIPTION_PLANS = {
         }
 };
 
-// Initialize Telegram WebApp
-function initTelegramApp() {
-        if (tg) {
-                tg.ready();
-                tg.expand();
-
-                // Apply Telegram theme colors if available
-                document.documentElement.style.setProperty(
-                        '--tg-theme-bg-color',
-                        tg.themeParams.bg_color || '#0A0A0A'
-                );
-
-                // Set header color
-
-
-                // Wait a bit for Telegram to fully initialize
-                setTimeout(() => {
-                        loadUserProfile();
-                }, 100);
-        } else {
-                console.error('Telegram WebApp SDK not loaded!');
-                // Try loading profile anyway with fallback
-                loadUserProfile();
-        }
-}
-
-// Load user profile from Telegram
+// Legacy profile loader (URL-param path, demo fallback) — its Telegram-SDK
+// branches were removed since this file may not depend on the Telegram
+// client object at all, but it is still, same as before this Telegram/
+// Mini-App split, never called from init(). Left as dead code rather than
+// wired back up or deleted: fixing/repurposing it is out of scope here,
+// and calling it unconditionally would invent a fake "Demo User" profile
+// on production.
 function loadUserProfile() {
-        
-        // FIRST: Try to get user data from URL parameters (most reliable)
+
         const urlParams = new URLSearchParams(window.location.search);
         const urlUserId = urlParams.get('tg_user_id');
-        
+
         if (urlUserId) {
                 userProfile.id = urlUserId;
                 userProfile.name = urlParams.get('tg_first_name') || 'User';
-                
+
                 const lastName = urlParams.get('tg_last_name');
                 if (lastName) {
                         userProfile.name += ' ' + lastName;
                 }
-                
+
                 const username = urlParams.get('tg_username');
                 if (username) {
                         userProfile.username = '@' + username;
                 }
-                
+
                 userProfile.avatar = generateAvatarUrl(userProfile.name);
-                
-                // Check if admin
+
                 if (userProfile.id && ADMINS[userProfile.id]) {
                         userProfile.role = ADMINS[userProfile.id].role;
                         userProfile.subscription = 'pro';
                 }
-                
-                updateProfileAvatar();
-                return;
-        }
-        
-        
-        if (!tg) {
-                
-                // For testing outside Telegram
-                userProfile.id = 'demo';
-                userProfile.name = 'Demo User';
-                userProfile.username = '@demo';
-                userProfile.avatar = generateAvatarUrl('Demo User');
+
                 updateProfileAvatar();
                 return;
         }
 
-
-        // Try multiple ways to get user data
-        let user = null;
-        
-        // Method 1: initDataUnsafe.user (standard way)
-        if (tg.initDataUnsafe && tg.initDataUnsafe.user) {
-                user = tg.initDataUnsafe.user;
-        }
-        
-        // Method 2: WebApp user data
-        if (!user && tg.WebAppUser) {
-                user = tg.WebAppUser;
-        }
-
-        // Method 3: Parse initData manually
-        if (!user && tg.initData) {
-                try {
-                        const params = new URLSearchParams(tg.initData);
-                        const userJson = params.get('user');
-                        if (userJson) {
-                                user = JSON.parse(userJson);
-                        }
-                } catch (e) {
-                        console.error('Failed to parse initData:', e);
-                }
-        }
-
-        // Method 4: Try window.TelegramWebviewProxy
-        if (!user && window.TelegramWebviewProxy && window.TelegramWebviewProxy.postEvent) {
-        }
-        
-        if (!user) {
-                console.error('❌ FAILED: No Telegram user data available from any method');
-                
-                // Show visible warning to user
-                userProfile.id = 'unknown';
-                userProfile.name = '⚠️ Не удалось загрузить профиль';
-                userProfile.username = 'Откройте через Telegram бота';
-                userProfile.avatar = generateAvatarUrl('?');
-                updateProfileAvatar();
-                return;
-        }
-
-        
-        // Ensure ID is string for comparison
-        userProfile.id = user.id ? String(user.id) : null;
-        userProfile.name = user.first_name || 'User';
-        
-        if (user.last_name) {
-                userProfile.name += ' ' + user.last_name;
-        }
-        
-        userProfile.username = user.username ? `@${user.username}` : '';
-        
-        // Try to get avatar from Telegram
-        if (user.photo_url) {
-                userProfile.avatar = user.photo_url;
-        } else {
-                // Fallback: generate avatar with initials
-                userProfile.avatar = generateAvatarUrl(userProfile.name);
-        }
-
-
-        // Check if user is admin
-        if (userProfile.id && ADMINS[userProfile.id]) {
-                userProfile.role = ADMINS[userProfile.id].role;
-                // Admin accounts get Pro-level access
-                userProfile.subscription = 'pro';
-        } else {
-        }
-
-
-        // Update avatar in UI
+        userProfile.id = 'demo';
+        userProfile.name = 'Demo User';
+        userProfile.username = '@demo';
+        userProfile.avatar = generateAvatarUrl('Demo User');
         updateProfileAvatar();
 }
 
@@ -308,15 +143,9 @@ function updateProfileAvatar() {
 
 function initTheme() {
         let savedTheme = localStorage.getItem('theme') || 'light';
-        
+
         document.documentElement.setAttribute('data-theme', savedTheme);
         switchCinemaVideo(savedTheme);
-        
-        if (tg) {
-                const themeColor = savedTheme === 'light' ? '#F5F5F7' : '#0A0A0A';
-
-
-        }
 }
 
 function switchCinemaVideo(theme) {
@@ -324,8 +153,8 @@ function switchCinemaVideo(theme) {
         const source = document.getElementById('cinema-video-source');
         if (!video || !source) return;
         const src = theme === 'light'
-                ? (video.dataset.lightSrc || 'bg-light.mp4')
-                : (video.dataset.darkSrc  || "hf_20260419_161836_77c00607-b936-40e5-b41d-240635ddc9d9 (1).mp4");
+                ? (video.dataset.lightSrc || '/bg-light.mp4')
+                : (video.dataset.darkSrc  || "/hf_20260419_161836_77c00607-b936-40e5-b41d-240635ddc9d9 (1).mp4");
         if (source.getAttribute('src') !== src) {
                 source.setAttribute('src', src);
                 video.load();
@@ -341,12 +170,6 @@ function toggleTheme() {
         localStorage.setItem('theme', newTheme);
 
         switchCinemaVideo(newTheme);
-        
-        if (tg) {
-                const themeColor = newTheme === 'light' ? '#F5F5F7' : '#0A0A0A';
-
-
-        }
 }
 
 // =====================================================
@@ -811,20 +634,6 @@ function collectFormData() {
 }
 
 // =====================================================
-// Telegram Bot Communication
-// =====================================================
-
-function sendDataToBot(data) {
-        if (tg) {
-                // Send data to the bot
-                tg.sendData(JSON.stringify(data));
-        } else {
-                // Fallback for testing outside Telegram
-                alert('Data would be sent to bot:\n' + JSON.stringify(data, null, 2));
-        }
-}
-
-// =====================================================
 // Job Submission — single-flight guard
 // =====================================================
 // btnNext2 and btnGenerate are two separate UI entry points that both do
@@ -886,7 +695,6 @@ async function submitGenerationJob() {
                         return;
                 }
 
-                if (tg) sendDataToBot(formData);
                 showPage('processing');
                 simulateProcessing();
                 // Lock stays held on success — released by resetGenerationLock()
@@ -1193,14 +1001,6 @@ function initEventListeners() {
 
 function init() {
         initTheme();
-        if (
-                window.Telegram &&
-                window.Telegram.WebApp &&
-                typeof window.Telegram.WebApp.initData === 'string' &&
-                window.Telegram.WebApp.initData.length > 0
-        ) {
-                initializeTelegramIfNeeded();
-        }
         initEventListeners();
 
         appState.brand = 'sonya';
@@ -1234,7 +1034,7 @@ function init() {
         const btnOpenEditor = document.getElementById('btn-open-editor');
         if (btnOpenEditor) {
                 btnOpenEditor.addEventListener('click', () => {
-                        window.location.href = 'opencut.html';
+                        window.location.href = '/opencut.html';
                 });
         }
 

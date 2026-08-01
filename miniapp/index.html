@@ -6,7 +6,8 @@
 
 	<!-- Theme bootstrap — must run before any CSS is requested/parsed
 	     so the saved theme is applied to <html> before first paint
-	     (prevents a light→dark / dark→light flash on load). -->
+	     (prevents a light→dark / dark→light flash on load). Identical to
+	     the plain site's copy — see index.html. -->
 	<script>
 		(function () {
 			try {
@@ -19,7 +20,14 @@
 		})();
 	</script>
 
-	<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+	<!-- Telegram Mini App entry point only: official SDK first, then the
+	     SONYA Telegram runtime bridge — both before every other script, per
+	     https://core.telegram.org/bots/webapps. The bridge script below is
+	     safe to load even when this page is opened outside Telegram. -->
+	<script src="https://telegram.org/js/telegram-web-app.js"></script>
+	<script src="/telegram-miniapp.js?v=20260801"></script>
+
+	<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 	<meta name="theme-color" content="#0B0907">
 	<title>SONYA — Cinematic AI editor</title>
 	<meta name="description"
@@ -36,10 +44,13 @@
 		href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Onest:wght@300;400;500;600;700&family=Unbounded:wght@200;300;400;500;600;700&display=swap"
 		rel="stylesheet">
 
-	<link rel="stylesheet" href="styles.css?v=20260730a">
+	<link rel="stylesheet" href="/styles.css?v=20260730a">
+	<!-- Telegram-only visual/perf overrides, scoped under [data-runtime="telegram"] -->
+	<link rel="stylesheet" href="/telegram-overrides.css?v=20260801">
 
-	<!-- SONYA backend API base. External file → CSP-friendly. -->
-	<script src="config.js?v=20260507"></script>
+	<!-- SONYA backend API base. External file → CSP-friendly. Same file as
+	     the plain site — no separate config, no duplicated business logic. -->
+	<script src="/config.js?v=20260507"></script>
 </head>
 
 <body>
@@ -78,11 +89,11 @@
 	<!-- Global cinematic video background (covers every page) -->
 	<div class="cinema-stage cinema-stage--global" aria-hidden="true">
 		<video class="cinema-video" id="cinema-video"
-			autoplay muted loop playsinline preload="auto"
+			autoplay muted loop playsinline preload="metadata"
 			disablepictureinpicture disableremoteplayback poster=""
-			data-dark-src="hf_20260419_161836_77c00607-b936-40e5-b41d-240635ddc9d9 (1).mp4"
-			data-light-src="bg-light.mp4">
-			<source id="cinema-video-source" src="hf_20260419_161836_77c00607-b936-40e5-b41d-240635ddc9d9 (1).mp4" type="video/mp4">
+			data-dark-src="/hf_20260419_161836_77c00607-b936-40e5-b41d-240635ddc9d9 (1).mp4"
+			data-light-src="/bg-light.mp4">
+			<source id="cinema-video-source" src="/hf_20260419_161836_77c00607-b936-40e5-b41d-240635ddc9d9 (1).mp4" type="video/mp4">
 		</video>
 		<script>
 			(function () {
@@ -144,7 +155,7 @@
 						<span class="menu-item-subtitle">Cinematic AI editor</span>
 					</div>
 					<span class="menu-item-badge">Live</span>
-			
+
 			</div>
 		</div>
 	</div>
@@ -866,10 +877,18 @@
 		</div>
 	</div>
 
-	<!-- Three.js for cinematic 3D sphere on processing page -->
-	<script src="app.js?v=202608011700"></script>
-	<script type="module" src="sphere.js?v=202607291200"></script>
-	<script src="auth.js?v=202608011319"></script>
+	<!-- Shared SONYA business logic — byte-identical files to the plain
+	     site (index.html), loaded absolute so /miniapp/ resolves them from
+	     the site root rather than /miniapp/. -->
+	<script src="/app.js?v=202608011700"></script>
+	<!-- sphere.js (Three.js WebGL sphere) deliberately NOT loaded here:
+	     styles.css already hides #page-processing .sonya-sphere-wrap
+	     unconditionally via .app-container.v2 (see styles.css ~line 3253),
+	     on BOTH entry points — so the sphere never renders even on the
+	     plain site today. Loading the module here would only cost a
+	     Three.js download (~600KB from a CDN) for zero visual effect,
+	     which is exactly the kind of tax Telegram WebViews can't afford. -->
+	<script src="/auth.js?v=202608011319"></script>
 </body>
 
 </html>

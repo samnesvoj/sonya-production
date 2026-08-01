@@ -1,0 +1,88 @@
+/**
+ * SONYA — Telegram Mini App CSS overrides.
+ *
+ * Loaded only by /miniapp/index.html, after styles.css. Every rule is
+ * scoped under html[data-runtime="telegram"] (set by telegram-miniapp.js)
+ * so it never affects the plain site, which never loads this file anyway.
+ *
+ * Goal: keep the SONYA design intact while trimming the GPU/compositing
+ * cost that hurts most inside Telegram's embedded WebView (older Android
+ * WebViews in particular) — heavy backdrop-filter blur, a WebGL sphere,
+ * two full-bleed background videos, and viewport units that don't account
+ * for Telegram's own chrome / on-screen keyboard.
+ */
+
+/* ── Lighter glass blur — same glass look, far cheaper to composite ── */
+html[data-runtime="telegram"] * {
+	backdrop-filter: blur(6px) !important;
+	-webkit-backdrop-filter: blur(6px) !important;
+}
+
+/* ── The heavy WebGL sphere ──────────────────────────────────────────
+   Not disabled here — it's already fully disabled, everywhere, by
+   production CSS: styles.css's .app-container.v2 #page-processing
+   .sonya-sphere-wrap { display: none !important; } (~line 3253) applies
+   unconditionally, on both entry points, and sphere.js's own
+   isSphereVisible() check (getComputedStyle(wrap).display !== 'none')
+   means its WebGL render loop never starts either way. The only
+   Telegram-specific difference is that miniapp/index.html doesn't load
+   sphere.js at all, which also saves the Three.js CDN download that would
+   otherwise happen for zero visual effect — see the script comment next
+   to the (removed) sphere.js <script> tag in miniapp/index.html. */
+
+/* ── Disable other continuous "breathing" glow decorations ───────────
+   Infinite CSS animation + filter:blur() forces a GPU repaint every
+   frame for as long as the element is visible — cheap on desktop, not on
+   WebView GPUs. .processing-hero::before in particular runs for the
+   entire length of a generation job. Frozen, not hidden, so layout is
+   unaffected — see DESIGN.md for what each replaces. */
+html[data-runtime="telegram"] .btn-trailer-glow,
+html[data-runtime="telegram"] .handoff-glow,
+html[data-runtime="telegram"] .processing-hero::before,
+html[data-runtime="telegram"] .profile-avatar-glow {
+	animation: none !important;
+	filter: none !important;
+}
+
+/* ── Decorative layers must never intercept taps — this is what caused
+   the file-picker / general tap-through issues reported inside Telegram.
+   Functional video (the Lite Editor preview) is deliberately excluded. ── */
+html[data-runtime="telegram"] .cinema-video,
+html[data-runtime="telegram"] .cinema-overlay,
+html[data-runtime="telegram"] .ambient-bg,
+html[data-runtime="telegram"] .ambient-bg *,
+html[data-runtime="telegram"] #sonya-sphere,
+html[data-runtime="telegram"] canvas {
+	pointer-events: none !important;
+}
+
+/* ── Viewport height: prefer dvh, fall back to Telegram's own reported
+   viewport (kept in sync with --tg-viewport-height / --tg-viewport-stable-
+   height by telegram-miniapp.js on load, themeChanged and viewportChanged)
+   over plain vh, which doesn't shrink for Telegram's header/keyboard. ── */
+html[data-runtime="telegram"] body {
+	min-height: 100dvh;
+	min-height: var(--tg-viewport-stable-height, 100dvh);
+}
+
+html[data-runtime="telegram"] .app-container {
+	min-height: 100dvh;
+	min-height: var(--tg-viewport-stable-height, 100dvh);
+}
+
+html[data-runtime="telegram"] .page {
+	min-height: calc(100dvh - 68px);
+	min-height: calc(var(--tg-viewport-stable-height, 100dvh) - 68px);
+}
+
+/* ── Safe area (notch / home indicator / Telegram's own bottom bar) ── */
+html[data-runtime="telegram"] body {
+	padding-top: env(safe-area-inset-top, 0px);
+	padding-bottom: env(safe-area-inset-bottom, 0px);
+	padding-left: env(safe-area-inset-left, 0px);
+	padding-right: env(safe-area-inset-right, 0px);
+}
+
+html[data-runtime="telegram"] .floating-controls--right {
+	top: calc(env(safe-area-inset-top, 0px) + 20px);
+}

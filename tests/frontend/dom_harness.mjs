@@ -251,6 +251,8 @@ class FakeDocument extends EventTargetMixin {
 // IDs app.js's top-level `elements = {...}` block resolves via
 // getElementById, with the tag needed for correct property semantics.
 const REQUIRED_IDS = {
+  'profile-avatar': 'img',
+  'profile-modal-avatar': 'img',
   'main-tagline': 'div',
   'menu-toggle': 'button',
   'menu-overlay': 'div',
