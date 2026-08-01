@@ -38,8 +38,13 @@
 		<div class="legal-article-head">
 			<span class="legal-eyebrow">Документ · 04</span>
 			<h1>Политика использования cookies</h1>
-			<p class="legal-meta">Дата обновления: 7 мая 2026 · Редакция 1.0</p>
+			<p class="legal-meta">Дата обновления: 1 августа 2026 · Редакция 1.1</p>
 		</div>
+
+		<p>
+			Настоящая политика распространяется на сайт https://sonya.group/ и на
+			Telegram Mini App (https://sonya.group/miniapp/).
+		</p>
 
 		<div class="legal-callout">
 			Сервис SONYA использует минимально необходимый набор cookies. Все они
@@ -69,6 +74,7 @@
 				<li><strong>Флаги безопасности:</strong> <code>HttpOnly</code> (недоступна из JavaScript), <code>Secure</code> (передаётся только по HTTPS), <code>SameSite</code>.</li>
 				<li><strong>Срок жизни:</strong> до 30 дней, либо до явного выхода Пользователя.</li>
 				<li><strong>Без неё:</strong> авторизация невозможна, использование сервиса недоступно.</li>
+				<li>Cookie идентична для сайта и для Telegram Mini App — отдельной cookie для Mini App не создаётся.</li>
 			</ul>
 
 			<h3>2.2. Cookie темы оформления (служебная)</h3>
@@ -76,14 +82,26 @@
 				<li><strong>Назначение:</strong> сохранение выбранной Пользователем темы (светлая / тёмная) между визитами.</li>
 				<li><strong>Где хранится:</strong> локальное хранилище браузера (<code>localStorage</code>), формально не cookie, но с аналогичной ролью.</li>
 				<li><strong>Срок жизни:</strong> до явной очистки данных браузера Пользователем.</li>
+				<li>В Telegram Mini App тема по умолчанию определяется параметрами темы Telegram (<code>themeParams</code>); ручной выбор темы Пользователя, сохранённый в <code>localStorage</code>, имеет приоритет.</li>
 			</ul>
 
 			<h3>2.3. Сторонние cookies</h3>
 			<p>Сервис не размещает сторонних аналитических, рекламных или маркетинговых cookies.</p>
 			<p>
-				Однако при использовании Telegram WebApp в браузере
-				Пользователя могут устанавливаться cookies со стороны Telegram —
-				их обработка регулируется политикой Telegram, а не SONYA.
+				Однако при использовании Telegram WebApp или Telegram Mini App в
+				браузере Пользователя могут устанавливаться cookies со стороны
+				Telegram — их обработка регулируется политикой Telegram, а не SONYA.
+				Telegram-бот работает через клиент Telegram и browser cookies не
+				устанавливает; обработка данных на стороне Telegram в этом случае
+				также регулируется политикой Telegram.
+			</p>
+
+			<h3>2.4. Технический атрибут data-runtime</h3>
+			<p>
+				Telegram Mini App использует служебный атрибут <code>data-runtime</code>
+				в разметке страницы для определения, что интерфейс открыт внутри
+				Telegram. Этот атрибут не является cookie, не сохраняется между
+				сессиями и не используется для отслеживания Пользователя.
 			</p>
 		</section>
 
