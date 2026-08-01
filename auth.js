@@ -55,6 +55,13 @@ async function apiGetMe() {
   return apiFetch('/auth/me');
 }
 
+// Single funnel for "a request that was NOT the expected 401-guest-state
+// failed" -- 5xx / network errors on auth checks must be visible in
+// diagnostics, never silently treated the same as an anonymous visitor.
+function reportAuthError(context, res) {
+  console.error(`[SONYA Auth] ${context}: unexpected status ${res?.status}`, res);
+}
+
 
 function normalizeApiAuthPurpose(purpose) {
   return purpose === 'registration' ? 'register' : purpose;
@@ -191,7 +198,14 @@ async function apiGetSubscriptionStatus() {
 ───────────────────────────────────────────── */
 async function refreshAuthState() {
   const res = await apiGetMe();
-  if (res.status === 401 || !res.ok) {
+  if (res.status === 401) {
+    // Expected guest state -- not logged in, not an error.
+    authState.user = null;
+  } else if (!res.ok) {
+    // Real failure (5xx / network) -- fall back to "no user" (we can't
+    // assume logged-in) but, unlike the 401 case, this is NOT expected,
+    // so it must stay visible instead of being silently swallowed.
+    reportAuthError('refreshAuthState', res);
     authState.user = null;
   } else {
     try {
@@ -455,7 +469,16 @@ function setAuthError(msg) {
   el.textContent = text;
   el.hidden = !text;
 }
-function clearAuthError() { setAuthError(''); }
+// NOT setAuthError('') -- an empty string fails normalizeAuthError's
+// value.trim() truthiness check and falls through to its generic fallback
+// text, so routing "clear" through setAuthError would paint the red
+// fallback message instead of hiding it.
+function clearAuthError() {
+  const el = document.getElementById('sonya-auth-error');
+  if (!el) return;
+  el.textContent = '';
+  el.hidden = true;
+}
 
 /* ── consent helper (registration) ── */
 function getRegisterConsents() {
@@ -621,9 +644,18 @@ function openTelegramPayment() {
 async function checkAndCreateVideoJob(formData) {
   // A. Check auth
   const meRes = await apiGetMe();
-  if (meRes.status === 401 || !meRes.ok) {
+  if (meRes.status === 401) {
+    // Expected guest state -- prompt to sign in, not an error.
     openAuthModal('login', 'Создайте аккаунт, чтобы получить 1 бесплатное видео');
     return 'auth';
+  }
+  if (!meRes.ok) {
+    // Real failure (5xx / network) -- must NOT be presented as "please log
+    // in", that hides an actual outage/bug behind a normal-looking prompt.
+    reportAuthError('checkAndCreateVideoJob:auth/me', meRes);
+    const meData = await safeJson(meRes);
+    showToast(meData?.detail || 'Не удалось проверить авторизацию. Попробуйте позже.', 'error');
+    return 'error';
   }
 
   // B. Try to create video job

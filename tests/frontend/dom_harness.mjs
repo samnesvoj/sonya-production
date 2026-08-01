@@ -100,6 +100,8 @@ export class FakeElement extends EventTargetMixin {
   getAttribute(name) {
     return Object.prototype.hasOwnProperty.call(this._attrs, name) ? this._attrs[name] : null;
   }
+  focus() {}
+  blur() {}
   // Matches real DOM: reading textContent on an element with children
   // recursively concatenates descendant text, not just locally-set text.
   get textContent() {
@@ -217,6 +219,18 @@ class FakeDocument extends EventTargetMixin {
         if (attrVal !== val) return false;
         if (checkedOnly && !el.checked) return false;
         return true;
+      });
+    }
+    // Bare [attr] (no value) -- used by auth.js for [data-auth-tab],
+    // [data-switch-auth], [data-auth-view]. Presence-only check against
+    // setAttribute()-populated _attrs (tests set this explicitly; unlike a
+    // real DOM this shim does not auto-mirror element.dataset -> attrs).
+    const bareAttrMatch = base.match(/^([a-zA-Z]*)\[([\w-]+)\]$/);
+    if (bareAttrMatch) {
+      const [, tag, attr] = bareAttrMatch;
+      return pool.filter((el) => {
+        if (tag && el.tagName !== tag.toUpperCase()) return false;
+        return Object.prototype.hasOwnProperty.call(el._attrs, attr);
       });
     }
     // Fallback: unsupported selector -> empty result (matches jsdom-less
@@ -366,18 +380,93 @@ export function loadApp({ checkAndCreateVideoJob } = {}) {
   return { sandbox, document, localStorage, fetchCalls };
 }
 
+// The auth-modal DOM nodes initAuth() wires listeners onto (mirrors
+// index.html's #sonya-auth-overlay markup). auth.js null-checks every
+// getElementById() result, so loading without these is fine for tests that
+// only touch the API-client functions -- but exercising the actual click
+// wiring (tab switch, open/close, error/banner clearing) needs them
+// present *before* initAuth() runs, same rationale as loadApp()'s
+// REQUIRED_IDS.
+function registerAuthModalDom(document) {
+  const ids = {
+    'sonya-auth-overlay': 'div',
+    'sonya-auth-close': 'button',
+    'sonya-login-email': 'input',
+    'sonya-register-email': 'input',
+    'sonya-code-input': 'input',
+    'sonya-code-subtitle': 'p',
+    'sonya-login-code-btn': 'button',
+    'sonya-register-code-btn': 'button',
+    'sonya-verify-code-btn': 'button',
+    'sonya-auth-resend': 'button',
+    'sonya-auth-back': 'button',
+  };
+  for (const [id, tag] of Object.entries(ids)) {
+    document.register(id, document.createElement(tag));
+  }
+
+  // index.html marks these <p ... hidden> by default -- mirror that so
+  // "was the error ever shown" tests reflect the same starting state a
+  // real page load has.
+  for (const id of ['sonya-auth-banner', 'sonya-auth-error']) {
+    const el = document.createElement('p');
+    el.hidden = true;
+    document.register(id, el);
+  }
+
+  const tabs = [
+    ['sonya-tab-login', 'login'],
+    ['sonya-tab-register', 'register'],
+  ];
+  for (const [id, which] of tabs) {
+    const tab = document.createElement('button');
+    tab.setAttribute('data-auth-tab', which);
+    tab.dataset.authTab = which;
+    document.register(id, tab);
+  }
+
+  const views = [
+    ['sonya-view-login', 'login'],
+    ['sonya-view-register', 'register'],
+    ['sonya-view-code', 'code'],
+  ];
+  for (const [id, which] of views) {
+    const view = document.createElement('section');
+    view.setAttribute('data-auth-view', which);
+    view.dataset.authView = which;
+    document.register(id, view);
+  }
+
+  const switches = [
+    ['sonya-switch-to-register', 'register'],
+    ['sonya-switch-to-login', 'login'],
+  ];
+  for (const [id, which] of switches) {
+    const btn = document.createElement('button');
+    btn.setAttribute('data-switch-auth', which);
+    btn.dataset.switchAuth = which;
+    document.register(id, btn);
+  }
+}
+
 /**
  * Loads the REAL auth.js (unmodified) into a fresh sandbox. auth.js's own
  * initAuth() guards every DOM lookup it makes (getElementById results are
  * either optional-chained or null-checked before use -- verified by
- * inspection), so unlike app.js this needs no pre-registered elements at
- * all to load and run cleanly; a bare FakeDocument is enough.
+ * inspection), so this needs no pre-registered elements to load and run
+ * cleanly. Pass `withAuthModalDom: true` to additionally pre-register the
+ * auth-modal DOM nodes (see registerAuthModalDom) for tests that exercise
+ * the modal's real click wiring instead of calling its functions directly.
  *
  * `fetchImpl` lets each test control exactly what apiCreateVideoJob's
  * POST /generation/jobs call observes (network error vs a real response).
+ * `consoleImpl` lets a test spy on console.error/warn/log without touching
+ * the real process-wide console object (defaults to the real console).
  */
-export function loadAuth({ fetchImpl } = {}) {
+export function loadAuth({ fetchImpl, consoleImpl, withAuthModalDom } = {}) {
   const document = new FakeDocument();
+  if (withAuthModalDom) registerAuthModalDom(document);
+  const consoleObj = consoleImpl || console;
 
   const fetchCalls = [];
   const defaultFetch = async (url, opts) => {
@@ -401,7 +490,7 @@ export function loadAuth({ fetchImpl } = {}) {
   const fastSetTimeout = (fn, _ms, ...args) => setTimeout(fn, 0, ...args);
 
   const windowObj = {
-    document, location, fetch: fetchFn, console,
+    document, location, fetch: fetchFn, console: consoleObj,
     setTimeout: fastSetTimeout, clearTimeout,
     SONYA_API_BASE: '/api',
   };
@@ -409,7 +498,7 @@ export function loadAuth({ fetchImpl } = {}) {
     window: windowObj,
     document,
     fetch: fetchFn,
-    console,
+    console: consoleObj,
     setTimeout: fastSetTimeout, clearTimeout,
     crypto, // Node's global WebCrypto (randomUUID) -- not auto-visible inside a vm context
     FormData, // Node's global FormData (undici) -- same reason
