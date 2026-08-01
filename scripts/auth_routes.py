@@ -35,7 +35,12 @@ from scripts.auth_security import (
     session_expiry,
     set_session_cookie,
 )
-from scripts.email_sender import EmailNotConfiguredError, EmailSendError, send_auth_code_email
+from scripts.email_sender import (
+    EmailNotConfiguredError,
+    EmailSendError,
+    send_auth_code_email,
+    send_welcome_email,
+)
 from scripts.rate_limiter import check_rate_limit
 from scripts.security import (
     get_current_user,
@@ -293,6 +298,16 @@ async def verify_code(
           details={"purpose": purpose, "new_user": is_new_user}, ip_address=ip)
     logger.info("[auth] verify_success user_id=%s new_user=%s trace_id=%s",
                 user["id"], is_new_user, trace_id)
+
+    # ── Best-effort welcome email for new accounts ───────────────────────────
+    # Never blocks or fails the auth response: registration must succeed
+    # even if the welcome email can't be sent.
+    if is_new_user:
+        try:
+            send_welcome_email(user["email"])
+        except Exception as exc:
+            logger.warning("[auth] welcome_email_failed user_id=%s trace_id=%s error=%s",
+                            user["id"], trace_id, exc)
 
     return _user_response(user)
 

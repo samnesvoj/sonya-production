@@ -179,6 +179,100 @@ def test_verify_code_valid_creates_user_and_session(client, monkeypatch):
     assert "SameSite=lax" in set_cookie_header or "samesite=lax" in set_cookie_header.lower()
 
 
+def test_verify_code_new_user_triggers_welcome_email(client, monkeypatch):
+    email = "brandnew2@example.com"
+    purpose = "register"
+    code = "555555"
+    code_hash = hash_code(code, email, purpose)
+    pending = make_auth_code(email, code_hash, purpose)
+    new_user = make_user(email=email)
+
+    monkeypatch.setattr(auth_store, "get_latest_pending_code", lambda e, p: pending)
+    monkeypatch.setattr(auth_store, "consume_code", lambda code_id: None)
+    monkeypatch.setattr(auth_store, "get_user_by_email", lambda e: None)
+    monkeypatch.setattr(auth_store, "get_or_create_user", lambda e: new_user)
+    monkeypatch.setattr(auth_store, "mark_email_verified", lambda uid: None)
+    monkeypatch.setattr(auth_store, "get_user_by_id", lambda uid: new_user)
+    monkeypatch.setattr(
+        auth_store, "create_session",
+        lambda user_id, token_hash, expires_at, user_agent=None, ip_address=None: "session-id",
+    )
+
+    welcome_calls = []
+    monkeypatch.setattr(
+        "scripts.auth_routes.send_welcome_email",
+        lambda to_email: welcome_calls.append(to_email),
+    )
+
+    resp = client.post("/api/auth/verify-code", json={"email": email, "code": code, "purpose": purpose})
+
+    assert resp.status_code == 200
+    assert welcome_calls == [email]
+
+
+def test_verify_code_existing_user_does_not_send_welcome_email(client, monkeypatch):
+    email = "returning@example.com"
+    purpose = "login"
+    code = "555555"
+    code_hash = hash_code(code, email, purpose)
+    pending = make_auth_code(email, code_hash, purpose)
+    existing_user = make_user(email=email)
+
+    monkeypatch.setattr(auth_store, "get_latest_pending_code", lambda e, p: pending)
+    monkeypatch.setattr(auth_store, "consume_code", lambda code_id: None)
+    monkeypatch.setattr(auth_store, "get_user_by_email", lambda e: existing_user)  # already registered
+    monkeypatch.setattr(auth_store, "mark_email_verified", lambda uid: None)
+    monkeypatch.setattr(auth_store, "get_user_by_id", lambda uid: existing_user)
+    monkeypatch.setattr(
+        auth_store, "create_session",
+        lambda user_id, token_hash, expires_at, user_agent=None, ip_address=None: "session-id",
+    )
+
+    welcome_calls = []
+    monkeypatch.setattr(
+        "scripts.auth_routes.send_welcome_email",
+        lambda to_email: welcome_calls.append(to_email),
+    )
+
+    resp = client.post("/api/auth/verify-code", json={"email": email, "code": code, "purpose": purpose})
+
+    assert resp.status_code == 200
+    assert welcome_calls == []
+
+
+def test_verify_code_new_user_succeeds_even_if_welcome_email_fails(client, monkeypatch):
+    """Welcome email is best-effort — it must never break the registration response contract."""
+    email = "brandnew3@example.com"
+    purpose = "register"
+    code = "555555"
+    code_hash = hash_code(code, email, purpose)
+    pending = make_auth_code(email, code_hash, purpose)
+    new_user = make_user(email=email)
+
+    monkeypatch.setattr(auth_store, "get_latest_pending_code", lambda e, p: pending)
+    monkeypatch.setattr(auth_store, "consume_code", lambda code_id: None)
+    monkeypatch.setattr(auth_store, "get_user_by_email", lambda e: None)
+    monkeypatch.setattr(auth_store, "get_or_create_user", lambda e: new_user)
+    monkeypatch.setattr(auth_store, "mark_email_verified", lambda uid: None)
+    monkeypatch.setattr(auth_store, "get_user_by_id", lambda uid: new_user)
+    monkeypatch.setattr(
+        auth_store, "create_session",
+        lambda user_id, token_hash, expires_at, user_agent=None, ip_address=None: "session-id",
+    )
+
+    def _boom(to_email):
+        raise RuntimeError("smtp exploded")
+
+    monkeypatch.setattr("scripts.auth_routes.send_welcome_email", _boom)
+
+    resp = client.post("/api/auth/verify-code", json={"email": email, "code": code, "purpose": purpose})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["user_id"] == new_user["id"]
+    assert body["email"] == email
+
+
 # ── /api/auth/me ————————————————————————————————————————————————————————————
 
 def test_auth_me_requires_session(client):
