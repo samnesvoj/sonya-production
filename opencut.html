@@ -20,7 +20,7 @@
 		rel="stylesheet">
 
 	<!-- Shared "Screening Room" glass tokens (bevel, radii, type) — same shell used by /legal/*.html -->
-	<link rel="stylesheet" href="https://irw74cvzhu.cdn.twcstorage.ru/releases/eea16aa/legal/_legal.css">
+	<link rel="stylesheet" href="https://static.sonya.group/releases/eea16aa/legal/_legal.css">
 
 	<script>
 		(function () {
@@ -709,9 +709,9 @@
 		<video class="cinema-video" id="cinema-video"
 			autoplay muted loop playsinline preload="auto"
 			disablepictureinpicture disableremoteplayback
-			data-dark-src="https://irw74cvzhu.cdn.twcstorage.ru/assets/video/bg-dark-v1.mp4"
-			data-light-src="https://irw74cvzhu.cdn.twcstorage.ru/assets/video/bg-light-v1.mp4">
-			<source id="cinema-video-source" src="https://irw74cvzhu.cdn.twcstorage.ru/assets/video/bg-dark-v1.mp4" type="video/mp4">
+			data-dark-src="https://static.sonya.group/assets/video/bg-dark-v1.mp4"
+			data-light-src="https://static.sonya.group/assets/video/bg-light-v1.mp4">
+			<source id="cinema-video-source" src="https://static.sonya.group/assets/video/bg-dark-v1.mp4" type="video/mp4">
 		</video>
 		<script>
 			(function () {
@@ -1024,8 +1024,8 @@
 			const source = document.getElementById('cinema-video-source');
 			if (!video || !source) return;
 			const src = theme === 'light'
-				? (video.dataset.lightSrc || 'https://irw74cvzhu.cdn.twcstorage.ru/assets/video/bg-light-v1.mp4')
-				: (video.dataset.darkSrc || "https://irw74cvzhu.cdn.twcstorage.ru/assets/video/bg-dark-v1.mp4");
+				? (video.dataset.lightSrc || 'https://static.sonya.group/assets/video/bg-light-v1.mp4')
+				: (video.dataset.darkSrc || "https://static.sonya.group/assets/video/bg-dark-v1.mp4");
 			if (source.getAttribute('src') !== src) {
 				source.setAttribute('src', src);
 				video.load();

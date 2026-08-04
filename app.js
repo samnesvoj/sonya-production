@@ -153,8 +153,8 @@ function switchCinemaVideo(theme) {
         const source = document.getElementById('cinema-video-source');
         if (!video || !source) return;
         const src = theme === 'light'
-                ? (video.dataset.lightSrc || 'https://irw74cvzhu.cdn.twcstorage.ru/assets/video/bg-light-v1.mp4')
-                : (video.dataset.darkSrc  || "https://irw74cvzhu.cdn.twcstorage.ru/assets/video/bg-dark-v1.mp4");
+                ? (video.dataset.lightSrc || 'https://static.sonya.group/assets/video/bg-light-v1.mp4')
+                : (video.dataset.darkSrc  || "https://static.sonya.group/assets/video/bg-dark-v1.mp4");
         if (source.getAttribute('src') !== src) {
                 source.setAttribute('src', src);
                 video.load();

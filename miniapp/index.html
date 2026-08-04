@@ -25,7 +25,7 @@
 	     https://core.telegram.org/bots/webapps. The bridge script below is
 	     safe to load even when this page is opened outside Telegram. -->
 	<script src="https://telegram.org/js/telegram-web-app.js"></script>
-	<script src="https://irw74cvzhu.cdn.twcstorage.ru/releases/eea16aa/telegram-miniapp.js"></script>
+	<script src="https://static.sonya.group/releases/eea16aa/telegram-miniapp.js"></script>
 
 	<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 	<meta name="theme-color" content="#0B0907">
@@ -44,13 +44,13 @@
 		href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Onest:wght@300;400;500;600;700&family=Unbounded:wght@200;300;400;500;600;700&display=swap"
 		rel="stylesheet">
 
-	<link rel="stylesheet" href="https://irw74cvzhu.cdn.twcstorage.ru/releases/eea16aa/styles.css">
+	<link rel="stylesheet" href="https://static.sonya.group/releases/eea16aa/styles.css">
 	<!-- Telegram-only visual/perf overrides, scoped under [data-runtime="telegram"] -->
-	<link rel="stylesheet" href="https://irw74cvzhu.cdn.twcstorage.ru/releases/eea16aa/telegram-overrides.css">
+	<link rel="stylesheet" href="https://static.sonya.group/releases/eea16aa/telegram-overrides.css">
 
 	<!-- SONYA backend API base. External file → CSP-friendly. Same file as
 	     the plain site — no separate config, no duplicated business logic. -->
-	<script src="https://irw74cvzhu.cdn.twcstorage.ru/releases/eea16aa/config.js"></script>
+	<script src="https://static.sonya.group/releases/eea16aa/config.js"></script>
 </head>
 
 <body>
@@ -91,9 +91,9 @@
 		<video class="cinema-video" id="cinema-video"
 			autoplay muted loop playsinline preload="metadata"
 			disablepictureinpicture disableremoteplayback poster=""
-			data-dark-src="https://irw74cvzhu.cdn.twcstorage.ru/assets/video/bg-dark-v1.mp4"
-			data-light-src="https://irw74cvzhu.cdn.twcstorage.ru/assets/video/bg-light-v1.mp4">
-			<source id="cinema-video-source" src="https://irw74cvzhu.cdn.twcstorage.ru/assets/video/bg-dark-v1.mp4" type="video/mp4">
+			data-dark-src="https://static.sonya.group/assets/video/bg-dark-v1.mp4"
+			data-light-src="https://static.sonya.group/assets/video/bg-light-v1.mp4">
+			<source id="cinema-video-source" src="https://static.sonya.group/assets/video/bg-dark-v1.mp4" type="video/mp4">
 		</video>
 		<script>
 			(function () {
@@ -880,7 +880,7 @@
 	<!-- Shared SONYA business logic — byte-identical files to the plain
 	     site (index.html), loaded absolute so /miniapp/ resolves them from
 	     the site root rather than /miniapp/. -->
-	<script src="https://irw74cvzhu.cdn.twcstorage.ru/releases/eea16aa/app.js"></script>
+	<script src="https://static.sonya.group/releases/eea16aa/app.js"></script>
 	<!-- sphere.js (Three.js WebGL sphere) deliberately NOT loaded here:
 	     styles.css already hides #page-processing .sonya-sphere-wrap
 	     unconditionally via .app-container.v2 (see styles.css ~line 3253),
@@ -888,7 +888,7 @@
 	     plain site today. Loading the module here would only cost a
 	     Three.js download (~600KB from a CDN) for zero visual effect,
 	     which is exactly the kind of tax Telegram WebViews can't afford. -->
-	<script src="https://irw74cvzhu.cdn.twcstorage.ru/releases/eea16aa/auth.js"></script>
+	<script src="https://static.sonya.group/releases/eea16aa/auth.js"></script>
 </body>
 
 </html>
