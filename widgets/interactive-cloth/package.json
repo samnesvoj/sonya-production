@@ -1,0 +1,23 @@
+{
+  "name": "sonya-interactive-cloth",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Isolated prototype: interactive WebGL cloth widget for SONYA's processing screen (public runtime + Studio configurator). Not wired into the main SONYA app yet.",
+  "scripts": {
+    "dev": "vite",
+    "dev:studio": "vite --open /studio.html",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "esbuild": "^0.28.1",
+    "three": "^0.180.0"
+  },
+  "devDependencies": {
+    "vite": "^7.0.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.1": true
+  }
+}
