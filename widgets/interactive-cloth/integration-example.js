@@ -54,9 +54,15 @@ async function fetchPublicClothConfig() {
 }
 
 /** Hook into SONYA's existing showPage('processing') call site (app.js:890). */
-function onEnterProcessingScreen() {
-  mountClothOnProcessingScreen();
-  SonyaCloth?.resume?.();
+async function onEnterProcessingScreen() {
+  // Awaited (not fire-and-forget) so resume() below runs after mount() has
+  // actually happened on a first visit — same lazy-loaded module reference
+  // pattern already used by destroyClothIfMounted() and the
+  // visibilitychange handler further down, not a bare `SonyaCloth` (which
+  // was never imported at module scope — see the commented-out import
+  // above).
+  await mountClothOnProcessingScreen();
+  loadClothModuleOnce._mod?.SonyaCloth.resume();
 }
 
 /** Hook into wherever app.js transitions to the result screen. */

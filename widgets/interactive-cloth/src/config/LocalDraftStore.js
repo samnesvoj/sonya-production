@@ -57,7 +57,18 @@ async function idbDelete(key) {
 export class LocalDraftStore extends ConfigStore {
   async load() {
     const raw = localStorage.getItem(LS_KEY);
-    const config = raw ? JSON.parse(raw) : null;
+    // JSON.parse throws on corrupted/foreign data (e.g. a stale format from
+    // a previous config version, or manual localStorage tampering) — treat
+    // that the same as "no draft" rather than rejecting load(), consistent
+    // with the idbGet().catch(() => null) fallback below for the texture.
+    let config = null;
+    if (raw) {
+      try {
+        config = JSON.parse(raw);
+      } catch {
+        config = null;
+      }
+    }
     let textureUrl = null;
     const blob = await idbGet(DB_KEY).catch(() => null);
     if (blob instanceof Blob) textureUrl = URL.createObjectURL(blob);

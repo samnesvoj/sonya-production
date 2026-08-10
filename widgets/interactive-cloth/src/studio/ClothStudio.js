@@ -111,8 +111,19 @@ export class ClothStudio {
   // ---- local draft (browser-only) ----------------------------------------
 
   async saveDraft() {
-    await this.configStore.save(this.config);
-    if (this.textureFile) await this.configStore.uploadTexture(this.textureFile);
+    // configStore.save()/uploadTexture() can reject (e.g. localStorage
+    // full, IndexedDB blocked in private browsing) — the click handler that
+    // calls saveDraft() doesn't await it, so an uncaught rejection here
+    // would surface only as a silent console error, not the usual
+    // showMessage() feedback every other Studio action gives on failure.
+    try {
+      await this.configStore.save(this.config);
+      if (this.textureFile) await this.configStore.uploadTexture(this.textureFile);
+    } catch (err) {
+      console.error('[ClothStudio] saveDraft failed', err);
+      this.showMessage('Failed to save local draft — your browser storage may be full or unavailable.');
+      return;
+    }
     this.savedSnapshot = JSON.stringify(this.config);
     this.markDirty();
     this.showMessage('Saved as a local draft — only visible in this browser, not published to other visitors.');

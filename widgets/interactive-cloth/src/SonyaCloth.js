@@ -291,11 +291,31 @@ class ClothInstance {
   }
 
   setTexture(url) {
+    if (this.webglUnavailable) {
+      this.config.texture.url = url;
+      if (this.fallbackEl) this.fallbackEl.style.backgroundImage = `url(${url})`;
+      return;
+    }
     this.config.texture.url = url;
     this.loadTexture(url);
   }
 
   setConfig(partial) {
+    if (this.webglUnavailable) {
+      // No renderer/scene to reconfigure in the fallback path — still merge
+      // + validate so a later setTexture()/inspection sees a consistent
+      // config, same contract as the WebGL path's return value.
+      const next = mergeConfig(this.config, partial);
+      const { valid, errors } = validateConfig(next);
+      if (!valid) {
+        console.warn('[SonyaCloth] setConfig rejected invalid config:', errors);
+        return false;
+      }
+      const textureChanged = next.texture.url !== this.config.texture.url;
+      this.config = next;
+      if (textureChanged) this.setTexture(next.texture.url);
+      return true;
+    }
     const next = mergeConfig(this.config, partial);
     const { valid, errors } = validateConfig(next);
     if (!valid) {
@@ -321,11 +341,13 @@ class ClothInstance {
   }
 
   pause() {
+    if (this.webglUnavailable) return;
     this.manuallyPaused = true;
     this.syncRunning();
   }
 
   resume() {
+    if (this.webglUnavailable) return;
     this.manuallyPaused = false;
     this.syncRunning();
   }
