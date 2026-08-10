@@ -1,0 +1,23 @@
+.sonya-cloth-host {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  touch-action: none;
+}
+
+.sonya-cloth-host canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* Shown only if WebGL2 is unavailable — a static cover image, never a crash. */
+.sonya-cloth-fallback {
+  width: 100%;
+  height: 100%;
+  background-size: cover;
+  background-position: center;
+  background-color: rgba(127, 127, 127, 0.08);
+}
