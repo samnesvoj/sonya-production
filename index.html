@@ -101,6 +101,14 @@
 		<div class="cinema-overlay cinema-overlay--grain"></div>
 	</div>
 
+	<!-- Approved Chrome cloth backdrop for the processing screen (Page 4) —
+	     mounted/destroyed by cloth-processing.js only while #page-processing
+	     is active; empty and inert on every other page. Positioned here
+	     (not inside #page-processing) so position:fixed is viewport-relative
+	     and DOM order puts it above the video, below .processing-hero — see
+	     styles.css's .processing-cloth-host rule for the full stacking note. -->
+	<div class="processing-cloth-host" id="processing-cloth-host" aria-hidden="true"></div>
+
 	<!-- Floating Controls -->
 	<div class="floating-controls floating-controls--left">
 		<button class="profile-btn" id="profile-btn" aria-label="Профиль">
@@ -869,6 +877,9 @@
 	<!-- Three.js for cinematic 3D sphere on processing page -->
 	<script src="https://static.sonya.group/releases/eea16aa/app.js"></script>
 	<script type="module" src="sphere.js?v=202607291200"></script>
+	<!-- Approved Chrome cloth backdrop for the processing page — see
+	     cloth/cloth-processing.js and #processing-cloth-host above. -->
+	<script type="module" src="cloth/cloth-processing.js?v=202608101900"></script>
 	<script src="https://static.sonya.group/releases/eea16aa/auth.js"></script>
 </body>
 
