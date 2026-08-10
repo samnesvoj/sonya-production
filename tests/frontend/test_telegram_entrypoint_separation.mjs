@@ -78,13 +78,18 @@ test('/miniapp/ loads the Telegram SDK, then telegram-miniapp.js, before config.
 });
 
 test('/miniapp/ references shared assets via absolute paths', () => {
+  // "Absolute" here means independent of /miniapp/'s own directory depth —
+  // either a root-relative path ("/styles.css") or a full CDN URL
+  // ("https://static.sonya.group/releases/<rev>/styles.css"), never a
+  // path relative to the HTML file itself.
   const assertAbsolute = (attr, filename) => {
     // Anchor on a path separator right before the filename so e.g. "app.js"
     // doesn't false-positive-match inside "telegram-web-app.js".
     const re = new RegExp(`${attr}="([^"]*/${filename.replace('.', '\\.')}[^"]*)"`);
     const m = miniappHtml.match(re);
     assert.ok(m, `${filename} not referenced via ${attr}= in miniapp/index.html`);
-    assert.ok(m[1].startsWith('/'), `${filename} must be referenced with an absolute path, got "${m[1]}"`);
+    const isAbsolute = m[1].startsWith('/') || /^https?:\/\//.test(m[1]);
+    assert.ok(isAbsolute, `${filename} must be referenced with an absolute path or CDN URL, got "${m[1]}"`);
   };
   assertAbsolute('href', 'styles.css');
   assertAbsolute('href', 'telegram-overrides.css');
