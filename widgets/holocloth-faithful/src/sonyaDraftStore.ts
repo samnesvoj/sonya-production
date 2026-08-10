@@ -114,21 +114,37 @@ function fileToImage(file: File): Promise<HTMLImageElement> {
 }
 
 export function hasDraft(): boolean {
-  return localStorage.getItem(LS_KEY) !== null;
+  try {
+    return localStorage.getItem(LS_KEY) !== null;
+  } catch {
+    // Storage access can throw outright (Safari private browsing, a
+    // locked-down embed) — treat that the same as "no draft" rather than
+    // crashing whatever UI checked this.
+    return false;
+  }
 }
 
 export async function saveDraft(params: HoloParams, images: ImagesState): Promise<void> {
-  localStorage.setItem(LS_KEY, JSON.stringify(params));
-  localStorage.setItem(
-    LS_DECAL_META_KEY,
-    JSON.stringify(images.decals.map((d) => ({ u: d.u, v: d.v, scale: d.scale, rotation: d.rotation }))),
-  );
+  // IndexedDB write happens FIRST, localStorage second: `restoreDraft()`
+  // treats LS_KEY as "a draft exists". Writing it before the (async, more
+  // failure-prone) IndexedDB put used to mean a rejected/interrupted
+  // idbPut — tab closed mid-write, IndexedDB blocked, quota exceeded —
+  // left LS_KEY/LS_DECAL_META_KEY pointing at a draft whose images were
+  // never actually stored, so restoreDraft() paired fresh decal metadata
+  // with a stale or missing image record. Committing the "a draft exists"
+  // marker only after the image write actually succeeds makes a failure
+  // here leave no draft at all, rather than a mismatched one.
   const stored: StoredImages = {
     clothImage: images.clothImage ? await imageToBlob(images.clothImage) : null,
     bumpImage: null, // set by caller via saveDraftBump — bump lives outside ImagesState (see App.tsx)
     decals: await Promise.all(images.decals.map((d) => imageToBlob(d.img))),
   };
   await idbPut(DB_KEY, stored);
+  localStorage.setItem(LS_KEY, JSON.stringify(params));
+  localStorage.setItem(
+    LS_DECAL_META_KEY,
+    JSON.stringify(images.decals.map((d) => ({ u: d.u, v: d.v, scale: d.scale, rotation: d.rotation }))),
+  );
 }
 
 /** Bump map is tracked separately in App.tsx (not part of upstream ImagesState) — merge it in. */
@@ -139,11 +155,26 @@ export async function saveDraftBump(bumpImage: HTMLImageElement | null): Promise
 }
 
 export async function restoreDraft(): Promise<{ params: HoloParams; images: DraftImages } | null> {
-  const raw = localStorage.getItem(LS_KEY);
+  let raw: string | null;
+  try {
+    raw = localStorage.getItem(LS_KEY);
+  } catch {
+    return null;
+  }
   if (!raw) return null;
-  const params = JSON.parse(raw) as HoloParams;
-  const decalMetaRaw = localStorage.getItem(LS_DECAL_META_KEY);
-  const decalMeta: DecalMeta[] = decalMetaRaw ? JSON.parse(decalMetaRaw) : [];
+  let params: HoloParams;
+  let decalMeta: DecalMeta[];
+  try {
+    params = JSON.parse(raw) as HoloParams;
+    const decalMetaRaw = localStorage.getItem(LS_DECAL_META_KEY);
+    decalMeta = decalMetaRaw ? JSON.parse(decalMetaRaw) : [];
+  } catch {
+    // Corrupted/foreign JSON under either key (a stale format from a
+    // previous version, or manual tampering) — treat the same as "no
+    // draft" instead of throwing out of a UI action's .then() handler
+    // (see App.tsx's restoreDraft call site, which has no .catch()).
+    return null;
+  }
   const stored = (await idbGet<StoredImages>(DB_KEY)) ?? { clothImage: null, bumpImage: null, decals: [] };
   const clothImage = stored.clothImage ? await blobToImage(stored.clothImage) : null;
   const bumpImage = stored.bumpImage ? await blobToImage(stored.bumpImage) : null;
@@ -197,8 +228,13 @@ function presentDownloads(files: { blob: Blob; filename: string }[]) {
   hint.style.cssText = 'font-size:11px;color:#9a9ca6;margin-bottom:14px;';
   panel.append(title, hint);
 
+  // Tracked so "Done" can revoke whatever the user never clicked — a
+  // second revokeObjectURL() on an already-revoked (clicked) URL is a
+  // harmless no-op, so no need to track which ones were already freed.
+  const urls: string[] = [];
   for (const { blob, filename } of files) {
     const url = URL.createObjectURL(blob);
+    urls.push(url);
     const link = document.createElement('a');
     link.href = url;
     link.download = filename;
@@ -215,7 +251,13 @@ function presentDownloads(files: { blob: Blob; filename: string }[]) {
   closeBtn.style.cssText =
     'margin-top:12px;padding:6px 14px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);' +
     'background:transparent;color:#e8e9ee;font-size:12px;cursor:pointer;';
-  closeBtn.addEventListener('click', () => overlay.remove());
+  closeBtn.addEventListener('click', () => {
+    // Frees any file the user never clicked — without this, dismissing the
+    // overlay early leaked those blob URLs for the rest of the page's
+    // lifetime (they're never referenced again once the overlay is gone).
+    urls.forEach((url) => URL.revokeObjectURL(url));
+    overlay.remove();
+  });
   panel.appendChild(closeBtn);
 
   overlay.appendChild(panel);

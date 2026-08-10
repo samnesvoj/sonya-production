@@ -28,7 +28,23 @@ import { mergeConfig, validateConfig } from './config/config-schema.js';
 class ClothInstance {
   constructor(host, options) {
     this.host = host;
-    this.config = mergeConfig(createDefaultConfig(), options.config || {});
+    const merged = mergeConfig(createDefaultConfig(), options.config || {});
+    // setConfig() (below) validates every later config change and rejects
+    // an invalid one outright — mount()'s initial config skipped that
+    // entirely, so a malformed options.config (typo'd color, NaN/
+    // out-of-range numeric field) flowed straight into buildCloth()/
+    // applyMaterial()/the physics loop unchecked, unlike the identical
+    // mistake caught by a later setConfig() call. There's no caller to
+    // return `false` to here (mount() doesn't refuse to construct), so an
+    // invalid initial config falls back to the known-good default instead
+    // of running with broken material/physics values.
+    const { valid, errors } = validateConfig(merged);
+    if (!valid) {
+      console.warn('[SonyaCloth] mount() received an invalid config, falling back to defaults:', errors);
+      this.config = createDefaultConfig();
+    } else {
+      this.config = merged;
+    }
     this.disposed = false;
     this.manuallyPaused = false;
     this.hiddenPaused = false;
@@ -277,7 +293,13 @@ class ClothInstance {
 
   tick = () => {
     if (this.disposed) return;
-    const dt = this.clock.getDelta();
+    let dt = this.clock.getDelta();
+    // 'static' short-circuits to a single warmed-up frame and never starts
+    // this loop at all (see syncRunning()/the constructor's warmUp branch)
+    // — 'slow' was a valid schema/Studio option with no matching runtime
+    // behavior here, so picking it did nothing: full-speed animation,
+    // identical to no reduced-motion preference at all.
+    if (this.reducedMotion && this.config.performance.reducedMotionBehavior === 'slow') dt *= 0.35;
     this.elapsed += dt;
     this.sim.step(dt, this.config.cloth, this.elapsed);
     this.syncGeometry();

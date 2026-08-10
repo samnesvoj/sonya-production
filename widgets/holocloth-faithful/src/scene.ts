@@ -589,9 +589,22 @@ export class HoloApp {
     const h = this.host.clientHeight || window.innerHeight;
     const normalPR = this.currentPR;
     const exportPR = Math.min(4, Math.max(2, 3200 / Math.max(w, h)));
+    // The old version only ever nulled the background for the `transparent`
+    // param and only ever restored it when that same param was set —
+    // whichever background was live BEFORE this call (opaque, or null from
+    // an ongoing setLiveTransparent(true) preview) just kept rendering for
+    // an opaque export request, so "Export PNG" while live-transparent mode
+    // was on produced a transparent/black PNG instead of a solid one.
+    // Now both directions are driven off what this one frame actually
+    // needs, independent of the ongoing live-preview state, which is
+    // restored afterward rather than assumed to already match.
+    const hadLiveTransparent = this.liveTransparent;
     if (transparent) {
       this.scene.background = null;
       this.renderer.setClearColor(0x000000, 0);
+    } else if (hadLiveTransparent) {
+      this.scene.background = this.background;
+      this.renderer.setClearColor(0x000000, 1);
     }
     this.renderer.setPixelRatio(exportPR);
     this.composer.setPixelRatio(exportPR);
@@ -599,7 +612,10 @@ export class HoloApp {
     this.composer.setSize(w, h);
     this.composer.render();
     const url = this.renderer.domElement.toDataURL('image/png');
-    if (transparent && !this.liveTransparent) {
+    if (hadLiveTransparent) {
+      this.scene.background = null;
+      this.renderer.setClearColor(0x000000, 0);
+    } else if (transparent) {
       this.scene.background = this.background;
       this.renderer.setClearColor(0x000000, 1);
     }
@@ -855,10 +871,19 @@ export class HoloApp {
     window.removeEventListener('blur', this.onWindowBlur);
     this.controls.dispose();
     this.dofPass.dispose();
+    // EffectComposer.dispose() only frees its own render targets/copy pass,
+    // not passes added onto it — bloomPass owns ~11 WebGLRenderTargets plus
+    // several materials of its own that would otherwise leak every
+    // mount/unmount cycle.
+    this.bloomPass.dispose();
     this.composer.dispose();
     this.clothGeometry.dispose();
     this.holoMaterial.dispose();
     this.surface.dispose();
+    // The PMREM-generated environment cubemap (set at construction, see
+    // `this.scene.environment = envTex`) isn't freed by pmrem.dispose() —
+    // that only releases the generator's own intermediates, not its output.
+    this.scene.environment?.dispose();
     this.scene.traverse((obj) => {
       const mesh = obj as THREE.Mesh;
       if (mesh.geometry && mesh.geometry !== this.clothGeometry) mesh.geometry.dispose();
