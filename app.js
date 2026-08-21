@@ -481,32 +481,48 @@ function setMode(mode) {
 // URL Validation
 // =====================================================
 
-function isValidVideoUrl(url) {
-        if (!url) return false;
-        
-        // Упрощенная проверка - просто проверяем, что это похоже на URL видео
-        const patterns = [
-                // YouTube
-                /youtube\.com\/watch/i,
-                /youtu\.be\//i,
-                /youtube\.com\/embed/i,
-                /youtube\.com\/v\//i,
-                // Twitch
-                /twitch\.tv\//i,
-                // VK Video
-                /vk\.com\/video/i,
-                // Любой другой URL
-                /^https?:\/\/.+/i
-        ];
-
-        return patterns.some(pattern => pattern.test(url));
-}
+// Mirrors the platforms scripts/url_ingest.py::detect_platform() actually
+// accepts server-side (YouTube / VK / Twitch via yt-dlp, or a direct link
+// to a video file) -- this is a client-side pre-filter for UX (enabling
+// "Продолжить", swapping the recognized-platform icon), not the source of
+// truth. The backend re-validates and re-detects the platform itself on
+// submit; a URL that slips past this check simply gets a real error from
+// the server, same as any other rejected input.
+const DIRECT_VIDEO_EXT_RE = /\.(mp4|mov|avi|mkv|webm|mpeg|mpg|3gp|m3u8)(\?.*)?$/i;
 
 function detectPlatform(url) {
-        if (/youtube|youtu\.be/i.test(url)) return 'YouTube';
-        if (/twitch\.tv/i.test(url)) return 'Twitch';
-        if (/vk\.com/i.test(url)) return 'VK';
-        return 'Unknown';
+        if (!url) return 'unknown';
+        let parsed;
+        try {
+                parsed = new URL(url.trim());
+        } catch (_) {
+                return 'unknown';
+        }
+        if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return 'unknown';
+
+        const host = parsed.hostname.toLowerCase();
+        if (host === 'youtube.com' || host === 'www.youtube.com' || host === 'm.youtube.com' ||
+                host === 'music.youtube.com' || host === 'youtu.be' || host.endsWith('.youtube.com')) {
+                return 'youtube';
+        }
+        if (host === 'vk.com' || host === 'www.vk.com' || host === 'm.vk.com' ||
+                host === 'vkvideo.ru' || host === 'www.vkvideo.ru' ||
+                host.endsWith('.vk.com') || host.endsWith('.vkvideo.ru')) {
+                return 'vk';
+        }
+        if (host === 'twitch.tv' || host === 'www.twitch.tv' || host === 'm.twitch.tv' ||
+                host === 'clips.twitch.tv' || host.endsWith('.twitch.tv')) {
+                return 'twitch';
+        }
+        if (DIRECT_VIDEO_EXT_RE.test(parsed.pathname)) {
+                return 'direct';
+        }
+        return 'unknown';
+}
+
+function isValidVideoUrl(url) {
+        if (!url) return false;
+        return detectPlatform(url) !== 'unknown';
 }
 
 // =====================================================
@@ -544,11 +560,33 @@ function removeFile() {
 // Button State Management
 // =====================================================
 
+// Swaps the input's leading icon to the recognized platform's own brand
+// icon (same Font Awesome set already used by .hero2-sources below the
+// input) so a pasted link visibly registers as "recognized" -- no new
+// visual element, just reusing an icon already in the page's design.
+const URL_PLATFORM_ICON_CLASS = {
+        youtube: 'fa-brands fa-youtube',
+        vk:      'fa-brands fa-vk',
+        twitch:  'fa-brands fa-twitch',
+        direct:  'fa-solid fa-file-video',
+        unknown: 'fa-solid fa-link'
+};
+
+function updateUrlPlatformIcon() {
+        const icon = document.querySelector('#mode-url .hero2-input-icon');
+        if (!icon) return;
+        const platform = elements.videoUrlInput.value.trim()
+                ? detectPlatform(elements.videoUrlInput.value)
+                : 'unknown';
+        icon.className = URL_PLATFORM_ICON_CLASS[platform] + ' hero2-input-icon';
+}
+
 function updateNextButton1State() {
         let isValid = false;
 
         if (appState.mode === 'url') {
                 isValid = isValidVideoUrl(elements.videoUrlInput.value);
+                updateUrlPlatformIcon();
         } else {
                 isValid = appState.uploadedFile !== null;
         }
@@ -847,7 +885,7 @@ function setGenerateButtonsBusy(busy) {
                                 btn.dataset.origText = btn.textContent;
                         }
                         btn.disabled = true;
-                        btn.textContent = 'Создаём задачу…';
+                        btn.textContent = 'Загружаем видео…';
                 } else {
                         btn.disabled = false;
                         if (btn.dataset.origText !== undefined) {
@@ -857,6 +895,17 @@ function setGenerateButtonsBusy(busy) {
                 }
         });
 }
+
+// Lets auth.js flip the busy label once a real response has arrived (see
+// checkAndCreateVideoJob's success branch) -- mirrors the existing
+// window.sonyaSetProcessingText hook already used for the URL-ingest
+// flow's processing-page text. Guarded by dataset.origText so this is a
+// no-op on any button that isn't currently mid-submission.
+window.sonyaSetGenerateButtonText = function (text) {
+        [elements.btnNext2, elements.btnGenerate].forEach(btn => {
+                if (btn && btn.dataset.origText !== undefined) btn.textContent = text;
+        });
+};
 
 // Called once the job reaches a terminal state (completed/failed/cancelled
 // — see SONYA_REAL_POLLING_PATCH_V2 below) or the user starts a new
@@ -1533,6 +1582,13 @@ document.addEventListener('DOMContentLoaded', init);
   }
 
   window.sonyaPollJob = pollJob;
+
+  // Exposed so the URL-ingestion flow (auth.js::apiCreateVideoJobFromUrl)
+  // can show "Проверяем ссылку" / "Получаем видео" / "Загружаем видео" on
+  // the exact same processing-page status text + progress bar this file
+  // already drives for job polling -- no separate/new UI, same elements.
+  window.sonyaSetProcessingText = setText;
+  window.sonyaSetProcessingProgress = setProgress;
 
   try {
     window.simulateProcessing = function () {

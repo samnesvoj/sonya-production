@@ -30,29 +30,88 @@ const authState = {
 /* ─────────────────────────────────────────────
    API CLIENT
 ───────────────────────────────────────────── */
+const DEFAULT_NETWORK_ERROR_MESSAGES = {
+  timeout: 'Превышено время ожидания ответа сервера. Проверьте соединение и попробуйте снова.',
+  aborted: 'Запрос отменён.',
+  network: 'Сервер недоступен. Проверьте соединение.',
+};
+
+function _classifyFetchError(err, { timedOut }) {
+  if (err && err.name === 'AbortError') return timedOut ? 'timeout' : 'aborted';
+  return 'network';
+}
+
 async function apiFetch(path, options = {}) {
+  // timeoutMs: opt-in per call -- omitting it preserves the exact previous
+  // behavior (no deadline at all). timeoutMessage: only used for the
+  // 'timeout' classification, lets a caller give a more specific message
+  // than the generic default (see apiCreateVideoJob below). signal: an
+  // optional caller-supplied AbortSignal, composed with our own timeout
+  // controller so either one can cancel the request.
+  const { timeoutMs, timeoutMessage, signal: callerSignal, ...fetchOptions } = options;
   const url = SONYA_API_BASE + path;
   const defaults = {
     credentials: 'include',  // send HttpOnly session cookie
     headers: { 'Content-Type': 'application/json' },
   };
+
+  const controller = new AbortController();
+  let timedOut = false;
+  let timer = null;
+  if (timeoutMs) {
+    timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+  }
+  let onCallerAbort = null;
+  if (callerSignal) {
+    if (callerSignal.aborted) controller.abort();
+    else {
+      onCallerAbort = () => controller.abort();
+      callerSignal.addEventListener('abort', onCallerAbort, { once: true });
+    }
+  }
+
+  const startedAt = Date.now();
   try {
-    const headers = { ...defaults.headers, ...(options.headers || {}) };
-    if (typeof FormData !== 'undefined' && options.body instanceof FormData) {
+    const headers = { ...defaults.headers, ...(fetchOptions.headers || {}) };
+    if (typeof FormData !== 'undefined' && fetchOptions.body instanceof FormData) {
       delete headers['Content-Type'];
     }
-    const res = await fetch(url, { ...defaults, ...options, headers });
+    const res = await fetch(url, { ...defaults, ...fetchOptions, headers, signal: controller.signal });
     return res;
   } catch (e) {
-    // Network / CORS failure
-    console.error('[SONYA API] Network error:', e);
-    return { ok: false, status: 0, _networkError: true,
-      json: async () => ({ detail: 'Сервер недоступен. Проверьте соединение.' }) };
+    const kind = _classifyFetchError(e, { timedOut });
+    const elapsedMs = Date.now() - startedAt;
+    // Diagnostic only: path + classification + timing -- never headers,
+    // cookies, the request body, or any token/secret.
+    console.error(`[SONYA API] ${kind} error path=${path} elapsedMs=${elapsedMs}` +
+      (timeoutMs ? ` timeoutMs=${timeoutMs}` : ''));
+    if (typeof window !== 'undefined') {
+      window.SONYA_LAST_NETWORK_ERROR = { path, kind, timeoutMs: timeoutMs || null, elapsedMs, timestamp: Date.now() };
+    }
+    const detail = (kind === 'timeout' && timeoutMessage) || DEFAULT_NETWORK_ERROR_MESSAGES[kind];
+    return { ok: false, status: 0, _networkError: true, _networkErrorKind: kind,
+      json: async () => ({ detail }) };
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (callerSignal && onCallerAbort) callerSignal.removeEventListener('abort', onCallerAbort);
   }
 }
 
+// Timeout model constants -- see docs/patches/generation-upload-timeout-plan.md §2
+// for the full rationale and the explicit large-file/slow-connection trade-off.
+const UPLOAD_BASE_TIMEOUT_MS = 20_000;
+const UPLOAD_MIN_THROUGHPUT_BYTES_PER_SEC = 500 * 1024; // ~4 Mbps floor
+const UPLOAD_MAX_TIMEOUT_MS = 20 * 60 * 1000; // matches apiCreateVideoJobFromUrl's existing ~20min ceiling
+const AUTH_CHECK_TIMEOUT_MS = 15_000;
+
+function computeUploadTimeoutMs(fileSizeBytes) {
+  const size = Math.max(0, Number(fileSizeBytes) || 0);
+  const sizeBudgetMs = (size / UPLOAD_MIN_THROUGHPUT_BYTES_PER_SEC) * 1000;
+  return Math.min(UPLOAD_BASE_TIMEOUT_MS + sizeBudgetMs, UPLOAD_MAX_TIMEOUT_MS);
+}
+
 async function apiGetMe() {
-  return apiFetch('/auth/me');
+  return apiFetch('/auth/me', { timeoutMs: AUTH_CHECK_TIMEOUT_MS });
 }
 
 // Single funnel for "a request that was NOT the expected 401-guest-state
@@ -141,6 +200,88 @@ function normalizeMode(clipType) {
   return 'trailer_film_breaker';
 }
 
+// URL-mode job creation: POST /generation/jobs/from-url starts server-side
+// download+upload (checking -> downloading -> uploading), then this polls
+// GET /generation/jobs/from-url/{id} until it resolves to a real job_id
+// (or fails) — the exact same S3-upload / create_job_idempotent code path
+// as apiCreateVideoJob() below, just fed by a downloaded file instead of a
+// browser upload (see scripts/prod_generation_api.py, scripts/url_ingest.py).
+//
+// Returns a Response-shaped object (ok/status/json()) so checkAndCreateVideoJob()
+// below needs no branching beyond picking which of these two functions to call.
+const URL_INGEST_STATUS_TEXT = {
+  checking: 'Проверяем ссылку…',
+  downloading: 'Получаем видео…',
+  uploading: 'Загружаем видео…',
+};
+
+function _errorResponse(status, message) {
+  return { ok: false, status, json: async () => ({ detail: { message } }) };
+}
+
+async function apiCreateVideoJobFromUrl(formData) {
+  const sourceUrl = String(formData?.source?.url || '').trim();
+  const mode = normalizeMode(formData?.clipType || formData?.mode);
+
+  if (typeof showPage === 'function') showPage('processing');
+  if (typeof window.sonyaSetProcessingText === 'function') window.sonyaSetProcessingText('Проверяем ссылку…');
+  if (typeof window.sonyaSetProcessingProgress === 'function') window.sonyaSetProcessingProgress(4);
+
+  const startRes = await apiFetch('/generation/jobs/from-url', {
+    method: 'POST',
+    body: JSON.stringify({
+      url: sourceUrl,
+      mode,
+      params: {
+        ...formData,
+        source: { ...(formData?.source || {}), url: sourceUrl },
+        frontend: 'legacy_static_sonya',
+        production_endpoint: '/api/generation/jobs/from-url'
+      }
+    }),
+    headers: { 'Idempotency-Key': _getOrCreateJobIdempotencyKey() }
+  });
+
+  if (startRes._networkError || !startRes.ok) return startRes;
+
+  const startData = await safeJson(startRes);
+  const ingestId = startData.ingest_id;
+  if (!ingestId) {
+    return _errorResponse(502, 'Сервер не вернул идентификатор загрузки. Попробуйте снова.');
+  }
+
+  // ~20 minutes ceiling at 3s/poll — matches the generous cap pollJob()
+  // (app.js) already uses for the job-status phase that follows this.
+  for (let i = 0; i < 400; i++) {
+    const pollRes = await apiFetch('/generation/jobs/from-url/' + ingestId);
+
+    if (pollRes.ok) {
+      const data = await safeJson(pollRes);
+      const st = data.status;
+
+      const text = URL_INGEST_STATUS_TEXT[st];
+      if (text && typeof window.sonyaSetProcessingText === 'function') window.sonyaSetProcessingText(text);
+      if (typeof data.percent === 'number' && typeof window.sonyaSetProcessingProgress === 'function') {
+        window.sonyaSetProcessingProgress(Math.max(4, Math.min(99, data.percent)));
+      }
+
+      if (st === 'queued' && data.job_id) {
+        return { ok: true, status: 202, json: async () => ({ job_id: data.job_id, status: 'queued', mode }) };
+      }
+      if (st === 'failed') {
+        return _errorResponse(502, data.message || 'Не удалось скачать видео по ссылке.');
+      }
+      // checking / downloading / uploading — keep polling.
+    }
+    // A single failed poll (network hiccup, 5xx) doesn't abort the whole
+    // flow — same tolerance pollJob() gives the job-status endpoint.
+
+    await new Promise(r => setTimeout(r, 3000));
+  }
+
+  return _errorResponse(504, 'Загрузка видео по ссылке заняла слишком много времени. Попробуйте ещё раз.');
+}
+
 async function apiCreateVideoJob(formData) {
   const sourceUrl = String(formData?.source?.url || '').trim();
 
@@ -158,9 +299,7 @@ async function apiCreateVideoJob(formData) {
       json: async () => ({
         detail: {
           error: 'file_required',
-          message: sourceUrl
-            ? 'Загрузка по ссылке YouTube/Twitch будет подключена следующим этапом. Сейчас загрузите видеофайл.'
-            : 'Выберите видеофайл для генерации.'
+          message: 'Выберите видеофайл для генерации.'
         }
       })
     };
@@ -185,7 +324,9 @@ async function apiCreateVideoJob(formData) {
   return apiFetch('/generation/jobs', {
     method: 'POST',
     body: fd,
-    headers: { 'Idempotency-Key': _getOrCreateJobIdempotencyKey() }
+    headers: { 'Idempotency-Key': _getOrCreateJobIdempotencyKey() },
+    timeoutMs: computeUploadTimeoutMs(uploadedFile.size),
+    timeoutMessage: 'Загрузка видео заняла слишком много времени. Проверьте соединение и попробуйте снова.',
   });
 }
 
@@ -658,8 +799,12 @@ async function checkAndCreateVideoJob(formData) {
     return 'error';
   }
 
-  // B. Try to create video job
-  const jobRes = await apiCreateVideoJob(formData);
+  // B. Try to create video job — URL mode goes through the ingest+poll
+  // flow above; upload mode is the original direct-multipart path. Both
+  // resolve to the same Response-shaped result, so everything below is
+  // shared.
+  const isUrlMode = formData?.source?.mode === 'url' && String(formData?.source?.url || '').trim();
+  const jobRes = isUrlMode ? await apiCreateVideoJobFromUrl(formData) : await apiCreateVideoJob(formData);
 
   if (jobRes._networkError) {
     // Client doesn't know whether the server received the request --
@@ -676,6 +821,10 @@ async function checkAndCreateVideoJob(formData) {
   const jobData = await safeJson(jobRes);
 
   if ([200, 201, 202].includes(jobRes.status)) {
+    // The response just arrived -- this is the one point where "creating
+    // the task" is a real, observable transition, unlike the wait leading
+    // up to it (see docs/patches/generation-upload-timeout-plan.md §3).
+    if (typeof window.sonyaSetGenerateButtonText === 'function') window.sonyaSetGenerateButtonText('Создаём задачу…');
     // Refresh account state to update free_video_used counter
     window.SONYA_LAST_JOB = jobData;
     console.log('[SONYA] generation job created', jobData);

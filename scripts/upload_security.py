@@ -74,21 +74,22 @@ def _detect_magic(header: bytes) -> Optional[str]:
     return None
 
 
-async def validate_upload(file: UploadFile, max_size_bytes: Optional[int] = None) -> tuple[bytes, str]:
+def validate_video_bytes(content: bytes, raw_name: str, max_size_bytes: Optional[int] = None,
+                          content_type: Optional[str] = None) -> str:
     """
-    Read and validate an uploaded video file.
+    Validate already-read video bytes: filename, size, magic bytes.
 
-    Returns:
-        (file_content_bytes, safe_filename)
+    Shared by validate_upload() (browser multipart upload) and the URL
+    ingestion path (scripts/url_ingest.py) — same checks either way, so a
+    video downloaded from a URL can never bypass any rule an uploaded file
+    would have to pass.
 
-    Raises:
-        HTTPException 400/413 on validation failure.
+    Returns the sanitized filename.
+    Raises HTTPException 400/413 on validation failure.
     """
     trace_id = new_trace_id()
     limit = max_size_bytes or MAX_FILE_SIZE_BYTES
 
-    # ── Filename ——————————————————————————————————————————————————————————————
-    raw_name = file.filename or "upload.mp4"
     if _DOUBLE_EXT.search(raw_name):
         logger.warning("[upload] double_extension filename=%s trace_id=%s", raw_name, trace_id)
         raise HTTPException(
@@ -103,15 +104,57 @@ async def validate_upload(file: UploadFile, max_size_bytes: Optional[int] = None
             detail={"error": "unsupported_format", "allowed": list(ALLOWED_EXTENSIONS), "trace_id": trace_id},
         )
 
-    # ── Content-Type check ————————————————————————————————————————————————————
-    ct = (file.content_type or "").split(";")[0].strip().lower()
+    ct = (content_type or "").split(";")[0].strip().lower()
     if ct and ct not in ALLOWED_MIME_TYPES and ct != "application/octet-stream":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"error": "unsupported_content_type", "trace_id": trace_id},
         )
 
+    total = len(content)
+    if total > limit:
+        logger.warning("[upload] file_too_large size>%d trace_id=%s", limit, trace_id)
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail={"error": "file_too_large", "max_mb": limit // (1024 * 1024), "trace_id": trace_id},
+        )
+
+    if total < 16:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "file_too_small", "trace_id": trace_id},
+        )
+
+    fmt = _detect_magic(content[:32])
+    if fmt is None:
+        logger.warning("[upload] magic_bytes_mismatch filename=%s trace_id=%s", raw_name, trace_id)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_video_content", "trace_id": trace_id},
+        )
+
+    safe_name = _safe_filename(raw_name)
+    logger.info("[upload] validated filename=%s size=%d fmt=%s", safe_name, total, fmt)
+    return safe_name
+
+
+async def validate_upload(file: UploadFile, max_size_bytes: Optional[int] = None) -> tuple[bytes, str]:
+    """
+    Read and validate an uploaded video file.
+
+    Returns:
+        (file_content_bytes, safe_filename)
+
+    Raises:
+        HTTPException 400/413 on validation failure.
+    """
+    limit = max_size_bytes or MAX_FILE_SIZE_BYTES
+    raw_name = file.filename or "upload.mp4"
+
     # ── Read with size limit ——————————————————————————————————————————————————
+    # (kept here, not in validate_video_bytes, so an oversized upload is
+    # rejected mid-stream instead of being buffered into memory in full)
+    trace_id = new_trace_id()
     chunks = []
     total = 0
     while True:
@@ -128,22 +171,5 @@ async def validate_upload(file: UploadFile, max_size_bytes: Optional[int] = None
         chunks.append(chunk)
 
     content = b"".join(chunks)
-
-    # ── Magic bytes ———————————————————————————————————————————————————————————
-    if len(content) < 16:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"error": "file_too_small", "trace_id": trace_id},
-        )
-
-    fmt = _detect_magic(content[:32])
-    if fmt is None:
-        logger.warning("[upload] magic_bytes_mismatch filename=%s trace_id=%s", raw_name, trace_id)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"error": "invalid_video_content", "trace_id": trace_id},
-        )
-
-    safe_name = _safe_filename(raw_name)
-    logger.info("[upload] validated filename=%s size=%d fmt=%s", safe_name, total, fmt)
+    safe_name = validate_video_bytes(content, raw_name, max_size_bytes=limit, content_type=file.content_type)
     return content, safe_name
