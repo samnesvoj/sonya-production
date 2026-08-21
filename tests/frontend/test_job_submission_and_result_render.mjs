@@ -143,7 +143,7 @@ test('two rapid clicks on the generate button call checkAndCreateVideoJob exactl
 
   assert.equal(calls.length, 1, 'checkAndCreateVideoJob must be called exactly once');
   assert.equal(btn.disabled, true, 'button must be disabled immediately');
-  assert.equal(btn.textContent, 'Создаём задачу…');
+  assert.equal(btn.textContent, 'Загружаем видео…');
 
   gate.resolve();
   await flush();

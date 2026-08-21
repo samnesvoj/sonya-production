@@ -194,6 +194,23 @@ class FakeDocument extends EventTargetMixin {
   // descendants; null means "whole document".
   _queryAllWithin(sel, scope) {
     sel = sel.trim();
+    // Comma-separated selector list (e.g. setProgress()'s
+    // '#progress-bar, .progress-bar') -- union each part's matches,
+    // de-duplicated. None of app.js's real selectors nest a comma inside
+    // brackets, so a plain split is safe here.
+    if (sel.includes(',')) {
+      const seen = new Set();
+      const out = [];
+      for (const part of sel.split(',')) {
+        for (const el of this._queryAllWithin(part, scope)) {
+          if (!seen.has(el)) {
+            seen.add(el);
+            out.push(el);
+          }
+        }
+      }
+      return out;
+    }
     const pool = scope
       ? this._all.filter((el) => this._isDescendantOf(el, scope))
       : this._all;
@@ -504,6 +521,7 @@ export function loadAuth({ fetchImpl, consoleImpl, withAuthModalDom } = {}) {
     setTimeout: fastSetTimeout, clearTimeout,
     crypto, // Node's global WebCrypto (randomUUID) -- not auto-visible inside a vm context
     FormData, // Node's global FormData (undici) -- same reason
+    AbortController, // Node's global (undici) -- used by apiFetch()'s timeoutMs/signal support
     appState: { uploadedFile: null },
   };
   sandbox.globalThis = sandbox;

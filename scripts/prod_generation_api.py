@@ -13,6 +13,8 @@ header is never trusted for these):
   GET  /api/generation/jobs/{job_id}
   GET  /api/generation/jobs/{job_id}/result-url
   GET  /api/generation/jobs          (list user jobs)
+  POST /api/generation/jobs/from-url         (start URL ingestion)
+  GET  /api/generation/jobs/from-url/{ingest_id}  (poll ingestion status)
 
 Auth + billing endpoints (see scripts/auth_routes.py):
   GET  /api/auth/me
@@ -29,7 +31,12 @@ unchanged, never cookie/session based):
   POST /api/worker/jobs/{job_id}/fail
   POST /api/worker/jobs/{job_id}/files
 
-File upload only -- no URL-based video fetching via any external tool.
+URL-based ingestion (POST .../from-url) downloads via plain yt-dlp
+(YouTube/VK/Twitch) or a direct HTTP(S) video link only -- no cookies, no
+authenticated/paid-content bypass, SSRF-guarded (scripts/url_ingest.py) --
+then feeds the result through the exact same validate/S3-upload/create-job
+code path a browser file upload uses. See scripts/url_ingest.py for why
+SONYA's recovered scripts/shared/download/downloader.py is NOT used here.
 """
 from __future__ import annotations
 
@@ -39,6 +46,8 @@ import json
 import logging
 import os
 import re
+import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -114,6 +123,7 @@ from scripts.security_audit import (
     audit,
 )
 from scripts.upload_security import validate_upload
+from scripts import url_ingest
 
 logger = logging.getLogger(__name__)
 
@@ -253,6 +263,35 @@ def _compute_idempotency_fingerprint(mode: str, file_content: bytes, parsed_para
 _upload_limiter = RateLimiter(key_prefix="upload", limit=20, window_seconds=3600, key_by="session")
 _api_limiter    = RateLimiter(key_prefix="api",    limit=120, window_seconds=60,   key_by="session")
 
+# ── URL ingestion status store ————————————————————————————————————————————————
+# In-memory only: the API currently runs as a single uvicorn process (see
+# deploy/COMMANDS_VPS.md), so this is safe and needs no migration. If the
+# API is ever scaled to multiple processes/replicas, this must move to
+# Postgres or Redis -- a client polling GET .../from-url/{id} could
+# otherwise land on a worker process that never ran the download.
+_URL_INGEST_TTL_SEC = 3600
+_url_ingest_lock = threading.Lock()
+_url_ingest_store: Dict[str, Dict[str, Any]] = {}
+
+
+def _ingest_set(ingest_id: str, **fields: Any) -> None:
+    with _url_ingest_lock:
+        entry = _url_ingest_store.setdefault(ingest_id, {"created_at": time.time()})
+        entry.update(fields)
+        entry["updated_at"] = time.time()
+        # Best-effort purge of stale entries so this dict can't grow
+        # unbounded over the process lifetime.
+        cutoff = time.time() - _URL_INGEST_TTL_SEC
+        stale = [k for k, v in _url_ingest_store.items() if v.get("created_at", 0) < cutoff]
+        for k in stale:
+            _url_ingest_store.pop(k, None)
+
+
+def _ingest_get(ingest_id: str) -> Optional[Dict[str, Any]]:
+    with _url_ingest_lock:
+        entry = _url_ingest_store.get(ingest_id)
+        return dict(entry) if entry is not None else None
+
 # ── Pydantic models ————————————————————————————————————————————————————————————
 
 class JobResponse(BaseModel):
@@ -288,6 +327,12 @@ class JobFileRequest(BaseModel):
     content_type: str = "application/octet-stream"
     size_bytes: Optional[int] = None
     duration_sec: Optional[float] = None
+
+
+class UrlIngestRequest(BaseModel):
+    url: str = Field(..., min_length=1, max_length=2048)
+    mode: str
+    params: Optional[Dict[str, Any]] = None
 
 
 class WorkerClaimRequest(BaseModel):
@@ -568,6 +613,249 @@ async def list_jobs(
     user_id = str(user["id"])
     jobs = list_user_jobs(user_id, limit=limit, offset=offset, status=status_filter)
     return {"jobs": jobs, "count": len(jobs)}
+
+
+# ── Public: Job creation from a URL ——————————————————————————————————————————————
+# Downloads the video server-side (scripts/url_ingest.py: yt-dlp for
+# YouTube/VK/Twitch, a size-capped streamed GET for a direct video URL —
+# both SSRF-guarded), then hands the result to the exact same
+# validate-bytes -> S3 upload -> create_job_idempotent -> add_job_file
+# sequence create_generation_job() uses for a browser file upload. No
+# separate processing pipeline: once a job row exists here, it is
+# indistinguishable from one created by a file upload, and the dispatcher /
+# GPU worker never know the input came from a URL.
+
+@app.post("/api/generation/jobs/from-url", status_code=status.HTTP_202_ACCEPTED)
+async def create_generation_job_from_url(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    body: UrlIngestRequest,
+    idempotency_key_header: Optional[str] = Header(None, alias="Idempotency-Key"),
+    user: dict = Depends(get_current_user),
+    _origin: None = Depends(verify_browser_origin),
+    _rl: None = Depends(_upload_limiter),
+):
+    user_id  = str(user["id"])
+    trace_id = new_trace_id()
+    priority, plan = _resolve_priority(user)
+
+    mode = body.mode
+    if mode not in ALLOWED_MODES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_mode", "allowed": sorted(ALLOWED_MODES), "trace_id": trace_id},
+        )
+
+    idempotency_key = _validate_idempotency_key(idempotency_key_header, trace_id)
+    parsed_params = body.params if isinstance(body.params, dict) else {}
+
+    # Quota check happens before any network fetch -- same ordering as the
+    # file-upload endpoint.
+    check_user_quota(user_id)
+
+    url = body.url.strip()
+    platform = url_ingest.detect_platform(url)
+    if platform == "unsupported":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "unsupported_url",
+                    "message": url_ingest.UnsupportedUrlError().user_message,
+                    "trace_id": trace_id},
+        )
+    try:
+        url_ingest.assert_safe_url(url)
+    except url_ingest.UnsafeUrlError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "unsafe_url", "message": url_ingest.UnsafeUrlError().user_message,
+                    "trace_id": trace_id},
+        )
+
+    ingest_id = str(uuid.uuid4())
+    _ingest_set(
+        ingest_id,
+        status="checking", percent=0.0, message="Проверяем ссылку",
+        user_id=user_id, job_id=None, error=None,
+    )
+
+    background_tasks.add_task(
+        _run_url_ingest,
+        ingest_id=ingest_id, url=url, platform=platform, mode=mode,
+        parsed_params=parsed_params, user_id=user_id, trace_id=trace_id,
+        idempotency_key=idempotency_key, priority=priority, plan=plan,
+        client_ip=request.client.host if request.client else None,
+    )
+
+    logger.info("[api] url_ingest_started ingest_id=%s user_id=%s platform=%s trace_id=%s",
+                ingest_id, user_id, platform, trace_id)
+
+    return {"ingest_id": ingest_id, "status": "checking", "platform": platform}
+
+
+@app.get("/api/generation/jobs/from-url/{ingest_id}")
+async def get_url_ingest_status(
+    ingest_id: str,
+    user: dict = Depends(get_current_user),
+    _rl: None = Depends(_api_limiter),
+):
+    entry = _ingest_get(ingest_id)
+    # Same 404 whether the id is unknown or belongs to another user -- never
+    # confirm/deny existence of another user's ingestion.
+    if entry is None or entry.get("user_id") != str(user["id"]):
+        raise HTTPException(status_code=404, detail={"error": "not_found", "trace_id": new_trace_id()})
+
+    return {
+        "ingest_id": ingest_id,
+        "status": entry.get("status"),
+        "percent": entry.get("percent"),
+        "message": entry.get("message"),
+        "job_id": entry.get("job_id"),
+        "error": entry.get("error"),
+    }
+
+
+def _run_url_ingest(
+    *, ingest_id: str, url: str, platform: str, mode: str,
+    parsed_params: Dict[str, Any], user_id: str, trace_id: str,
+    idempotency_key: Optional[str], priority: int, plan: str,
+    client_ip: Optional[str],
+) -> None:
+    """
+    Runs in Starlette's threadpool (via BackgroundTasks), off the event
+    loop, so a slow download never blocks other requests. Every exit path
+    updates the ingest store; nothing here raises past this function.
+    """
+    local_path: Optional[str] = None
+    try:
+        _ingest_set(ingest_id, status="checking", message="Проверяем ссылку", percent=5.0)
+        url_ingest.probe(url, platform)
+
+        _ingest_set(ingest_id, status="downloading", message="Получаем видео", percent=15.0)
+
+        def _progress(pct: float) -> None:
+            # Map the downloader's own 0..100 onto the 15..70 slice of the
+            # overall ingest progress bar.
+            _ingest_set(ingest_id, status="downloading", message="Получаем видео",
+                        percent=15.0 + max(0.0, min(100.0, pct)) * 0.55)
+
+        local_path, _ext = url_ingest.download_video(url, platform, progress_cb=_progress)
+
+        _ingest_set(ingest_id, status="uploading", message="Загружаем видео", percent=75.0)
+
+        content, safe_name = url_ingest.validate_downloaded_file(
+            local_path, hint_name=f"{platform}_video{Path(local_path).suffix or '.mp4'}"
+        )
+
+        idempotency_fingerprint = (
+            _compute_idempotency_fingerprint(mode, content, parsed_params)
+            if idempotency_key is not None else None
+        )
+
+        job_id = str(uuid.uuid4())
+        s3_key = build_input_key(user_id=user_id, job_id=job_id, mode=mode,
+                                  ext=Path(safe_name).suffix or ".mp4")
+
+        try:
+            upload_bytes(content, s3_key, content_type="video/mp4")
+        except Exception as exc:
+            logger.error("[api] url_ingest_s3_upload_failed ingest_id=%s trace_id=%s: %s",
+                         ingest_id, trace_id, exc)
+            _ingest_set(ingest_id, status="failed", error="storage_error",
+                        message="Ошибка загрузки в хранилище. Попробуйте позже.")
+            return
+
+        try:
+            created_row = create_job_idempotent(
+                job_id=job_id, user_id=user_id, mode=mode, params=parsed_params,
+                s3_input_key=s3_key, idempotency_key=idempotency_key,
+                idempotency_fingerprint=idempotency_fingerprint, queue_priority=priority,
+            )
+        except Exception as exc:
+            logger.error("[api] url_ingest_create_job_failed ingest_id=%s trace_id=%s: %s",
+                         ingest_id, trace_id, exc)
+            delete_object(s3_key)
+            _ingest_set(ingest_id, status="failed", error="db_error",
+                        message="Ошибка создания задачи. Попробуйте позже.")
+            return
+
+        if created_row is None:
+            # Same idempotency-conflict handling as the file-upload path.
+            delete_object(s3_key)
+            existing = get_job_by_idempotency_key(user_id, idempotency_key)
+            if existing is not None and existing.get("idempotency_fingerprint") == idempotency_fingerprint:
+                _ingest_set(ingest_id, status="queued", message="Видео в очереди",
+                            percent=100.0, job_id=str(existing.get("id")))
+                return
+            _ingest_set(ingest_id, status="failed", error="idempotency_key_conflict",
+                        message="Эта задача уже была отправлена.")
+            return
+
+        job_id = str(created_row["id"])
+
+        try:
+            from scripts.prod_job_store import _get_conn  # type: ignore
+            conn = _get_conn()
+            try:
+                with conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "UPDATE generation_jobs SET priority=%s, plan=%s WHERE id=%s",
+                            (priority, plan, job_id),
+                        )
+            finally:
+                conn.close()
+        except Exception as _exc:
+            logger.warning("[api] priority_col_update_skipped job_id=%s exc=%s", job_id, _exc)
+
+        try:
+            add_job_file(
+                job_id=job_id, user_id=user_id,
+                file_type="input", s3_key=s3_key,
+                filename=safe_name, content_type="video/mp4",
+                size_bytes=len(content),
+            )
+        except Exception as exc:
+            logger.warning("[api] url_ingest_add_input_file_failed job_id=%s: %s", job_id, exc)
+
+        audit(EVT_JOB_CREATED, user_id=user_id, job_id=job_id, trace_id=trace_id,
+              details={"mode": mode, "size_bytes": len(content), "plan": plan,
+                       "priority": priority, "source": "url", "platform": platform},
+              ip_address=client_ip)
+
+        logger.info(
+            "[api] url_ingest_job_created ingest_id=%s job_id=%s user_id=%s mode=%s platform=%s size=%d",
+            ingest_id, job_id, user_id, mode, platform, len(content),
+        )
+
+        _ingest_set(ingest_id, status="queued", message="Видео в очереди", percent=100.0, job_id=job_id)
+
+    except url_ingest.DownloadLimitExceeded as exc:
+        _ingest_set(ingest_id, status="failed", error="limit_exceeded", message=exc.user_message)
+    except url_ingest.UnsafeUrlError as exc:
+        audit(EVT_UPLOAD_REJECTED, user_id=user_id, trace_id=trace_id,
+              details={"mode": mode, "reason": "unsafe_url", "platform": platform}, ip_address=client_ip)
+        _ingest_set(ingest_id, status="failed", error="unsafe_url", message=exc.user_message)
+    except url_ingest.UnsupportedUrlError as exc:
+        _ingest_set(ingest_id, status="failed", error="unsupported_url", message=exc.user_message)
+    except url_ingest.DownloadFailed as exc:
+        _ingest_set(ingest_id, status="failed", error="download_failed", message=exc.user_message)
+    except HTTPException as exc:
+        # Raised by validate_downloaded_file() (upload_security checks) --
+        # same rejection reasons a bad file upload would get.
+        detail = exc.detail if isinstance(exc.detail, dict) else {"error": str(exc.detail)}
+        audit(EVT_UPLOAD_REJECTED, user_id=user_id, trace_id=trace_id,
+              details={"mode": mode, "reason": detail, "platform": platform, "source": "url"},
+              ip_address=client_ip)
+        _ingest_set(ingest_id, status="failed", error=detail.get("error", "invalid_video"),
+                    message="Скачанное видео не прошло проверку.")
+    except Exception as exc:
+        logger.exception("[api] url_ingest_unexpected_error ingest_id=%s trace_id=%s: %s",
+                          ingest_id, trace_id, exc)
+        _ingest_set(ingest_id, status="failed", error="internal_error",
+                    message="Внутренняя ошибка. Попробуйте позже.")
+    finally:
+        if local_path:
+            url_ingest.cleanup(local_path)
 
 
 # ── Worker endpoints (require WORKER_SECRET) ————————————————————————————————————
