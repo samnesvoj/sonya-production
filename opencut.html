@@ -20,7 +20,7 @@
 		rel="stylesheet">
 
 	<!-- Shared "Screening Room" glass tokens (bevel, radii, type) — same shell used by /legal/*.html -->
-	<link rel="stylesheet" href="legal/_legal.css?v=20260731">
+	<link rel="stylesheet" href="https://static.sonya.group/releases/eea16aa/legal/_legal.css">
 
 	<script>
 		(function () {
@@ -711,9 +711,9 @@
 		<video class="cinema-video" id="cinema-video"
 			autoplay muted loop playsinline preload="auto"
 			disablepictureinpicture disableremoteplayback
-			data-dark-src="hf_20260419_161836_77c00607-b936-40e5-b41d-240635ddc9d9 (1).mp4"
-			data-light-src="bg-light.mp4">
-			<source id="cinema-video-source" src="hf_20260419_161836_77c00607-b936-40e5-b41d-240635ddc9d9 (1).mp4" type="video/mp4">
+			data-dark-src="https://static.sonya.group/assets/video/bg-dark-v1.mp4"
+			data-light-src="https://static.sonya.group/assets/video/bg-light-v1.mp4">
+			<source id="cinema-video-source" src="https://static.sonya.group/assets/video/bg-dark-v1.mp4" type="video/mp4">
 		</video>
 		<script>
 			(function () {
@@ -1091,8 +1091,8 @@
 			const source = document.getElementById('cinema-video-source');
 			if (!video || !source) return;
 			const src = theme === 'light'
-				? (video.dataset.lightSrc || 'bg-light.mp4')
-				: (video.dataset.darkSrc || "hf_20260419_161836_77c00607-b936-40e5-b41d-240635ddc9d9 (1).mp4");
+				? (video.dataset.lightSrc || 'https://static.sonya.group/assets/video/bg-light-v1.mp4')
+				: (video.dataset.darkSrc || "https://static.sonya.group/assets/video/bg-dark-v1.mp4");
 			if (source.getAttribute('src') !== src) {
 				source.setAttribute('src', src);
 				video.load();
