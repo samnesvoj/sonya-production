@@ -3718,6 +3718,22 @@ body > .floating-controls--left {
 	display: flex; align-items: center; justify-content: center;
 	overflow: hidden;
 }
+/* Real frame from the generated clip, filling the thumbnail behind the
+   glow/glass-fx/play layers above (see renderResultClips() in app.js —
+   inserted first in DOM order, before those). object-fit:cover matches
+   the card's fixed aspect-ratio (16:9 for a single clip, 9:12 for a
+   grid) regardless of the source video's own dimensions. The gradient
+   background above stays as the fallback for the metadata-only instant
+   before the browser paints the seeked frame, and for browsers where the
+   #t= seek trick (see app.js) never resolves a paintable frame at all. */
+.app-container.v2 .result-clip-thumb-video {
+	position: absolute;
+	inset: 0;
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+	pointer-events: none;
+}
 .app-container.v2 .result-clip-thumb-glow {
 	position: absolute; inset: -20%;
 	background: radial-gradient(closest-side, rgba(255,255,255,.18), transparent 70%);

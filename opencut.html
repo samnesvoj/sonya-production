@@ -674,6 +674,8 @@
 
 		.error-btn:hover { box-shadow: inset 0 1.5px 0 rgba(255, 255, 255, 0.45), var(--lg-bevel-strong); }
 		.error-btn:active { transform: scale(0.97); }
+		.error-btn.hidden { display: none; }
+		.error-actions { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
 
 		/* ══════════════════════════════════════════════════════════
 		   Mobile — panels become slide-in drawers over the canvas
@@ -841,10 +843,19 @@
 						<p class="error-desc">
 							Не удалось загрузить OpenCut. Откройте его в браузере, нажав кнопку ниже.
 						</p>
-						<a class="error-btn" id="error-open-btn" href="#" target="_blank" rel="noopener">
-							<i class="fa-solid fa-arrow-up-right-from-square"></i>
-							Открыть в браузере
-						</a>
+						<div class="error-actions">
+							<a class="error-btn" id="error-open-btn" href="#" target="_blank" rel="noopener">
+								<i class="fa-solid fa-arrow-up-right-from-square"></i>
+								Открыть в браузере
+							</a>
+							<!-- Only shown when a real, validated video_url came in via the
+							     handoff (see the script below) — lets the user reach their
+							     actual video even while the editor itself is unreachable. -->
+							<a class="error-btn hidden" id="error-video-btn" href="#" target="_blank" rel="noopener">
+								<i class="fa-solid fa-film"></i>
+								Открыть видео
+							</a>
+						</div>
 					</div>
 				</div>
 			</div>
@@ -988,9 +999,65 @@
 		const errorOpenBtn = document.getElementById('error-open-btn');
 		const btnBack     = document.getElementById('btn-back');
 
+		// ──────────────────────────────────────────────────────
+		// Job handoff — app.js's "Доработать в редакторе" button
+		// (SONYA_REAL_POLLING_PATCH_V2 → showRealResult()) links here with
+		// ?job_id=...&video_url=... for the video the user just generated.
+		// Before this, opencut.html always opened with zero params, so
+		// neither this page nor the edit.sonya.group iframe had any way to
+		// know which video to load (docs/SONYA_AUDIT.md P1-8).
+		//
+		// video_url is untrusted input the moment it's read from the query
+		// string (a link can be shared/edited by anyone) — validated the
+		// same way app.js's isSafeResultUrl() validates it before that
+		// button ever builds this link: absolute https:, or same-origin.
+		// A value that fails this check is treated as absent, never passed
+		// through to the iframe or used as an href.
+		// ──────────────────────────────────────────────────────
+		function safeVideoUrl(raw) {
+			if (!raw) return '';
+			let parsed;
+			try { parsed = new URL(raw, window.location.href); }
+			catch (_) { return ''; }
+			if (parsed.protocol === 'https:') return parsed.href;
+			if (parsed.origin === window.location.origin) return parsed.href;
+			return '';
+		}
+
+		const jobId    = params.get('job_id') || '';
+		const videoUrl = safeVideoUrl(params.get('video_url'));
+
+		// Forward to the iframed editor as its own query params -- best-effort:
+		// this page doesn't control edit.sonya.group's own contract, so this
+		// is the conventional `?video=`/`?job_id=` shape, not a confirmed API.
+		// If/when edit.sonya.group defines a real handoff contract (e.g.
+		// postMessage after load), wire that here instead.
+		let iframeUrl = editorUrl;
+		if (videoUrl || jobId) {
+			try {
+				const u = new URL(editorUrl);
+				if (videoUrl) u.searchParams.set('video', videoUrl);
+				if (jobId) u.searchParams.set('job_id', jobId);
+				iframeUrl = u.href;
+			} catch (_) { /* editorUrl not a valid absolute URL — fall through unchanged */ }
+		}
+
 		// Set iframe source
-		iframe.src = editorUrl;
-		errorOpenBtn.href = editorUrl;
+		iframe.src = iframeUrl;
+		errorOpenBtn.href = iframeUrl;
+
+		// Fallback shown in the error panel when the iframe never loads
+		// (edit.sonya.group unreachable, etc.) -- lets the user at least get
+		// to their actual video instead of a dead end.
+		const errorVideoBtn = document.getElementById('error-video-btn');
+		if (errorVideoBtn) {
+			if (videoUrl) {
+				errorVideoBtn.href = videoUrl;
+				errorVideoBtn.classList.remove('hidden');
+			} else {
+				errorVideoBtn.classList.add('hidden');
+			}
+		}
 
 		// Hide loading once iframe loads
 		iframe.addEventListener('load', () => {

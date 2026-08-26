@@ -550,6 +550,27 @@ function renderResultClips(clips) {
                         thumb.target = '_blank';
                         thumb.rel = 'noopener';
                 }
+                // Real frame from the generated clip as the thumbnail background,
+                // instead of the plain dark-gradient placeholder. `#t=0.1` is a
+                // standard media-fragment seek: with preload="metadata" this makes
+                // supporting browsers (Chrome/Safari/Firefox) decode and paint that
+                // one frame without downloading/playing the whole clip. muted +
+                // playsInline only matter if something ever calls .play() on it —
+                // this element never does; it's decorative, the real "watch" action
+                // is the surrounding <a>/play button. Falls back to the CSS
+                // gradient (see .result-clip-thumb) if the browser never paints a
+                // frame at all (preload="metadata" gives no such guarantee).
+                if (safeUrl) {
+                        const video = document.createElement('video');
+                        video.className = 'result-clip-thumb-video';
+                        video.muted = true;
+                        video.playsInline = true;
+                        video.preload = 'metadata';
+                        video.setAttribute('aria-hidden', 'true');
+                        video.tabIndex = -1;
+                        video.src = safeUrl + '#t=0.1';
+                        thumb.appendChild(video);
+                }
                 const glow = document.createElement('div');
                 glow.className = 'result-clip-thumb-glow';
                 const fx = document.createElement('div');
@@ -1079,11 +1100,27 @@ function init() {
 
         initLiteEditor();
 
-        // "Доработать в редакторе" on result page → open OpenCut as a separate page
+        // "Доработать в редакторе" on result page → open OpenCut as a separate
+        // page, carrying the just-completed job/video with it. Without this,
+        // opencut.html has no way to know which video to load (it opened with
+        // zero params before — see docs/SONYA_AUDIT.md P1-8). job_id/video_url
+        // come from window.SONYA_LAST_COMPLETED_JOB / SONYA_LAST_RESULT_URL,
+        // set by showRealResult() (SONYA_REAL_POLLING_PATCH_V2 below) the
+        // moment a job completes — same validated (isSafeResultUrl) URL the
+        // result page itself links to, never a fresh unvalidated value.
         const btnOpenEditor = document.getElementById('btn-open-editor');
         if (btnOpenEditor) {
                 btnOpenEditor.addEventListener('click', () => {
-                        window.location.href = '/opencut.html';
+                        const job = window.SONYA_LAST_COMPLETED_JOB;
+                        const jobId = job && (job.job_id || job.id);
+                        const videoUrl = window.SONYA_LAST_RESULT_URL;
+
+                        const qs = new URLSearchParams();
+                        if (jobId) qs.set('job_id', jobId);
+                        if (videoUrl) qs.set('video_url', videoUrl);
+
+                        const query = qs.toString();
+                        window.location.href = '/opencut.html' + (query ? '?' + query : '');
                 });
         }
 
