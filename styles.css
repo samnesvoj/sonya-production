@@ -314,6 +314,41 @@ h1, h2, h3, h4, h5, h6, p { margin: 0; }
 .floating-controls--left  { left: 20px; }
 .floating-controls--right { right: 20px; }
 
+.site-legal-footer {
+	position: fixed;
+	left: 50%;
+	bottom: 10px;
+	transform: translateX(-50%);
+	z-index: 20;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 10px;
+	font-family: var(--font-body);
+	font-size: 10.5px;
+	line-height: 1;
+	white-space: nowrap;
+	pointer-events: none;
+}
+.site-legal-footer a {
+	pointer-events: auto;
+	color: rgba(255, 255, 255, 0.38);
+	text-decoration: none;
+}
+.site-legal-footer a:hover { color: rgba(255, 255, 255, 0.85); }
+[data-theme="light"] .site-legal-footer a { color: rgba(10, 10, 10, 0.42); }
+[data-theme="light"] .site-legal-footer a:hover { color: rgba(10, 10, 10, 0.85); }
+.site-legal-footer-dot {
+	width: 2px; height: 2px; border-radius: 999px;
+	background: rgba(255, 255, 255, 0.3);
+	flex-shrink: 0;
+}
+[data-theme="light"] .site-legal-footer-dot { background: rgba(10, 10, 10, 0.3); }
+
+@media (max-width: 480px) {
+	.site-legal-footer { font-size: 9px; gap: 6px; }
+}
+
 .profile-btn {
 	position: relative;
 	width: 44px; height: 44px;
@@ -3270,6 +3305,14 @@ body > .floating-controls--left {
 }
 .processing-cloth-host.is-interactive { pointer-events: auto; }
 .processing-cloth-host canvas { display: block; width: 100%; height: 100%; }
+/* Two child layers created by cloth-processing.js: ambient background,
+   then the cloth mesh itself on top (DOM order — no z-index needed since
+   both are absolutely positioned within the same fixed host). */
+.processing-cloth-bg,
+.processing-cloth-mesh {
+	position: absolute;
+	inset: 0;
+}
 /* Shown only if WebGL2 is unavailable — a static cover image, never a crash. */
 .processing-cloth-host .sonya-cloth-fallback {
 	width: 100%;
@@ -4503,6 +4546,89 @@ body > .floating-controls--left {
     inset  10px  10px 6px -10px rgba(10, 10, 10, 0.14);
 }
 [data-theme="light"] .paywall-later-btn:hover { color: #0a0a0a !important; background: rgba(255, 255, 255, 0.6) !important; }
+
+/* ── 4b. PAYWALL — multi-view states (offer/loading/error/already-pro) ── */
+.paywall-view { display: none; }
+.paywall-view.is-active { display: flex; flex-direction: column; align-items: center; }
+
+.paywall-consent { margin: 0 0 16px; text-align: left; }
+
+/* Same neutral glass treatment as .sonya-auth-cta (auth modal's primary
+   CTA) -- reused deliberately, not a new "premium" color: SONYA does not
+   use a gold/amber accent for Pro/paid state. */
+.paywall-pay-btn {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  width: 100%; height: 52px; padding: 0 18px; margin-bottom: 10px; border: none; border-radius: 9999px;
+  font-size: 14px; font-weight: 600; letter-spacing: 0.02em; cursor: pointer;
+  font-family: 'Unbounded', 'Sora', system-ui, sans-serif;
+  position: relative; overflow: hidden;
+  color: #fff;
+  background:
+    radial-gradient(160% 140% at 50% -50%, rgba(255, 255, 255, 0.18), transparent 60%),
+    rgba(0, 0, 0, 0.28);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.3),
+    inset -21.48px -21.48px 10.74px -21.48px rgba(179, 179, 179, 0.72),
+    inset  21.48px  21.48px 10.74px -21.48px rgba(179, 179, 179, 0.72),
+    0 10px 40px rgba(0, 0, 0, 0.35);
+  transition: transform 180ms ease, background 220ms ease, box-shadow 220ms ease, opacity .2s;
+}
+.paywall-pay-btn:hover {
+  transform: translateY(-1px);
+  background:
+    radial-gradient(160% 140% at 50% -50%, rgba(255, 255, 255, 0.3), transparent 60%),
+    rgba(20, 20, 22, 0.62);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.5),
+    inset -21.48px -21.48px 10.74px -21.48px rgba(255, 255, 255, 0.92),
+    inset  21.48px  21.48px 10.74px -21.48px rgba(255, 255, 255, 0.92),
+    0 14px 50px rgba(0, 0, 0, 0.45);
+}
+.paywall-pay-btn:active { transform: translateY(0) scale(0.98); }
+.paywall-pay-btn:disabled,
+.paywall-pay-btn[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; transform: none; }
+[data-theme="light"] .paywall-pay-btn {
+  color: #0a0a0a;
+  background:
+    radial-gradient(160% 140% at 50% -50%, rgba(255, 255, 255, 0.85), transparent 60%),
+    rgba(10, 10, 10, 0.08);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.6),
+    inset -21.48px -21.48px 10.74px -21.48px rgba(10, 10, 10, 0.18),
+    inset  21.48px  21.48px 10.74px -21.48px rgba(10, 10, 10, 0.18),
+    0 10px 40px rgba(0, 0, 0, 0.10);
+}
+[data-theme="light"] .paywall-pay-btn:hover {
+  background:
+    radial-gradient(160% 140% at 50% -50%, rgba(255, 255, 255, 0.95), transparent 60%),
+    rgba(10, 10, 10, 0.13);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.8),
+    inset -21.48px -21.48px 10.74px -21.48px rgba(10, 10, 10, 0.30),
+    inset  21.48px  21.48px 10.74px -21.48px rgba(10, 10, 10, 0.30),
+    0 14px 50px rgba(0, 0, 0, 0.14);
+}
+
+/* Same spinner as .sonya-auth-cta.is-loading::after -- neutral white/black,
+   not the dune/accent (gold) token. */
+.paywall-spinner {
+  width: 36px; height: 36px; margin: 0 auto 18px; border-radius: 999px;
+  border: 3px solid rgba(255, 255, 255, 0.28);
+  border-top-color: #fff;
+  animation: paywall-spin 720ms linear infinite;
+}
+[data-theme="light"] .paywall-spinner {
+  border-color: rgba(10, 10, 10, 0.28);
+  border-top-color: #0a0a0a;
+}
+@keyframes paywall-spin { to { transform: rotate(360deg); } }
+
+/* Same red/green already used by .sonya-toast--error / --success -- not a
+   newly invented color. */
+.paywall-icon--error i { color: #f88080 !important; }
+[data-theme="light"] .paywall-icon--error i { color: #b03040 !important; }
+.paywall-icon--success i { color: #88d4a8 !important; }
+[data-theme="light"] .paywall-icon--success i { color: #1a7a48 !important; }
 
 /* ── 6. TOAST ────────────────────────────────────────────────── */
 .sonya-toast {

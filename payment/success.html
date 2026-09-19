@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="robots" content="noindex,nofollow">
-  <title>Оплата принята — SONYA</title>
+  <title>Оплата — SONYA</title>
   <style>
     * { box-sizing: border-box; }
     body {
@@ -31,7 +31,7 @@
     }
     h1 { margin: 0 0 16px; font-size: 32px; }
     p { margin: 0 0 28px; color: #bdbdbd; line-height: 1.55; }
-    a {
+    a.cta, button.cta {
       display: inline-block;
       padding: 14px 22px;
       border-radius: 999px;
@@ -39,14 +39,125 @@
       background: #f2f2f2;
       font-weight: 700;
       text-decoration: none;
+      border: 0;
+      font-size: 15px;
+      cursor: pointer;
+      font-family: inherit;
     }
+    .spinner {
+      width: 36px; height: 36px; margin: 0 auto 20px;
+      border-radius: 999px;
+      border: 3px solid rgba(255,255,255,.18);
+      border-top-color: #f2f2f2;
+      animation: spin .9s linear infinite;
+    }
+    [hidden] { display: none !important; }
+    @keyframes spin { to { transform: rotate(360deg); } }
   </style>
 </head>
 <body>
   <main>
-    <h1>Оплата принята</h1>
-    <p>Платёж обрабатывается. Статус подписки обновится после подтверждения платёжной системой.</p>
-    <a href="/">Вернуться в SONYA</a>
+    <div id="state-checking">
+      <div class="spinner" aria-hidden="true"></div>
+      <h1>Проверяем оплату</h1>
+      <p>Обычно это занимает несколько секунд — дождитесь подтверждения от платёжной системы.</p>
+    </div>
+
+    <div id="state-paid" hidden>
+      <h1>Подписка оформлена</h1>
+      <p id="paid-details">SONYA Pro активирован.</p>
+      <a class="cta" href="/">Продолжить</a>
+    </div>
+
+    <div id="state-pending" hidden>
+      <h1>Платёж обрабатывается</h1>
+      <p>Подтверждение от платёжной системы ещё не пришло. Это может занять некоторое время — статус подписки обновится автоматически, обновите страницу позже.</p>
+      <a class="cta" href="/">Вернуться в SONYA</a>
+    </div>
+
+    <div id="state-error" hidden>
+      <h1>Не удалось проверить оплату</h1>
+      <p>Попробуйте обновить страницу или проверить статус подписки в профиле.</p>
+      <button class="cta" id="retry-btn" type="button">Проверить снова</button>
+    </div>
   </main>
+
+  <script src="/config.js"></script>
+  <script>
+    (function () {
+      var API_BASE = window.SONYA_API_BASE || '/api';
+      var params = new URLSearchParams(window.location.search);
+      var invoiceId = params.get('InvId') || params.get('invId') || params.get('invoice_id');
+
+      var elChecking = document.getElementById('state-checking');
+      var elPaid = document.getElementById('state-paid');
+      var elPending = document.getElementById('state-pending');
+      var elError = document.getElementById('state-error');
+
+      function show(el) {
+        [elChecking, elPaid, elPending, elError].forEach(function (e) { e.hidden = (e !== el); });
+      }
+
+      function formatDate(iso) {
+        if (!iso) return '';
+        try {
+          return new Date(iso).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
+        } catch (e) { return ''; }
+      }
+
+      // Never activates or confirms anything itself -- only reads
+      // server-confirmed state. The webhook (ResultURL) is the sole
+      // source of truth for a completed payment; this page just polls it.
+      function checkStatus() {
+        if (!invoiceId) { show(elError); return; }
+
+        fetch(API_BASE + '/billing/payment-status?invoice_id=' + encodeURIComponent(invoiceId), {
+          credentials: 'include',
+        }).then(function (res) {
+          if (res.status === 401) {
+            // Session cookie missing/expired -- can't confirm ownership,
+            // but this is not "payment failed".
+            show(elPending);
+            return null;
+          }
+          if (!res.ok) { throw new Error('status ' + res.status); }
+          return res.json();
+        }).then(function (data) {
+          if (!data) return;
+          if (data.status === 'paid') {
+            var until = formatDate(data.plan_active_until);
+            document.getElementById('paid-details').textContent = until
+              ? 'SONYA Pro активирован. Действует до ' + until
+              : 'SONYA Pro активирован.';
+            show(elPaid);
+          } else if (data.status === 'pending') {
+            if (attempts < MAX_ATTEMPTS) {
+              attempts += 1;
+              setTimeout(checkStatus, POLL_INTERVAL_MS);
+            } else {
+              show(elPending);
+            }
+          } else {
+            show(elPending);
+          }
+        }).catch(function () {
+          show(elError);
+        });
+      }
+
+      var attempts = 0;
+      var MAX_ATTEMPTS = 15; // ~30s at 2s interval
+      var POLL_INTERVAL_MS = 2000;
+
+      document.getElementById('retry-btn').addEventListener('click', function () {
+        attempts = 0;
+        show(elChecking);
+        checkStatus();
+      });
+
+      show(elChecking);
+      checkStatus();
+    })();
+  </script>
 </body>
 </html>

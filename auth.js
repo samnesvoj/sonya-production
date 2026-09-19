@@ -761,21 +761,98 @@ async function handleVerifyCode() {
 
 /* ─────────────────────────────────────────────
    PAYWALL MODAL
+   Views: offer -> loading -> (redirect away) | error | already-pro
+   Source of truth for "is Pro active" is always the server
+   (authState.user, refreshed from /api/auth/me) -- this mirrors that
+   check for UI purposes only, it never gates the actual purchase.
 ───────────────────────────────────────────── */
+function _isProActive(user) {
+  if (!user || user.plan_type !== 'pro' || user.plan_status !== 'active') return false;
+  if (!user.plan_active_until) return false;
+  return new Date(user.plan_active_until).getTime() > Date.now();
+}
+
+function _formatPlanUntil(iso) {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
+  } catch (_e) {
+    return '';
+  }
+}
+
+function showPaywallView(viewName) {
+  document.querySelectorAll('#sonya-paywall-modal [data-paywall-view]').forEach(el => {
+    el.classList.toggle('is-active', el.getAttribute('data-paywall-view') === viewName);
+  });
+}
+
+let _checkoutInFlight = false;
+
 function openPaywallModal() {
   document.getElementById('sonya-paywall-modal').classList.add('is-open');
+
+  if (_isProActive(authState.user)) {
+    const untilText = document.getElementById('paywall-active-until-text');
+    if (untilText) {
+      const until = _formatPlanUntil(authState.user.plan_active_until);
+      untilText.textContent = until ? `Действует до ${until}` : 'Подписка активна.';
+    }
+    showPaywallView('already-pro');
+    return;
+  }
+
+  // Reset the offer form every time it's (re)opened.
+  const consent = document.getElementById('paywall-consent-checkbox');
+  const payBtn = document.getElementById('paywall-pay-btn');
+  if (consent) consent.checked = false;
+  if (payBtn) { payBtn.disabled = true; payBtn.setAttribute('aria-disabled', 'true'); }
+  showPaywallView('offer');
 }
+
 function closePaywallModal() {
   document.getElementById('sonya-paywall-modal').classList.remove('is-open');
 }
 
-function openTelegramPayment() {
-  // Stub — real flow: POST /api/billing/create-telegram-payment → open bot
-  const botUsername = window.SONYA_BOT_USERNAME || 'sonyaaibot';
-  const url = `https://t.me/${botUsername}`;
-  window.open(url, '_blank', 'noopener');
-  closePaywallModal();
-  showToast('Откройте Telegram Bot SONYA для оплаты Pro Plan');
+async function startRobokassaCheckout() {
+  if (_checkoutInFlight) return; // double-click / double-submit guard
+  _checkoutInFlight = true;
+
+  const payBtn = document.getElementById('paywall-pay-btn');
+  if (payBtn) { payBtn.disabled = true; payBtn.setAttribute('aria-disabled', 'true'); }
+  showPaywallView('loading');
+
+  try {
+    const res = await apiFetch('/billing/checkout', {
+      method: 'POST',
+      body: JSON.stringify({ plan_id: 'pro_30d' }),
+    });
+    const data = await safeJson(res);
+
+    if (res._networkError) {
+      _showPaywallError('Сервер недоступен. Проверьте соединение и попробуйте снова.');
+      return;
+    }
+    if (!res.ok || !data || !data.redirect_url) {
+      _showPaywallError(data?.detail?.error === 'unknown_plan'
+        ? 'Этот тариф недоступен. Обновите страницу и попробуйте снова.'
+        : 'Не удалось создать платёж. Попробуйте ещё раз.');
+      return;
+    }
+
+    // Leaving the page for Robokassa -- no need to reset _checkoutInFlight,
+    // a fresh page load resets all state anyway.
+    window.location.href = data.redirect_url;
+  } catch (_e) {
+    _showPaywallError('Не удалось создать платёж. Попробуйте ещё раз.');
+  }
+}
+
+function _showPaywallError(message) {
+  _checkoutInFlight = false;
+  const el = document.getElementById('paywall-error-message');
+  if (el) el.textContent = message;
+  showPaywallView('error');
 }
 
 /* ─────────────────────────────────────────────
@@ -968,11 +1045,44 @@ function initAuth() {
   document.getElementById('sonya-paywall-modal')?.addEventListener('click', e => {
     if (e.target === e.currentTarget) closePaywallModal();
   });
-  document.getElementById('paywall-tg-btn')?.addEventListener('click', openTelegramPayment);
   document.getElementById('paywall-later-btn')?.addEventListener('click', closePaywallModal);
+  document.getElementById('paywall-error-later-btn')?.addEventListener('click', closePaywallModal);
+  document.getElementById('paywall-already-pro-close-btn')?.addEventListener('click', closePaywallModal);
 
-  // Initial state fetch (non-blocking)
-  refreshAuthState();
+  document.getElementById('paywall-consent-checkbox')?.addEventListener('change', e => {
+    const payBtn = document.getElementById('paywall-pay-btn');
+    if (!payBtn) return;
+    payBtn.disabled = !e.target.checked;
+    payBtn.setAttribute('aria-disabled', String(!e.target.checked));
+  });
+  document.getElementById('paywall-pay-btn')?.addEventListener('click', startRobokassaCheckout);
+  document.getElementById('paywall-retry-btn')?.addEventListener('click', () => {
+    showPaywallView('offer');
+    _checkoutInFlight = false;
+    // startRobokassaCheckout() disables the pay button unconditionally
+    // before the request; re-sync it with the (still-checked) consent
+    // checkbox instead of leaving it stuck disabled after a failed attempt.
+    const consent = document.getElementById('paywall-consent-checkbox');
+    const payBtn = document.getElementById('paywall-pay-btn');
+    if (consent && payBtn) {
+      payBtn.disabled = !consent.checked;
+      payBtn.setAttribute('aria-disabled', String(!consent.checked));
+    }
+  });
+
+  // Initial state fetch (non-blocking). If we were sent back here from
+  // payment/fail.html's "Попробовать снова" link (?paywall=1), reopen the
+  // paywall once we know the current auth/plan state, then drop the
+  // query param so a page refresh doesn't reopen it again.
+  refreshAuthState().then(function () {
+    var params = new URLSearchParams(window.location.search);
+    if (params.get('paywall') === '1') {
+      openPaywallModal();
+      params.delete('paywall');
+      var qs = params.toString();
+      history.replaceState(null, '', window.location.pathname + (qs ? '?' + qs : ''));
+    }
+  });
 }
 
 // Auto-init when DOM is ready

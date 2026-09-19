@@ -31,7 +31,7 @@
     }
     h1 { margin: 0 0 16px; font-size: 32px; }
     p { margin: 0 0 28px; color: #bdbdbd; line-height: 1.55; }
-    a {
+    a.cta, button.cta {
       display: inline-block;
       padding: 14px 22px;
       border-radius: 999px;
@@ -39,14 +39,65 @@
       background: #f2f2f2;
       font-weight: 700;
       text-decoration: none;
+      border: 0;
+      font-size: 15px;
+      cursor: pointer;
+      font-family: inherit;
     }
+    [hidden] { display: none !important; }
   </style>
 </head>
 <body>
   <main>
-    <h1>Оплата не завершена</h1>
-    <p>Платёж был отменён или не прошёл. Списание не подтверждено.</p>
-    <a href="/">Вернуться в SONYA</a>
+    <div id="state-failed">
+      <h1>Оплата не завершена</h1>
+      <p>Платёж был отменён или не прошёл. Списание не подтверждено.</p>
+      <a class="cta" href="/?paywall=1">Попробовать снова</a>
+    </div>
+
+    <div id="state-paid" hidden>
+      <h1>Подписка оформлена</h1>
+      <p id="paid-details">SONYA Pro активирован — платёж всё же был подтверждён.</p>
+      <a class="cta" href="/">Продолжить</a>
+    </div>
   </main>
+
+  <script src="/config.js"></script>
+  <script>
+    (function () {
+      // Real race: the ResultURL webhook can arrive slightly after
+      // Robokassa redirects the browser to FailURL. This page never
+      // decides anything itself (a browser landing here proves nothing
+      // about the actual payment outcome) -- it only reads the
+      // server-confirmed status once, and shows success instead of a
+      // false "failed" message if the webhook already got there first.
+      var API_BASE = window.SONYA_API_BASE || '/api';
+      var params = new URLSearchParams(window.location.search);
+      var invoiceId = params.get('InvId') || params.get('invId') || params.get('invoice_id');
+      if (!invoiceId) return;
+
+      function formatDate(iso) {
+        if (!iso) return '';
+        try {
+          return new Date(iso).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
+        } catch (e) { return ''; }
+      }
+
+      fetch(API_BASE + '/billing/payment-status?invoice_id=' + encodeURIComponent(invoiceId), {
+        credentials: 'include',
+      }).then(function (res) {
+        return res.ok ? res.json() : null;
+      }).then(function (data) {
+        if (data && data.status === 'paid') {
+          var until = formatDate(data.plan_active_until);
+          document.getElementById('paid-details').textContent = until
+            ? 'SONYA Pro активирован. Действует до ' + until
+            : 'SONYA Pro активирован — платёж всё же был подтверждён.';
+          document.getElementById('state-failed').hidden = true;
+          document.getElementById('state-paid').hidden = false;
+        }
+      }).catch(function () { /* keep showing the default failed state */ });
+    })();
+  </script>
 </body>
 </html>

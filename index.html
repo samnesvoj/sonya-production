@@ -117,6 +117,18 @@
 		</button>
 	</div>
 
+	<!-- Legal footer — small, always-reachable links (oferta/privacy/refund/contacts)
+	     without needing to open a modal first. -->
+	<footer class="site-legal-footer">
+		<a href="/legal/terms.html" target="_blank" rel="noopener">Оферта</a>
+		<span class="site-legal-footer-dot" aria-hidden="true"></span>
+		<a href="/legal/privacy.html" target="_blank" rel="noopener">Конфиденциальность</a>
+		<span class="site-legal-footer-dot" aria-hidden="true"></span>
+		<a href="/legal/refund.html" target="_blank" rel="noopener">Возврат</a>
+		<span class="site-legal-footer-dot" aria-hidden="true"></span>
+		<a href="mailto:auth@sonya.group">Контакты</a>
+	</footer>
+
 	<div class="floating-controls floating-controls--right">
 		<!-- Account button + dropdown -->
 		<div class="acct-wrap">
@@ -694,16 +706,8 @@
 					<div class="subscription-plan-name" id="subscription-plan-name">Free Plan</div>
 					<div class="subscription-limits" id="subscription-limits">
 						<div class="limit-item">
-							<span class="limit-label">Клипов в месяц</span>
-							<span class="limit-value">2</span>
-						</div>
-						<div class="limit-item">
-							<span class="limit-label">Длительность</span>
-							<span class="limit-value">до 30 сек</span>
-						</div>
-						<div class="limit-item">
-							<span class="limit-label">Водяной знак</span>
-							<span class="limit-value">SONYA</span>
+							<span class="limit-label">Бесплатных генераций</span>
+							<span class="limit-value">1 на аккаунт</span>
 						</div>
 					</div>
 				</div>
@@ -850,27 +854,64 @@
 	<!-- ═══════════════════════════════════════════
 	     PAYWALL MODAL
 	═══════════════════════════════════════════ -->
-	<div class="sonya-modal-overlay" id="sonya-paywall-modal" role="dialog" aria-modal="true">
+	<div class="sonya-modal-overlay" id="sonya-paywall-modal" role="dialog" aria-modal="true" aria-label="Оформление подписки SONYA Pro">
 		<div class="sonya-modal paywall-modal">
 			<button class="sonya-modal-close" id="paywall-modal-close" aria-label="Закрыть">
 				<i class="fa-solid fa-xmark"></i>
 			</button>
-			<div class="paywall-icon"><i class="fa-solid fa-bolt"></i></div>
-			<h2 class="paywall-title">Free Plan использован</h2>
-			<p class="paywall-desc">Подключите SONYA Pro на 30 дней — без автопродления, генерируйте видео без ограничений.</p>
-			<div class="paywall-price">
-				<span class="paywall-price-value">500 ₽</span>
-				<span class="paywall-price-period">/ 30 дней</span>
+
+			<!-- OFFER VIEW -->
+			<div class="paywall-view is-active" data-paywall-view="offer">
+				<div class="paywall-icon"><i class="fa-solid fa-bolt"></i></div>
+				<h2 class="paywall-title">SONYA Pro</h2>
+				<p class="paywall-desc">Безлимитные генерации на 30 дней — без автопродления.</p>
+				<div class="paywall-price">
+					<span class="paywall-price-value">500 ₽</span>
+					<span class="paywall-price-period">/ 30 дней</span>
+				</div>
+				<div class="paywall-features">
+					<span><i class="fa-solid fa-check"></i> Неограниченные видео</span>
+					<span><i class="fa-solid fa-check"></i> Все режимы монтажа</span>
+					<span><i class="fa-solid fa-check"></i> Приоритетная обработка</span>
+				</div>
+				<label class="sonya-auth-consent paywall-consent">
+					<input type="checkbox" id="paywall-consent-checkbox" />
+					<span class="sonya-auth-check" aria-hidden="true"></span>
+					<span class="sonya-auth-consent-text">
+						Совершая оплату, я принимаю условия
+						<a href="/legal/terms.html" target="_blank" rel="noopener">Оферты</a>
+						и <a href="/legal/refund.html" target="_blank" rel="noopener">Правил возврата</a>
+					</span>
+				</label>
+				<button class="paywall-pay-btn" id="paywall-pay-btn" type="button" disabled aria-disabled="true">
+					<span>Оплатить 500 ₽</span>
+				</button>
+				<button class="paywall-later-btn" id="paywall-later-btn" type="button">Позже</button>
 			</div>
-			<div class="paywall-features">
-				<span><i class="fa-solid fa-check"></i> Неограниченные видео</span>
-				<span><i class="fa-solid fa-check"></i> Все режимы монтажа</span>
-				<span><i class="fa-solid fa-check"></i> Приоритетная обработка</span>
+
+			<!-- LOADING VIEW -->
+			<div class="paywall-view" data-paywall-view="loading" aria-live="polite">
+				<div class="paywall-spinner" aria-hidden="true"></div>
+				<h2 class="paywall-title">Создаём платёж…</h2>
+				<p class="paywall-desc">Сейчас перенаправим вас на защищённую страницу оплаты Robokassa.</p>
 			</div>
-			<button class="paywall-tg-btn" id="paywall-tg-btn" type="button">
-				<i class="fa-brands fa-telegram"></i> Оплатить в Telegram
-			</button>
-			<button class="paywall-later-btn" id="paywall-later-btn" type="button">Позже</button>
+
+			<!-- ERROR VIEW -->
+			<div class="paywall-view" data-paywall-view="error" role="alert">
+				<div class="paywall-icon paywall-icon--error"><i class="fa-solid fa-triangle-exclamation"></i></div>
+				<h2 class="paywall-title">Не удалось создать платёж</h2>
+				<p class="paywall-desc" id="paywall-error-message">Попробуйте ещё раз или повторите попытку позже.</p>
+				<button class="paywall-pay-btn" id="paywall-retry-btn" type="button">Попробовать снова</button>
+				<button class="paywall-later-btn" id="paywall-error-later-btn" type="button">Закрыть</button>
+			</div>
+
+			<!-- ALREADY-PRO VIEW -->
+			<div class="paywall-view" data-paywall-view="already-pro">
+				<div class="paywall-icon paywall-icon--success"><i class="fa-solid fa-check"></i></div>
+				<h2 class="paywall-title">SONYA Pro активен</h2>
+				<p class="paywall-desc" id="paywall-active-until-text">Подписка активна.</p>
+				<button class="paywall-later-btn" id="paywall-already-pro-close-btn" type="button">Продолжить</button>
+			</div>
 		</div>
 	</div>
 

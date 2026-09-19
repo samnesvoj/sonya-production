@@ -30,9 +30,7 @@ const SUBSCRIPTION_PLANS = {
                 name: 'Free Plan',
                 icon: '⭐',
                 limits: [
-                        { label: 'Клипов в месяц', value: '2' },
-                        { label: 'Длительность', value: 'до 30 сек' },
-                        { label: 'Водяной знак', value: 'SONYA' }
+                        { label: 'Бесплатных генераций', value: '1 на аккаунт' }
                 ]
         },
         pro: {

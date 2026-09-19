@@ -23,6 +23,11 @@ Auth + billing endpoints (see scripts/auth_routes.py):
   POST /api/auth/logout
   GET  /api/billing/subscription-status
 
+Robokassa payment endpoints (see scripts/payment_routes.py):
+  POST /api/billing/checkout                 (browser, creates a pending payment + redirect_url)
+  POST /api/billing/robokassa/result         (Robokassa server-to-server, ResultURL -- source of truth)
+  GET  /api/billing/payment-status           (browser, polled from payment/success.html + fail.html)
+
 Worker-internal endpoints (require Authorization: Bearer WORKER_SECRET --
 unchanged, never cookie/session based):
   POST /api/worker/claim
@@ -49,6 +54,7 @@ import re
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -85,6 +91,8 @@ from scripts.prod_s3_storage import (
     upload_bytes,
 )
 from scripts.auth_routes import router as auth_router
+from scripts.payment_routes import router as payment_router
+from scripts import auth_store
 from scripts.quota_guard import check_user_quota
 from scripts.rate_limiter import RateLimiter
 from scripts.security import (
@@ -114,6 +122,22 @@ def _resolve_priority(user: dict) -> tuple[int, str]:
     if plan not in _PLAN_PRIORITY:
         plan = "unknown"
     return _PLAN_PRIORITY[plan], plan
+
+
+def _is_pro_active(user: dict) -> bool:
+    """
+    Whether the user's Pro plan is currently in effect -- not just whether
+    plan_type happens to say "pro". A payment that expired without renewal
+    leaves plan_type="pro" on the row (nothing resets it), so free-plan
+    quota enforcement must check plan_active_until too, or an expired Pro
+    user would get unlimited free generations.
+    """
+    if user.get("plan_type") != "pro" or user.get("plan_status") != "active":
+        return False
+    until = user.get("plan_active_until")
+    return bool(until) and until > datetime.now(timezone.utc)
+
+
 from scripts.security_audit import (
     EVT_JOB_CREATED,
     EVT_JOB_CLAIMED,
@@ -157,6 +181,9 @@ app.add_middleware(
 
 # Auth + billing endpoints (see scripts/auth_routes.py)
 app.include_router(auth_router)
+
+# Robokassa checkout + webhook endpoints (see scripts/payment_routes.py)
+app.include_router(payment_router)
 
 # ── Mode registry ——————————————————————————————————————————————————————————————
 
@@ -397,6 +424,15 @@ async def create_generation_job(
     # Quota check
     check_user_quota(user_id)
 
+    # Free-plan limit -- server-side, from the authenticated user's own DB
+    # record (never a client-supplied flag). An expired Pro plan does NOT
+    # bypass this (see _is_pro_active).
+    if not _is_pro_active(user) and user["free_video_used"] >= user["free_video_limit"]:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={"error": "payment_required", "code": "FREE_PLAN_USED", "trace_id": trace_id},
+        )
+
     # Upload validation (magic bytes, size, extension)
     try:
         content, safe_name = await validate_upload(file)
@@ -488,6 +524,13 @@ async def create_generation_job(
 
     # ── New job created — same post-processing as before ────────────────────
     job_id = str(created_row["id"])
+
+    # Counts towards the free-plan limit (harmless no-op for Pro users --
+    # _is_pro_active() is what the gate actually checks, not this counter).
+    try:
+        auth_store.increment_free_video_used(user_id)
+    except Exception as exc:
+        logger.warning("[api] free_video_used_increment_failed user_id=%s trace_id=%s: %s", user_id, trace_id, exc)
 
     # Persist migration-006 columns (priority + plan) — best-effort
     try:
@@ -653,6 +696,12 @@ async def create_generation_job_from_url(
     # file-upload endpoint.
     check_user_quota(user_id)
 
+    if not _is_pro_active(user) and user["free_video_used"] >= user["free_video_limit"]:
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={"error": "payment_required", "code": "FREE_PLAN_USED", "trace_id": trace_id},
+        )
+
     url = body.url.strip()
     platform = url_ingest.detect_platform(url)
     if platform == "unsupported":
@@ -791,6 +840,11 @@ def _run_url_ingest(
             return
 
         job_id = str(created_row["id"])
+
+        try:
+            auth_store.increment_free_video_used(user_id)
+        except Exception as exc:
+            logger.warning("[api] free_video_used_increment_failed user_id=%s trace_id=%s: %s", user_id, trace_id, exc)
 
         try:
             from scripts.prod_job_store import _get_conn  # type: ignore

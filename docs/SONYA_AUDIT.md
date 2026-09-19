@@ -107,3 +107,27 @@ P2 — улучшения
 6. Убрать один из дублирующихся индексов (idx_jobs_priority_queue vs ix_jobs_dispatch_priority).
 
 ✻ Sautéed for 6m 5s
+
+---
+
+## Update: Robokassa payment integration (this change)
+
+- **P1-7 (оплата — полная заглушка) — исправлено.** Реальная интеграция с Robokassa
+  (checkout → redirect → ResultURL webhook с проверкой подписи → активация
+  подписки) в `scripts/robokassa.py`, `scripts/payment_store.py`,
+  `scripts/payment_routes.py`, миграция `010_payments.sql`. Полностью
+  архивный поиск по git history подтвердил: до этого изменения в проекте не
+  было НИ ОДНОЙ строки, связанной с Robokassa, ни в текущем дереве, ни в
+  истории, ни в dangling-объектах/стэшах.
+- Новый, ранее не задокументированный здесь баг найден и исправлен
+  попутно: backend нигде не возвращал `402 FREE_PLAN_USED` при создании
+  job (grep по всем `.py` — 0 совпадений), хотя `auth.js::checkAndCreateVideoJob`
+  уже ждал этот код. Free-план был фактически безлимитным. См.
+  `scripts/prod_generation_api.py::_is_pro_active` + gate перед созданием job
+  в обоих job-creation путях (upload и URL-ingest).
+- P2-2 (`apiGetSubscriptionStatus` не используется) — по-прежнему не
+  используется, не трогали (вне периметра этой задачи).
+- Recurring (автопродление) НЕ реализован — продуктовая модель
+  (SONYA Pro, 500₽/30д, без автопродления) и то, что у Robokassa
+  `/Merchant/Recurring` нет тестового режима и требует отдельного
+  согласования, делают его отдельной будущей задачей.
