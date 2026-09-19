@@ -5,6 +5,10 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="robots" content="noindex,nofollow">
   <title>Оплата не завершена — SONYA</title>
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png">
+  <link rel="icon" type="image/png" href="/favicon.png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
   <style>
     * { box-sizing: border-box; }
     body {
@@ -95,6 +99,7 @@
             : 'SONYA Pro активирован — платёж всё же был подтверждён.';
           document.getElementById('state-failed').hidden = true;
           document.getElementById('state-paid').hidden = false;
+          document.title = 'Оплата успешна — SONYA';
         }
       }).catch(function () { /* keep showing the default failed state */ });
     })();
