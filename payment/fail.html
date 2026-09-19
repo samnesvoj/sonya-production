@@ -1,108 +1,116 @@
 <!doctype html>
-<html lang="ru">
+<html lang="ru" data-theme="light">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="robots" content="noindex,nofollow">
-  <title>Оплата не завершена — SONYA</title>
-  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
-  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png">
-  <link rel="icon" type="image/png" href="/favicon.png">
-  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-  <style>
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      display: grid;
-      place-items: center;
-      padding: 24px;
-      color: #f5f5f5;
-      background:
-        radial-gradient(circle at 20% 20%, #303030 0, transparent 38%),
-        radial-gradient(circle at 80% 80%, #181818 0, transparent 42%),
-        #070707;
-      font-family: Arial, sans-serif;
-    }
-    main {
-      width: min(520px, 100%);
-      padding: 40px;
-      border: 1px solid rgba(255,255,255,.14);
-      border-radius: 24px;
-      background: rgba(255,255,255,.06);
-      backdrop-filter: blur(18px);
-      text-align: center;
-    }
-    h1 { margin: 0 0 16px; font-size: 32px; }
-    p { margin: 0 0 28px; color: #bdbdbd; line-height: 1.55; }
-    a.cta, button.cta {
-      display: inline-block;
-      padding: 14px 22px;
-      border-radius: 999px;
-      color: #080808;
-      background: #f2f2f2;
-      font-weight: 700;
-      text-decoration: none;
-      border: 0;
-      font-size: 15px;
-      cursor: pointer;
-      font-family: inherit;
-    }
-    [hidden] { display: none !important; }
-  </style>
+	<meta charset="UTF-8">
+
+	<!-- Theme bootstrap — identical to index.html: must run before any CSS
+	     is parsed so the saved theme applies before first paint. -->
+	<script>
+		(function () {
+			try {
+				var t = localStorage.getItem('theme');
+				window.__sonyaTheme = t || 'light';
+			} catch (e) {
+				window.__sonyaTheme = 'light';
+			}
+			document.documentElement.setAttribute('data-theme', window.__sonyaTheme);
+		})();
+	</script>
+
+	<meta name="viewport" content="width=device-width,initial-scale=1">
+	<meta name="theme-color" content="#0B0907">
+	<meta name="robots" content="noindex,nofollow">
+	<title>Оплата не завершена — SONYA</title>
+	<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
+	<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png">
+	<link rel="icon" type="image/png" href="/favicon.png">
+	<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+
+	<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"
+		integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA=="
+		crossorigin="anonymous" referrerpolicy="no-referrer" />
+
+	<link rel="preconnect" href="https://fonts.googleapis.com">
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link
+		href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Onest:wght@300;400;500;600;700&family=Unbounded:wght@200;300;400;500;600;700&display=swap"
+		rel="stylesheet">
+
+	<!-- Same release as index.html — reuses the real SONYA design system
+	     (tokens, .sonya-modal / .paywall-* components) instead of a
+	     separate payment-page stylesheet. -->
+	<link rel="stylesheet" href="https://static.sonya.group/releases/273789e/styles.css">
 </head>
 <body>
-  <main>
-    <div id="state-failed">
-      <h1>Оплата не завершена</h1>
-      <p>Платёж был отменён или не прошёл. Списание не подтверждено.</p>
-      <a class="cta" href="/?paywall=1">Попробовать снова</a>
-    </div>
+	<div class="sonya-modal-overlay is-open" role="dialog" aria-modal="true" aria-label="Статус оплаты">
+		<div class="sonya-modal paywall-modal">
 
-    <div id="state-paid" hidden>
-      <h1>Подписка оформлена</h1>
-      <p id="paid-details">SONYA Pro активирован — платёж всё же был подтверждён.</p>
-      <a class="cta" href="/">Продолжить</a>
-    </div>
-  </main>
+			<!-- FAILED (default -- this is Robokassa's FailURL) -->
+			<div class="paywall-view is-active" data-paywall-view="failed">
+				<div class="paywall-icon paywall-icon--error"><i class="fa-solid fa-triangle-exclamation"></i></div>
+				<h2 class="paywall-title">Оплата не завершена</h2>
+				<p class="paywall-desc">Платёж был отменён или не прошёл. Списание не подтверждено.</p>
+				<a class="paywall-pay-btn" href="/?paywall=1">Попробовать снова</a>
+				<a class="paywall-later-btn" href="/">Вернуться в SONYA</a>
+			</div>
 
-  <script src="/config.js"></script>
-  <script>
-    (function () {
-      // Real race: the ResultURL webhook can arrive slightly after
-      // Robokassa redirects the browser to FailURL. This page never
-      // decides anything itself (a browser landing here proves nothing
-      // about the actual payment outcome) -- it only reads the
-      // server-confirmed status once, and shows success instead of a
-      // false "failed" message if the webhook already got there first.
-      var API_BASE = window.SONYA_API_BASE || '/api';
-      var params = new URLSearchParams(window.location.search);
-      var invoiceId = params.get('InvId') || params.get('invId') || params.get('invoice_id');
-      if (!invoiceId) return;
+			<!-- PAID (real race: the ResultURL webhook can arrive slightly
+			     after Robokassa redirects the browser here -- a browser
+			     landing on FailURL proves nothing about the actual payment
+			     outcome, so this reads the server-confirmed status once and
+			     shows success instead of a false "failed" message if the
+			     webhook already got there first). -->
+			<div class="paywall-view" data-paywall-view="paid">
+				<div class="paywall-icon paywall-icon--success"><i class="fa-solid fa-check"></i></div>
+				<h2 class="paywall-title">Подписка SONYA Pro активна</h2>
+				<div class="paywall-price">
+					<span class="paywall-price-value">500 ₽</span>
+					<span class="paywall-price-period">/ 30 дней</span>
+				</div>
+				<p class="paywall-desc" id="paid-until-text">Платёж всё же был подтверждён.</p>
+				<a class="paywall-pay-btn" href="/">Продолжить</a>
+			</div>
 
-      function formatDate(iso) {
-        if (!iso) return '';
-        try {
-          return new Date(iso).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
-        } catch (e) { return ''; }
-      }
+		</div>
+	</div>
 
-      fetch(API_BASE + '/billing/payment-status?invoice_id=' + encodeURIComponent(invoiceId), {
-        credentials: 'include',
-      }).then(function (res) {
-        return res.ok ? res.json() : null;
-      }).then(function (data) {
-        if (data && data.status === 'paid') {
-          var until = formatDate(data.plan_active_until);
-          document.getElementById('paid-details').textContent = until
-            ? 'SONYA Pro активирован. Действует до ' + until
-            : 'SONYA Pro активирован — платёж всё же был подтверждён.';
-          document.getElementById('state-failed').hidden = true;
-          document.getElementById('state-paid').hidden = false;
-          document.title = 'Оплата успешна — SONYA';
-        }
-      }).catch(function () { /* keep showing the default failed state */ });
-    })();
-  </script>
+	<!-- Same runtime API-base config as the rest of the site. -->
+	<script src="/config.js"></script>
+	<script>
+		(function () {
+			var API_BASE = window.SONYA_API_BASE || '/api';
+			var params = new URLSearchParams(window.location.search);
+			var invoiceId = params.get('InvId') || params.get('invId') || params.get('invoice_id');
+			if (!invoiceId) return;
+
+			function showView(name) {
+				document.querySelectorAll('.paywall-view').forEach(function (el) {
+					el.classList.toggle('is-active', el.getAttribute('data-paywall-view') === name);
+				});
+			}
+
+			function formatDate(iso) {
+				if (!iso) return '';
+				try {
+					return new Date(iso).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
+				} catch (e) { return ''; }
+			}
+
+			fetch(API_BASE + '/billing/payment-status?invoice_id=' + encodeURIComponent(invoiceId), {
+				credentials: 'include',
+			}).then(function (res) {
+				return res.ok ? res.json() : null;
+			}).then(function (data) {
+				if (data && data.status === 'paid') {
+					var until = formatDate(data.plan_active_until);
+					document.getElementById('paid-until-text').textContent = until
+						? 'Активна до ' + until
+						: 'Платёж всё же был подтверждён.';
+					document.title = 'Оплата успешна — SONYA';
+					showView('paid');
+				}
+			}).catch(function () { /* keep showing the default failed view */ });
+		})();
+	</script>
 </body>
 </html>
