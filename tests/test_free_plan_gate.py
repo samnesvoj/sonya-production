@@ -77,10 +77,13 @@ def test_active_pro_bypasses_free_limit(client, monkeypatch):
                       free_video_limit=1, free_video_used=5)
     _login(client, monkeypatch, user)
 
-    monkeypatch.setattr(
-        "scripts.prod_generation_api.create_job_idempotent",
-        lambda **kw: {"id": "job-1", "user_id": user["id"], "mode": "virality", "status": "queued", "created_at": None},
-    )
+    captured_bypass = {}
+
+    def fake_create_job_with_quota(**kw):
+        captured_bypass["bypass_quota"] = kw["bypass_quota"]
+        return {"outcome": "created", "job": {"id": "job-1", "user_id": user["id"], "mode": "virality", "status": "queued", "created_at": None}}
+
+    monkeypatch.setattr("scripts.prod_generation_api.create_job_with_quota", fake_create_job_with_quota)
     monkeypatch.setattr("scripts.prod_generation_api.get_job", lambda job_id: {"created_at": "2026-01-01T00:00:00Z"})
     monkeypatch.setattr("scripts.prod_generation_api.add_job_file", lambda **kw: "file-id")
     monkeypatch.setattr("scripts.prod_generation_api.upload_bytes", lambda content, key, content_type=None: None)
@@ -88,7 +91,6 @@ def test_active_pro_bypasses_free_limit(client, monkeypatch):
         "scripts.prod_generation_api.build_input_key",
         lambda user_id, job_id, mode, ext: f"users/{user_id}/jobs/{job_id}/{mode}/input/file{ext}",
     )
-    monkeypatch.setattr(auth_store, "increment_free_video_used", lambda user_id: None)
 
     def _no_db_conn():
         raise RuntimeError("no DB available in tests")
@@ -100,6 +102,7 @@ def test_active_pro_bypasses_free_limit(client, monkeypatch):
         files={"file": ("clip.mp4", io.BytesIO(_mp4_bytes()), "video/mp4")},
     )
     assert resp.status_code == 202, resp.text
+    assert captured_bypass["bypass_quota"] is True
 
 
 def test_expired_pro_does_not_bypass_free_limit(client, monkeypatch):

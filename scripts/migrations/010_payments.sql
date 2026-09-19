@@ -18,6 +18,13 @@ CREATE TABLE IF NOT EXISTS payments (
     plan_id               TEXT        NOT NULL,
     amount                NUMERIC(10,2) NOT NULL,
     currency              TEXT        NOT NULL DEFAULT 'RUB',
+    -- Snapshot of PLAN_CATALOG[plan_id] at checkout time, same reasoning as
+    -- `amount` below: process_successful_payment() must activate exactly
+    -- what the user was shown and paid for, even if PLAN_CATALOG changes
+    -- (e.g. Pro duration edited) before the webhook confirms this specific
+    -- payment. Never re-looked-up from the live catalog for an existing row.
+    plan_type             TEXT        NOT NULL,
+    duration_days         INTEGER     NOT NULL,
     -- Captured at payment-creation time, not re-read from the current
     -- ROBOKASSA_TEST_MODE env value when a callback later arrives --
     -- otherwise flipping the flag mid-flight would break signature

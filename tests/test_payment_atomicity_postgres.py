@@ -44,6 +44,7 @@ def test_concurrent_valid_callbacks_activate_exactly_once(stores):
     user = _mk_user(auth_store, "concurrent")
     payment = payment_store.create_pending_payment(
         user_id=user["id"], plan_id="pro_30d", amount=Decimal("500.00"), is_test=True,
+        plan_type="pro", duration_days=30,
     )
     invoice_id = payment["invoice_id"]
     n = 8
@@ -75,6 +76,7 @@ def test_amount_mismatch_does_not_activate_or_touch_subscription(stores):
     user = _mk_user(auth_store, "mismatch")
     payment = payment_store.create_pending_payment(
         user_id=user["id"], plan_id="pro_30d", amount=Decimal("500.00"), is_test=True,
+        plan_type="pro", duration_days=30,
     )
     invoice_id = payment["invoice_id"]
 
@@ -98,6 +100,7 @@ def test_renewal_extends_from_existing_active_period_not_from_now(stores):
 
     first = payment_store.create_pending_payment(
         user_id=user["id"], plan_id="pro_30d", amount=Decimal("500.00"), is_test=True,
+        plan_type="pro", duration_days=30,
     )
     payment_store.process_successful_payment(first["invoice_id"], Decimal("500.00"), {})
     after_first = auth_store.get_user_by_id(user["id"])
@@ -105,6 +108,7 @@ def test_renewal_extends_from_existing_active_period_not_from_now(stores):
 
     second = payment_store.create_pending_payment(
         user_id=user["id"], plan_id="pro_30d", amount=Decimal("500.00"), is_test=True,
+        plan_type="pro", duration_days=30,
     )
     payment_store.process_successful_payment(second["invoice_id"], Decimal("500.00"), {})
     after_second = auth_store.get_user_by_id(user["id"])
@@ -112,3 +116,41 @@ def test_renewal_extends_from_existing_active_period_not_from_now(stores):
 
     from datetime import timedelta
     assert (second_until - first_until) > timedelta(days=29)
+
+
+def test_activation_uses_payment_snapshot_not_live_catalog(stores):
+    """plan_type/duration_days are captured on the payment row at checkout
+    time (create_pending_payment). If PLAN_CATALOG is edited afterwards
+    (e.g. Pro's duration changed from 30 to 14 days) before the webhook
+    confirms THIS payment, activation must still honor what was actually
+    paid for -- 30 days, matching this payment's own snapshot -- not
+    whatever the catalog says at the moment the webhook happens to arrive."""
+    auth_store, payment_store = stores
+    user = _mk_user(auth_store, "catalog-snapshot")
+
+    # Checkout happens while the catalog still says 30 days.
+    payment = payment_store.create_pending_payment(
+        user_id=user["id"], plan_id="pro_30d", amount=Decimal("500.00"), is_test=True,
+        plan_type="pro", duration_days=30,
+    )
+
+    # Catalog changes before the webhook arrives -- payment_store doesn't
+    # import PLAN_CATALOG at all anymore, so this is really just documenting
+    # the scenario; the assertion below is what actually proves immunity.
+    from scripts import robokassa
+    from dataclasses import replace
+    original_plan = robokassa.PLAN_CATALOG["pro_30d"]
+    robokassa.PLAN_CATALOG["pro_30d"] = replace(original_plan, duration_days=14)
+    try:
+        outcome = payment_store.process_successful_payment(payment["invoice_id"], Decimal("500.00"), {})
+    finally:
+        robokassa.PLAN_CATALOG["pro_30d"] = original_plan
+
+    assert outcome["result"] == "activated"
+
+    from datetime import datetime, timedelta, timezone
+    updated_user = auth_store.get_user_by_id(user["id"])
+    delta = updated_user["plan_active_until"] - datetime.now(timezone.utc)
+    assert timedelta(days=29) < delta < timedelta(days=31), (
+        f"activation used the live (edited) catalog instead of this payment's own snapshot: {delta}"
+    )

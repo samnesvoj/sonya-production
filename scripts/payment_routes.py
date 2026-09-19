@@ -35,7 +35,7 @@ from scripts.robokassa import (
     format_out_sum,
     get_plan,
     is_test_mode,
-    verify_result_signature,
+    verify_result_signature_for_either_mode,
 )
 from scripts.security import get_current_user, new_trace_id, verify_browser_origin
 
@@ -71,9 +71,20 @@ async def checkout(
 
     is_test = is_test_mode()
 
-    payment = payment_store.create_pending_payment(
-        user_id=str(user["id"]), plan_id=plan.plan_id, amount=plan.amount, is_test=is_test,
-    )
+    try:
+        payment = payment_store.create_pending_payment(
+            user_id=str(user["id"]), plan_id=plan.plan_id, amount=plan.amount, is_test=is_test,
+            plan_type=plan.plan_type, duration_days=plan.duration_days,
+        )
+    except Exception as exc:
+        logger.error(
+            "[payment] db_error operation=create_pending_payment user_id=%s trace_id=%s error_type=%s",
+            user["id"], trace_id, type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "internal_error", "trace_id": trace_id},
+        )
 
     out_sum = format_out_sum(plan.amount)
     receipt_json = build_receipt(plan)
@@ -112,14 +123,25 @@ async def robokassa_result(
     InvId: int = Form(...),
     SignatureValue: str = Form(...),
 ):
+    """
+    Order matters here and is deliberate (see the review notes this fixes):
+      1. Verify SignatureValue first, against BOTH production and test
+         Password#2 -- no database call at all yet. A request with no
+         valid signature for either mode is rejected immediately, so
+         garbage/scanning traffic against this public, unauthenticated
+         endpoint never reaches Postgres.
+      2. Only once a signature validates, look up the payment by InvId and
+         confirm its stored is_test flag matches whichever password
+         actually matched (a signature valid under the TEST password must
+         never activate a payment created in production mode, or vice
+         versa).
+      3. Only then compare Decimal(OutSum) against the stored amount and
+         atomically process the payment.
+    """
     trace_id = new_trace_id()
 
-    payment = payment_store.get_payment_by_invoice_id(InvId)
-    if payment is None:
-        logger.warning("[payment] result_unknown_invoice invoice_id=%s trace_id=%s", InvId, trace_id)
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown invoice")
-
-    if not verify_result_signature(OutSum, InvId, SignatureValue, payment["is_test"]):
+    matched_is_test = verify_result_signature_for_either_mode(OutSum, InvId, SignatureValue)
+    if matched_is_test is None:
         logger.warning("[payment] result_bad_signature invoice_id=%s trace_id=%s", InvId, trace_id)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid signature")
 
@@ -129,8 +151,37 @@ async def robokassa_result(
         logger.warning("[payment] result_bad_out_sum invoice_id=%s out_sum=%r trace_id=%s", InvId, OutSum, trace_id)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid amount")
 
+    try:
+        payment = payment_store.get_payment_by_invoice_id(InvId)
+    except Exception as exc:
+        logger.error(
+            "[payment] db_error operation=get_payment_by_invoice_id invoice_id=%s trace_id=%s error_type=%s",
+            InvId, trace_id, type(exc).__name__,
+        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                             detail={"error": "internal_error", "trace_id": trace_id})
+
+    if payment is None:
+        logger.warning("[payment] result_unknown_invoice invoice_id=%s trace_id=%s", InvId, trace_id)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown invoice")
+
+    if payment["is_test"] != matched_is_test:
+        logger.warning(
+            "[payment] result_mode_mismatch invoice_id=%s trace_id=%s expected_is_test=%s matched_is_test=%s",
+            InvId, trace_id, payment["is_test"], matched_is_test,
+        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="invalid signature")
+
     raw_params = dict((await request.form()))
-    outcome = payment_store.process_successful_payment(InvId, out_sum_decimal, raw_params)
+    try:
+        outcome = payment_store.process_successful_payment(InvId, out_sum_decimal, raw_params)
+    except Exception as exc:
+        logger.error(
+            "[payment] db_error operation=process_successful_payment invoice_id=%s trace_id=%s error_type=%s",
+            InvId, trace_id, type(exc).__name__,
+        )
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                             detail={"error": "internal_error", "trace_id": trace_id})
 
     if outcome["result"] in ("activated", "already_processed"):
         if outcome["result"] == "activated":

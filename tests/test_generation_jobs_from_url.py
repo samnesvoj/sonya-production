@@ -38,15 +38,16 @@ def _mock_pipeline(monkeypatch, tmp_path, created_jobs):
                          lambda url, platform, progress_cb=None: (str(video_path), ".mp4"))
     monkeypatch.setattr(url_ingest, "cleanup", lambda path: None)
 
-    def fake_create_job_idempotent(job_id, user_id, mode, params, s3_input_key,
-                                    idempotency_key, idempotency_fingerprint, queue_priority=0):
+    def fake_create_job_with_quota(job_id, user_id, mode, params, s3_input_key,
+                                    idempotency_key, idempotency_fingerprint, queue_priority=0,
+                                    bypass_quota=False):
         created_jobs["job_id"] = job_id
         created_jobs["user_id"] = user_id
         created_jobs["mode"] = mode
         created_jobs["s3_input_key"] = s3_input_key
-        return {"id": job_id, "user_id": user_id, "mode": mode, "status": "queued"}
+        return {"outcome": "created", "job": {"id": job_id, "user_id": user_id, "mode": mode, "status": "queued"}}
 
-    monkeypatch.setattr("scripts.prod_generation_api.create_job_idempotent", fake_create_job_idempotent)
+    monkeypatch.setattr("scripts.prod_generation_api.create_job_with_quota", fake_create_job_with_quota)
     monkeypatch.setattr("scripts.prod_generation_api.add_job_file", lambda **kw: "file-id")
     monkeypatch.setattr("scripts.prod_generation_api.upload_bytes",
                          lambda content, key, content_type=None: None)

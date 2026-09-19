@@ -36,12 +36,19 @@ def _payment(invoice_id=42, is_test=False, status="pending"):
     }
 
 
-def test_result_unknown_invoice_rejected_before_signature_check(client, monkeypatch):
-    monkeypatch.setattr(payment_store, "get_payment_by_invoice_id", lambda inv_id: None)
-    called = {}
+def test_result_invalid_signature_never_touches_payment_store(client, monkeypatch):
+    """Signature is checked (against BOTH prod and test Password#2) before
+    any database call -- a request whose signature matches neither must
+    never call get_payment_by_invoice_id or process_successful_payment at
+    all, regardless of what InvId it claims (real, unknown, or garbage)."""
+    called = []
+    monkeypatch.setattr(
+        payment_store, "get_payment_by_invoice_id",
+        lambda inv_id: called.append(("get_payment_by_invoice_id", inv_id)),
+    )
     monkeypatch.setattr(
         payment_store, "process_successful_payment",
-        lambda *a, **kw: called.setdefault("hit", True),
+        lambda *a, **kw: called.append(("process_successful_payment", a, kw)),
     )
 
     resp = client.post(
@@ -50,6 +57,27 @@ def test_result_unknown_invoice_rejected_before_signature_check(client, monkeypa
     )
     assert resp.status_code == 400
     assert resp.text != "OK999999"
+    assert called == []
+
+
+def test_result_signature_matching_wrong_mode_is_rejected(client, monkeypatch):
+    """A signature that validates under the TEST password for a payment
+    actually stored as production (is_test=False) must be rejected -- not
+    silently accepted just because it matches *some* configured password."""
+    monkeypatch.setattr(payment_store, "get_payment_by_invoice_id", lambda inv_id: _payment(inv_id, is_test=False))
+    called = {}
+    monkeypatch.setattr(
+        payment_store, "process_successful_payment",
+        lambda *a, **kw: called.setdefault("hit", True),
+    )
+
+    test_sig = _md5("500.00:42:test-pass-2")
+    resp = client.post(
+        "/api/billing/robokassa/result",
+        data={"OutSum": "500.00", "InvId": "42", "SignatureValue": test_sig},
+    )
+    assert resp.status_code == 400
+    assert resp.text != "OK42"
     assert "hit" not in called
 
 

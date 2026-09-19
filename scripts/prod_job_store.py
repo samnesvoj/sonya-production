@@ -19,6 +19,12 @@ Functions:
                          (POST /api/generation/jobs Idempotency-Key,
                          migration 009)
   get_job_by_idempotency_key  fetch the job owning a (user_id, key) pair
+  create_job_with_quota  idempotency-key check + free-plan quota reservation
+                         + job insert, all in one transaction (see its own
+                         docstring -- this is what create_generation_job()
+                         and _run_url_ingest() call; create_job_idempotent()
+                         above is kept for other callers/tooling but is no
+                         longer on the free-plan-gated path)
   get_job                fetch single job by id
   list_user_jobs         paginated list for a user
   update_job_status      granular status update (any status constant)
@@ -234,6 +240,99 @@ def create_job_idempotent(
                 )
                 row = cur.fetchone()
                 return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def create_job_with_quota(
+    *,
+    job_id: str,
+    user_id: str,
+    mode: str,
+    params: Dict[str, Any],
+    s3_input_key: str,
+    idempotency_key: Optional[str],
+    idempotency_fingerprint: Optional[str],
+    queue_priority: int,
+    bypass_quota: bool,
+) -> Dict[str, Any]:
+    """
+    Atomically, in ONE transaction: check for an existing job under
+    (user_id, idempotency_key), reserve one unit of free-plan quota, and
+    insert the new job -- so a job insert failure can never leave a
+    "spent" quota unit behind, and a replayed request never spends quota
+    a second time.
+
+    Returns one of:
+      {"outcome": "existing",       "job": {...}}  -- idempotency_key already
+                                                       had a row; quota untouched
+      {"outcome": "quota_exceeded", "job": None}     -- new request, but
+                                                       free_video_used >= free_video_limit
+      {"outcome": "created",        "job": {...}}    -- new job row inserted
+
+    Concurrency: the first statement locks the user's own row
+    (SELECT ... FOR UPDATE), which serializes every job-creation attempt
+    for that SAME user (not globally) for the short duration of this
+    transaction -- long enough to make both the idempotency-key lookup and
+    the quota reservation race-free together, without depending on
+    create_job_idempotent's separate-connection unique-index-race pattern
+    (which is safe for uniqueness alone, but not for "check quota, then
+    decide whether to spend it" without also serializing per user). The
+    actual expensive work (download/S3 upload) happens entirely before this
+    function is called -- this transaction only ever does two small
+    SELECTs, at most one UPDATE, and one INSERT.
+
+    If the job insert fails for any reason (unique-constraint violation
+    from a bug elsewhere, connection loss, etc.), the whole transaction
+    rolls back -- including the quota UPDATE above it in the same
+    transaction -- so free_video_used is never incremented for a job that
+    was not actually created.
+    """
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM users WHERE id = %s FOR UPDATE", (user_id,))
+                if cur.fetchone() is None:
+                    raise RuntimeError(f"create_job_with_quota: user not found: {user_id}")
+
+                if idempotency_key is not None:
+                    cur.execute(
+                        "SELECT * FROM generation_jobs WHERE user_id = %s AND idempotency_key = %s",
+                        (user_id, idempotency_key),
+                    )
+                    existing = cur.fetchone()
+                    if existing is not None:
+                        return {"outcome": "existing", "job": dict(existing)}
+
+                if not bypass_quota:
+                    cur.execute(
+                        """
+                        UPDATE users
+                        SET free_video_used = free_video_used + 1, updated_at = %s
+                        WHERE id = %s AND free_video_used < free_video_limit
+                        RETURNING id
+                        """,
+                        (_now(), user_id),
+                    )
+                    if cur.fetchone() is None:
+                        return {"outcome": "quota_exceeded", "job": None}
+
+                cur.execute(
+                    """
+                    INSERT INTO generation_jobs
+                        (id, user_id, mode, params, s3_input_key, status,
+                         queue_priority, created_at, updated_at,
+                         idempotency_key, idempotency_fingerprint)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    RETURNING *
+                    """,
+                    (job_id, user_id, mode, json.dumps(params), s3_input_key,
+                     JOB_STATUS_QUEUED, queue_priority, _now(), _now(),
+                     idempotency_key, idempotency_fingerprint),
+                )
+                created = cur.fetchone()
+            return {"outcome": "created", "job": dict(created)}
     finally:
         conn.close()
 

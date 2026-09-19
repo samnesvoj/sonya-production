@@ -198,3 +198,32 @@ def verify_result_signature(raw_out_sum: str, inv_id: int, signature: str, is_te
     amount). Constant-time comparison."""
     expected = _md5(f"{raw_out_sum}:{inv_id}:{password_2(is_test)}")
     return hmac.compare_digest(expected.lower(), signature.lower())
+
+
+def verify_result_signature_for_either_mode(raw_out_sum: str, inv_id: int, signature: str) -> Optional[bool]:
+    """
+    Verify a ResultURL signature against BOTH Password#2 and
+    TEST_PASSWORD_2, without knowing in advance which mode the payment was
+    created in. This lets the caller (payment_routes.py::robokassa_result)
+    check the signature BEFORE ever looking up the payment row in the
+    database -- a forged/garbage request with no valid signature for
+    either mode never touches the database at all.
+
+    Returns True if the signature matches as a test-mode payment, False if
+    it matches as a production payment, or None if it matches neither
+    (invalid). The caller must still cross-check the result against the
+    payment's own stored `is_test` flag -- a signature that happens to
+    validate under the test password for a payment actually created in
+    production mode (or vice versa) must not be accepted.
+
+    A mode whose password isn't configured at all (e.g. test credentials
+    never set because test mode is never used) is silently skipped rather
+    than treated as an error.
+    """
+    for is_test in (False, True):
+        try:
+            if verify_result_signature(raw_out_sum, inv_id, signature, is_test):
+                return is_test
+        except RuntimeError:
+            continue
+    return None

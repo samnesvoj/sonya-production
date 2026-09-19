@@ -75,6 +75,12 @@
       <a class="cta" href="/">Вернуться в SONYA</a>
     </div>
 
+    <div id="state-failed" hidden>
+      <h1>Оплата не прошла</h1>
+      <p id="failed-details">Платёж не был завершён. Списание не подтверждено.</p>
+      <a class="cta" href="/?paywall=1">Попробовать снова</a>
+    </div>
+
     <div id="state-error" hidden>
       <h1>Не удалось проверить оплату</h1>
       <p>Попробуйте обновить страницу или проверить статус подписки в профиле.</p>
@@ -92,10 +98,12 @@
       var elChecking = document.getElementById('state-checking');
       var elPaid = document.getElementById('state-paid');
       var elPending = document.getElementById('state-pending');
+      var elFailed = document.getElementById('state-failed');
       var elError = document.getElementById('state-error');
+      var ALL_STATES = [elChecking, elPaid, elPending, elFailed, elError];
 
       function show(el) {
-        [elChecking, elPaid, elPending, elError].forEach(function (e) { e.hidden = (e !== el); });
+        ALL_STATES.forEach(function (e) { e.hidden = (e !== el); });
       }
 
       function formatDate(iso) {
@@ -105,9 +113,15 @@
         } catch (e) { return ''; }
       }
 
+      var TERMINAL_FAILED_STATUSES = ['failed', 'cancelled', 'refunded'];
+
       // Never activates or confirms anything itself -- only reads
       // server-confirmed state. The webhook (ResultURL) is the sole
       // source of truth for a completed payment; this page just polls it.
+      // Polling always stops on a terminal outcome (paid / failed /
+      // cancelled / refunded / an unrecognized status / a fetch error) --
+      // "pending" is the only status that schedules another check, and
+      // only up to MAX_ATTEMPTS.
       function checkStatus() {
         if (!invoiceId) { show(elError); return; }
 
@@ -116,7 +130,8 @@
         }).then(function (res) {
           if (res.status === 401) {
             // Session cookie missing/expired -- can't confirm ownership,
-            // but this is not "payment failed".
+            // but this is not "payment failed". Stop polling; nothing
+            // further can be checked without a session.
             show(elPending);
             return null;
           }
@@ -124,22 +139,34 @@
           return res.json();
         }).then(function (data) {
           if (!data) return;
+
           if (data.status === 'paid') {
             var until = formatDate(data.plan_active_until);
             document.getElementById('paid-details').textContent = until
               ? 'SONYA Pro активирован. Действует до ' + until
               : 'SONYA Pro активирован.';
             show(elPaid);
-          } else if (data.status === 'pending') {
+            return;
+          }
+
+          if (TERMINAL_FAILED_STATUSES.indexOf(data.status) !== -1) {
+            show(elFailed);
+            return;
+          }
+
+          if (data.status === 'pending') {
             if (attempts < MAX_ATTEMPTS) {
               attempts += 1;
               setTimeout(checkStatus, POLL_INTERVAL_MS);
             } else {
               show(elPending);
             }
-          } else {
-            show(elPending);
+            return;
           }
+
+          // Any other/unrecognized status -- never show a false "still
+          // processing" forever for something we don't understand.
+          show(elError);
         }).catch(function () {
           show(elError);
         });

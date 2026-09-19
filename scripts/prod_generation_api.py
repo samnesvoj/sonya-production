@@ -76,6 +76,7 @@ from scripts.prod_job_store import (
     complete_job,
     create_job,
     create_job_idempotent,
+    create_job_with_quota,
     fail_job,
     get_job,
     get_job_by_idempotency_key,
@@ -92,7 +93,6 @@ from scripts.prod_s3_storage import (
 )
 from scripts.auth_routes import router as auth_router
 from scripts.payment_routes import router as payment_router
-from scripts import auth_store
 from scripts.quota_guard import check_user_quota
 from scripts.rate_limiter import RateLimiter
 from scripts.security import (
@@ -424,9 +424,14 @@ async def create_generation_job(
     # Quota check
     check_user_quota(user_id)
 
-    # Free-plan limit -- server-side, from the authenticated user's own DB
-    # record (never a client-supplied flag). An expired Pro plan does NOT
-    # bypass this (see _is_pro_active).
+    # Free-plan limit -- fast-fail check only, from the user snapshot already
+    # loaded for this request. Not the enforcement point: a concurrent
+    # request could still consume the last slot before this one reaches
+    # create_job_with_quota() below, which re-checks atomically against the
+    # DB and is what actually prevents exceeding free_video_limit. This
+    # early check exists purely to skip a wasted upload for the common case
+    # of an already-exhausted user. An expired Pro plan does NOT bypass
+    # either check (see _is_pro_active).
     if not _is_pro_active(user) and user["free_video_used"] >= user["free_video_limit"]:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
@@ -461,11 +466,19 @@ async def create_generation_job(
         logger.error("[api] s3_upload_failed job_id=%s trace_id=%s: %s", job_id, trace_id, exc)
         raise safe_error("storage_error", 500, trace_id)
 
-    # Atomic create-or-detect-conflict. GPU is never triggered here; the
+    # Atomic create-or-detect-conflict-or-quota-exceeded, all in one DB
+    # transaction (see prod_job_store.create_job_with_quota): idempotency-key
+    # lookup, free-plan quota reservation, and the job insert either all
+    # commit together or all roll back together. This is the actual
+    # enforcement point for free_video_limit -- a replay of an
+    # already-accepted Idempotency-Key never touches quota, and concurrent
+    # requests can never jointly consume more than free_video_limit units
+    # (see docs/SONYA_AUDIT.md review notes for why the previous
+    # check-then-increment approach raced). GPU is never triggered here; the
     # dispatcher service picks up queued jobs and calls the GPU orchestrator
     # asynchronously.
     try:
-        created_row = create_job_idempotent(
+        result = create_job_with_quota(
             job_id=job_id,
             user_id=user_id,
             mode=mode,
@@ -474,29 +487,31 @@ async def create_generation_job(
             idempotency_key=idempotency_key,
             idempotency_fingerprint=idempotency_fingerprint,
             queue_priority=priority,  # existing column (migration 003)
+            bypass_quota=_is_pro_active(user),
         )
     except Exception as exc:
         logger.error("[api] create_job_failed trace_id=%s: %s", trace_id, exc)
         delete_object(s3_key)  # best-effort -- this request's own upload, never an existing job's
         raise safe_error("db_error", 500, trace_id)
 
-    if created_row is None:
-        # ON CONFLICT DO NOTHING matched zero rows: another request already
-        # holds this (user_id, idempotency_key). This request's own upload
-        # is now orphaned -- clean it up (best-effort; never the existing
-        # job's s3_input_key).
+    if result["outcome"] == "quota_exceeded":
+        # Lost the race to the atomic quota reservation -- the early
+        # fast-fail check above didn't catch this (another concurrent
+        # request consumed the last slot in between). This request's own
+        # upload is now orphaned.
         delete_object(s3_key)
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={"error": "payment_required", "code": "FREE_PLAN_USED", "trace_id": trace_id},
+        )
 
-        existing = get_job_by_idempotency_key(user_id, idempotency_key)
-        if existing is None:
-            # Conflict reported by the unique index but the row is gone by
-            # the time we look it up (e.g. concurrent delete) -- surface as
-            # a transient server error rather than guessing.
-            logger.error(
-                "[api] idempotency_conflict_row_missing user_id=%s trace_id=%s",
-                user_id, trace_id,
-            )
-            raise safe_error("db_error", 500, trace_id)
+    if result["outcome"] == "existing":
+        # Another request already holds this (user_id, idempotency_key).
+        # This request's own upload is now orphaned -- clean it up
+        # (best-effort; never the existing job's s3_input_key). Quota was
+        # never touched for this request (checked before reservation).
+        delete_object(s3_key)
+        existing = result["job"]
 
         if existing.get("idempotency_fingerprint") == idempotency_fingerprint:
             logger.info(
@@ -523,14 +538,8 @@ async def create_generation_job(
         )
 
     # ── New job created — same post-processing as before ────────────────────
+    created_row = result["job"]
     job_id = str(created_row["id"])
-
-    # Counts towards the free-plan limit (harmless no-op for Pro users --
-    # _is_pro_active() is what the gate actually checks, not this counter).
-    try:
-        auth_store.increment_free_video_used(user_id)
-    except Exception as exc:
-        logger.warning("[api] free_video_used_increment_failed user_id=%s trace_id=%s: %s", user_id, trace_id, exc)
 
     # Persist migration-006 columns (priority + plan) — best-effort
     try:
@@ -696,7 +705,11 @@ async def create_generation_job_from_url(
     # file-upload endpoint.
     check_user_quota(user_id)
 
-    if not _is_pro_active(user) and user["free_video_used"] >= user["free_video_limit"]:
+    # Fast-fail only -- see the equivalent check in create_generation_job()
+    # for why this isn't the enforcement point (create_job_with_quota() in
+    # _run_url_ingest below is).
+    bypass_quota = _is_pro_active(user)
+    if not bypass_quota and user["free_video_used"] >= user["free_video_limit"]:
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
             detail={"error": "payment_required", "code": "FREE_PLAN_USED", "trace_id": trace_id},
@@ -732,6 +745,7 @@ async def create_generation_job_from_url(
         ingest_id=ingest_id, url=url, platform=platform, mode=mode,
         parsed_params=parsed_params, user_id=user_id, trace_id=trace_id,
         idempotency_key=idempotency_key, priority=priority, plan=plan,
+        bypass_quota=bypass_quota,
         client_ip=request.client.host if request.client else None,
     )
 
@@ -767,6 +781,7 @@ def _run_url_ingest(
     *, ingest_id: str, url: str, platform: str, mode: str,
     parsed_params: Dict[str, Any], user_id: str, trace_id: str,
     idempotency_key: Optional[str], priority: int, plan: str,
+    bypass_quota: bool,
     client_ip: Optional[str],
 ) -> None:
     """
@@ -814,10 +829,11 @@ def _run_url_ingest(
             return
 
         try:
-            created_row = create_job_idempotent(
+            result = create_job_with_quota(
                 job_id=job_id, user_id=user_id, mode=mode, params=parsed_params,
                 s3_input_key=s3_key, idempotency_key=idempotency_key,
                 idempotency_fingerprint=idempotency_fingerprint, queue_priority=priority,
+                bypass_quota=bypass_quota,
             )
         except Exception as exc:
             logger.error("[api] url_ingest_create_job_failed ingest_id=%s trace_id=%s: %s",
@@ -827,11 +843,20 @@ def _run_url_ingest(
                         message="Ошибка создания задачи. Попробуйте позже.")
             return
 
-        if created_row is None:
-            # Same idempotency-conflict handling as the file-upload path.
+        if result["outcome"] == "quota_exceeded":
+            # Lost the race to the atomic quota reservation between the
+            # fast-fail check in create_generation_job_from_url() and here.
             delete_object(s3_key)
-            existing = get_job_by_idempotency_key(user_id, idempotency_key)
-            if existing is not None and existing.get("idempotency_fingerprint") == idempotency_fingerprint:
+            _ingest_set(ingest_id, status="failed", error="FREE_PLAN_USED",
+                        message="Бесплатная генерация уже использована. Оформите SONYA Pro.")
+            return
+
+        if result["outcome"] == "existing":
+            # Same idempotency-conflict handling as the file-upload path.
+            # Quota was never touched for this request.
+            delete_object(s3_key)
+            existing = result["job"]
+            if existing.get("idempotency_fingerprint") == idempotency_fingerprint:
                 _ingest_set(ingest_id, status="queued", message="Видео в очереди",
                             percent=100.0, job_id=str(existing.get("id")))
                 return
@@ -839,12 +864,7 @@ def _run_url_ingest(
                         message="Эта задача уже была отправлена.")
             return
 
-        job_id = str(created_row["id"])
-
-        try:
-            auth_store.increment_free_video_used(user_id)
-        except Exception as exc:
-            logger.warning("[api] free_video_used_increment_failed user_id=%s trace_id=%s: %s", user_id, trace_id, exc)
+        job_id = str(result["job"]["id"])
 
         try:
             from scripts.prod_job_store import _get_conn  # type: ignore

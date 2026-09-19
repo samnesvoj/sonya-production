@@ -24,8 +24,6 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, Optional
 
-from scripts.robokassa import PLAN_CATALOG
-
 logger = logging.getLogger(__name__)
 
 _DB_AVAILABLE = False
@@ -50,7 +48,17 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def create_pending_payment(user_id: str, plan_id: str, amount: Decimal, is_test: bool) -> Dict[str, Any]:
+def create_pending_payment(
+    user_id: str, plan_id: str, amount: Decimal, is_test: bool,
+    plan_type: str, duration_days: int,
+) -> Dict[str, Any]:
+    """
+    plan_type/duration_days are a snapshot of PLAN_CATALOG[plan_id] at
+    checkout time (caller passes them in -- this module has no PLAN_CATALOG
+    dependency), exactly like `amount`. process_successful_payment() below
+    reads them back from this row, never from a fresh catalog lookup, so a
+    later catalog change can't alter the terms of an already-created payment.
+    """
     payment_id = str(uuid.uuid4())
     conn = _get_conn()
     try:
@@ -58,11 +66,12 @@ def create_pending_payment(user_id: str, plan_id: str, amount: Decimal, is_test:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO payments (id, user_id, plan_id, amount, is_test, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    INSERT INTO payments
+                        (id, user_id, plan_id, amount, is_test, plan_type, duration_days, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING *
                     """,
-                    (payment_id, user_id, plan_id, amount, is_test, _now(), _now()),
+                    (payment_id, user_id, plan_id, amount, is_test, plan_type, duration_days, _now(), _now()),
                 )
                 row = cur.fetchone()
     finally:
@@ -128,13 +137,11 @@ def process_successful_payment(invoice_id: int, out_sum: Decimal, raw_params: Di
                 )
                 updated = dict(cur.fetchone())
 
-                plan = PLAN_CATALOG.get(payment["plan_id"])
-                if plan is None:
-                    # Should be unreachable -- plan_id is only ever set from
-                    # PLAN_CATALOG at checkout time -- but never silently
-                    # activate an unknown plan.
-                    raise RuntimeError(f"unknown plan_id on payment {payment['id']}: {payment['plan_id']!r}")
-
+                # Terms come from THIS payment's own snapshot
+                # (plan_type/duration_days, set at checkout time) -- never
+                # a fresh PLAN_CATALOG lookup, so a catalog change made
+                # after checkout can't alter what an already-pending
+                # payment activates.
                 cur.execute(
                     """
                     UPDATE users
@@ -145,7 +152,7 @@ def process_successful_payment(invoice_id: int, out_sum: Decimal, raw_params: Di
                         updated_at = %s
                     WHERE id = %s
                     """,
-                    (plan.plan_type, plan.duration_days, _now(), payment["user_id"]),
+                    (payment["plan_type"], payment["duration_days"], _now(), payment["user_id"]),
                 )
             return {"result": "activated", "payment": updated}
     finally:

@@ -54,7 +54,7 @@ def test_checkout_uses_actual_route_path(client, monkeypatch):
     _login(client, monkeypatch)
     monkeypatch.setattr(
         payment_store, "create_pending_payment",
-        lambda user_id, plan_id, amount, is_test: {
+        lambda user_id, plan_id, amount, is_test, plan_type, duration_days: {
             "id": "p1", "invoice_id": 12345, "user_id": user_id,
             "plan_id": plan_id, "amount": amount, "is_test": is_test, "status": "pending",
         },
@@ -70,8 +70,10 @@ def test_checkout_price_comes_from_server_catalog_not_client(client, monkeypatch
     _login(client, monkeypatch)
     captured = {}
 
-    def fake_create_pending_payment(user_id, plan_id, amount, is_test):
+    def fake_create_pending_payment(user_id, plan_id, amount, is_test, plan_type, duration_days):
         captured["amount"] = amount
+        captured["plan_type"] = plan_type
+        captured["duration_days"] = duration_days
         return {
             "id": "p1", "invoice_id": 999, "user_id": user_id,
             "plan_id": plan_id, "amount": amount, "is_test": is_test, "status": "pending",
@@ -86,6 +88,8 @@ def test_checkout_price_comes_from_server_catalog_not_client(client, monkeypatch
     from scripts.robokassa import PLAN_CATALOG
     assert captured["amount"] == PLAN_CATALOG["pro_30d"].amount
     assert captured["amount"] != Decimal("0.01")
+    assert captured["plan_type"] == PLAN_CATALOG["pro_30d"].plan_type
+    assert captured["duration_days"] == PLAN_CATALOG["pro_30d"].duration_days
 
     body = resp.json()
     assert body["invoice_id"] == 999
@@ -100,7 +104,7 @@ def test_checkout_missing_credentials_fails_safely(client, monkeypatch):
     monkeypatch.delenv("ROBOKASSA_TEST_PASSWORD_1", raising=False)
     monkeypatch.setattr(
         payment_store, "create_pending_payment",
-        lambda user_id, plan_id, amount, is_test: {
+        lambda user_id, plan_id, amount, is_test, plan_type, duration_days: {
             "id": "p1", "invoice_id": 1, "user_id": user_id,
             "plan_id": plan_id, "amount": amount, "is_test": is_test, "status": "pending",
         },
