@@ -36,61 +36,109 @@
 		href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Onest:wght@300;400;500;600;700&family=Unbounded:wght@200;300;400;500;600;700&display=swap"
 		rel="stylesheet">
 
-	<!-- Same release as index.html — reuses the real SONYA design system
-	     (tokens, .sonya-modal / .paywall-* components) instead of a
-	     separate payment-page stylesheet. -->
+	<!-- Same stylesheet as index.html -- reuses the real .sonya-modal /
+	     .paywall-* card exactly as-is. No .sonya-modal-overlay here (that's
+	     the fullscreen dim/backdrop meant for a modal over app content) --
+	     this is a standalone page, so the card just sits on the site's own
+	     plain background. -->
 	<link rel="stylesheet" href="https://static.sonya.group/releases/273789e/styles.css">
+
+	<style>
+		/* Page-level layout -- centers the exact same paywall card on the
+		   site's normal background. Every color/shadow/radius/font below
+		   this line belongs to .sonya-modal, .paywall-* and .sonya-auth-*
+		   already, not introduced here. */
+		body {
+			min-height: 100vh;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			padding: 20px;
+		}
+		/* Light theme page background: on the real site, the registration
+		   card's gray-glass look comes from .sonya-auth-overlay's scrim
+		   (rgba(4,4,6,0.5)) dimming the dark hero video behind it -- there's
+		   no video here, so this reproduces the exact same scrim color/alpha
+		   flattened over white instead (no overlay element, just the page's
+		   own background -- so the card is not "floating over app content"). */
+		[data-theme="light"] body {
+			background:
+				linear-gradient(rgba(4, 4, 6, 0.5), rgba(4, 4, 6, 0.5)),
+				#fff;
+		}
+		/* .sonya-modal is opacity:0/scaled-down by default -- it only
+		   becomes visible via ".sonya-modal-overlay.is-open .sonya-modal"
+		   (the entrance transition normally triggered by JS opening the
+		   in-app modal). There's no overlay/JS-driven open on this
+		   standalone page, so it just needs to be visible immediately. */
+		.sonya-modal { opacity: 1; transform: none; }
+		/* Light theme: .sonya-modal's own light rule (styles.css) is tuned
+		   for sitting on the app's dark video hero, so it renders as a
+		   near-opaque white card here. The registration card
+		   (.sonya-auth-card, [data-theme="light"] rule in styles.css) uses
+		   a more translucent glass recipe for the same reason -- copied
+		   verbatim below, no new colors introduced. */
+		[data-theme="light"] .sonya-modal {
+			background:
+				radial-gradient(140% 70% at 50% -15%, rgba(255, 255, 255, 0.85), transparent 62%),
+				rgba(255, 255, 255, 0.42);
+			box-shadow:
+				inset 0 1px 0 rgba(255, 255, 255, 0.75),
+				inset -21.48px -21.48px 10.74px -21.48px rgba(10, 10, 10, 0.16),
+				inset  21.48px  21.48px 10.74px -21.48px rgba(10, 10, 10, 0.16),
+				0 10px 40px rgba(0, 0, 0, 0.22),
+				0 30px 80px rgba(0, 0, 0, 0.26);
+		}
+	</style>
 </head>
 <body>
-	<div class="sonya-modal-overlay is-open" role="dialog" aria-modal="true" aria-label="Статус оплаты">
-		<div class="sonya-modal paywall-modal">
+	<div class="sonya-modal paywall-modal" role="dialog" aria-label="Статус оплаты">
 
-			<!-- CHECKING (initial) -->
-			<div class="paywall-view is-active" data-paywall-view="checking" aria-live="polite">
-				<div class="paywall-spinner" aria-hidden="true"></div>
-				<h2 class="paywall-title">Проверяем оплату</h2>
-				<p class="paywall-desc">Обычно это занимает несколько секунд — дождитесь подтверждения от платёжной системы.</p>
-			</div>
-
-			<!-- PAID (terminal, backend-confirmed) -->
-			<div class="paywall-view" data-paywall-view="paid">
-				<div class="paywall-icon paywall-icon--success"><i class="fa-solid fa-check"></i></div>
-				<h2 class="paywall-title">Подписка SONYA Pro активна</h2>
-				<div class="paywall-price">
-					<span class="paywall-price-value">500 ₽</span>
-					<span class="paywall-price-period">/ 30 дней</span>
-				</div>
-				<p class="paywall-desc" id="paid-until-text">Подписка активна.</p>
-				<a class="paywall-pay-btn" href="/">Продолжить</a>
-			</div>
-
-			<!-- PENDING (still not confirmed after polling timeout) -->
-			<div class="paywall-view" data-paywall-view="pending">
-				<div class="paywall-icon"><i class="fa-solid fa-hourglass-half"></i></div>
-				<h2 class="paywall-title">Платёж ещё обрабатывается</h2>
-				<p class="paywall-desc">Подтверждение от платёжной системы задерживается. Статус подписки обновится автоматически, как только оплата будет подтверждена.</p>
-				<button type="button" class="paywall-pay-btn" id="pending-refresh-btn">Обновить статус</button>
-				<a class="paywall-later-btn" href="/">Продолжить</a>
-			</div>
-
-			<!-- FAILED (backend reports failed/cancelled/refunded) -->
-			<div class="paywall-view" data-paywall-view="failed">
-				<div class="paywall-icon paywall-icon--error"><i class="fa-solid fa-triangle-exclamation"></i></div>
-				<h2 class="paywall-title">Оплата не подтверждена</h2>
-				<p class="paywall-desc">Платёж не был завершён. Списание не подтверждено.</p>
-				<a class="paywall-pay-btn" href="/?paywall=1">Попробовать снова</a>
-				<a class="paywall-later-btn" href="/">Вернуться в SONYA</a>
-			</div>
-
-			<!-- ERROR (network error / unknown invoice / unrecognized status) -->
-			<div class="paywall-view" data-paywall-view="error" role="alert">
-				<div class="paywall-icon paywall-icon--error"><i class="fa-solid fa-triangle-exclamation"></i></div>
-				<h2 class="paywall-title">Не удалось проверить оплату</h2>
-				<p class="paywall-desc">Попробуйте обновить страницу или проверить статус подписки в профиле.</p>
-				<button type="button" class="paywall-pay-btn" id="retry-btn">Проверить снова</button>
-			</div>
-
+		<!-- CHECKING (initial) -->
+		<div class="paywall-view is-active" data-paywall-view="checking" aria-live="polite">
+			<div class="paywall-spinner" aria-hidden="true"></div>
+			<h2 class="paywall-title">Проверяем оплату</h2>
+			<p class="paywall-desc">Обычно это занимает несколько секунд — дождитесь подтверждения от платёжной системы.</p>
 		</div>
+
+		<!-- PAID (terminal, backend-confirmed) -->
+		<div class="paywall-view" data-paywall-view="paid">
+			<div class="paywall-icon paywall-icon--success"><i class="fa-solid fa-check"></i></div>
+			<h2 class="paywall-title">Подписка SONYA Pro активна</h2>
+			<div class="paywall-price">
+				<span class="paywall-price-value">500 ₽</span>
+				<span class="paywall-price-period">/ 30 дней</span>
+			</div>
+			<p class="paywall-desc" id="paid-until-text">Подписка активна.</p>
+			<a class="paywall-pay-btn" href="/"><span>Продолжить</span></a>
+		</div>
+
+		<!-- PENDING (still not confirmed after polling timeout) -->
+		<div class="paywall-view" data-paywall-view="pending">
+			<div class="paywall-icon"><i class="fa-solid fa-hourglass-half"></i></div>
+			<h2 class="paywall-title">Платёж ещё обрабатывается</h2>
+			<p class="paywall-desc">Подтверждение от платёжной системы задерживается. Статус подписки обновится автоматически, как только оплата будет подтверждена.</p>
+			<button type="button" class="paywall-pay-btn" id="pending-refresh-btn"><span>Обновить статус</span></button>
+			<a class="paywall-later-btn" href="/">Продолжить</a>
+		</div>
+
+		<!-- FAILED (backend reports failed/cancelled/refunded) -->
+		<div class="paywall-view" data-paywall-view="failed">
+			<div class="paywall-icon paywall-icon--error"><i class="fa-solid fa-triangle-exclamation"></i></div>
+			<h2 class="paywall-title">Оплата не подтверждена</h2>
+			<p class="paywall-desc">Платёж не был завершён. Списание не подтверждено.</p>
+			<a class="paywall-pay-btn" href="/?paywall=1"><span>Попробовать снова</span></a>
+			<a class="paywall-later-btn" href="/">Вернуться в SONYA</a>
+		</div>
+
+		<!-- ERROR (network error / unknown invoice / unrecognized status) -->
+		<div class="paywall-view" data-paywall-view="error" role="alert">
+			<div class="paywall-icon paywall-icon--error"><i class="fa-solid fa-triangle-exclamation"></i></div>
+			<h2 class="paywall-title">Не удалось проверить оплату</h2>
+			<p class="paywall-desc">Попробуйте обновить страницу или проверить статус подписки в профиле.</p>
+			<button type="button" class="paywall-pay-btn" id="retry-btn"><span>Проверить снова</span></button>
+		</div>
+
 	</div>
 
 	<!-- Same runtime API-base config as the rest of the site. -->
