@@ -412,26 +412,49 @@ function openAccountDropdown() {
       ? new Date(user.plan_active_until).toLocaleDateString('ru-RU')
       : null;
 
+    // A plan_type of 'pro' with a plan_active_until in the past is a real,
+    // common state (nothing demotes plan_type back to 'free' when a
+    // subscription lapses) -- must not be shown identically to an active
+    // subscription (stale "до <past date>" with no way to renew).
+    const isProActive = _isProActive(user);
+    const isExpiredPro = user.plan_type === 'pro' && !isProActive;
+
+    const statusLine =
+      isProActive ? (until ? `Активна до ${until}` : 'Активна') :
+      isExpiredPro ? 'Подписка закончилась' :
+      user.plan_type === 'free' ? 'Подписка не активна' :
+      null;
+
+    // Buying and renewing both just open the same paywall modal (offer
+    // view) -- there is only ever one checkout UI.
+    const showBuyCta = user.plan_type === 'free';
+    const showRenewCta = isExpiredPro;
+
     drop.innerHTML = `
       <div class="acct-drop-user">
         <span class="acct-drop-email">${escHtml(user.email)}</span>
         <span class="acct-drop-plan ${user.plan_type === 'pro' || user.plan_type === 'admin' ? 'is-pro' : ''}">${planLabel}</span>
-        ${until ? `<span class="acct-drop-until">до ${until}</span>` : ''}
+        ${statusLine ? `<span class="acct-drop-until">${statusLine}</span>` : ''}
         ${user.plan_type === 'free'
           ? `<span class="acct-drop-free">Бесплатных видео: ${freeLeft} / ${user.free_video_limit}</span>`
           : ''}
       </div>
       <div class="acct-drop-divider"></div>
-      ${user.plan_type === 'free'
+      ${showBuyCta
         ? `<button class="acct-drop-item acct-drop-upgrade" id="acct-drop-upgrade">
-             <i class="fa-solid fa-bolt"></i> Перейти на Pro
+             <i class="fa-solid fa-bolt"></i> Купить SONYA Pro
+           </button>`
+        : ''}
+      ${showRenewCta
+        ? `<button class="acct-drop-item acct-drop-upgrade" id="acct-drop-upgrade">
+             <i class="fa-solid fa-bolt"></i> Продлить SONYA Pro
            </button>`
         : ''}
       <button class="acct-drop-item acct-drop-logout" id="acct-drop-logout">
         <i class="fa-solid fa-right-from-bracket"></i> Выйти
       </button>`;
 
-    if (user.plan_type === 'free') {
+    if (showBuyCta || showRenewCta) {
       drop.querySelector('#acct-drop-upgrade').onclick = () => { closeAccountDropdown(); openPaywallModal(); };
     }
     drop.querySelector('#acct-drop-logout').onclick = handleLogout;
@@ -1073,11 +1096,16 @@ function initAuth() {
   // Initial state fetch (non-blocking). If we were sent back here from
   // payment/fail.html's "Попробовать снова" link (?paywall=1), reopen the
   // paywall once we know the current auth/plan state, then drop the
-  // query param so a page refresh doesn't reopen it again.
+  // query param so a page refresh doesn't reopen it again. The session
+  // could have expired between the failed payment and this click (or the
+  // link could be opened signed-out in another browser) -- purchase must
+  // never start before auth, so a signed-out visitor gets the login modal
+  // instead of the paywall.
   refreshAuthState().then(function () {
     var params = new URLSearchParams(window.location.search);
     if (params.get('paywall') === '1') {
-      openPaywallModal();
+      if (authState.user) openPaywallModal();
+      else openAuthModal('login');
       params.delete('paywall');
       var qs = params.toString();
       history.replaceState(null, '', window.location.pathname + (qs ? '?' + qs : ''));
