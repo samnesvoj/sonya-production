@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="ru">
+
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+	<meta name="theme-color" content="#0A0806">
+	<title>SONYA — Режим стримера</title>
+	<meta name="description"
+		content="SONYA Режим стримера — ИИ режет стрим на тематические сегменты и готовит клипы с заголовками и оверлеями на подтверждение.">
+
+	<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"
+		integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA=="
+		crossorigin="anonymous" referrerpolicy="no-referrer" />
+
+	<link rel="preconnect" href="https://fonts.googleapis.com">
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link
+		href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Onest:wght@300;400;500;600;700&family=Unbounded:wght@200;300;400;500;600;700&display=swap"
+		rel="stylesheet">
+
+	<link rel="stylesheet" href="styles.css?v=20260730a">
+	<link rel="stylesheet" href="streamer-mode.css?v=3">
+</head>
+
+<body>
+
+	<div class="app-container v2 sm-app">
+
+		<div class="sm-ambient" aria-hidden="true"></div>
+
+		<!-- Master SONYA cloth render — the widget only supports one live
+		     instance at a time, so every processing clip card blits frames
+		     from this single offscreen instance instead of mounting its own.
+		     See widgets/interactive-cloth (SonyaCloth.mount is a singleton). -->
+		<div id="sm-cloth-master" class="sm-cloth-master" aria-hidden="true"></div>
+
+		<header class="sm-topbar">
+			<a class="btn-back" href="index.html" aria-label="Назад в SONYA">
+				<i class="fa-solid fa-arrow-left"></i>
+			</a>
+			<div class="sm-topbar-title">
+				<span class="sm-topbar-eyebrow">SONYA</span>
+				<span class="sm-topbar-name">Режим стримера</span>
+			</div>
+			<span class="sm-live-badge"><span class="sm-live-dot"></span> Beta-флоу</span>
+		</header>
+
+		<ol class="sm-rail" id="sm-rail">
+			<li class="sm-rail-step is-active" data-step="upload"><span class="sm-rail-num">1</span><span class="sm-rail-label">Источник</span></li>
+			<li class="sm-rail-step" data-step="topics"><span class="sm-rail-num">2</span><span class="sm-rail-label">Темы</span></li>
+			<li class="sm-rail-step" data-step="clips"><span class="sm-rail-num">3</span><span class="sm-rail-label">Клипы</span></li>
+		</ol>
+
+		<main class="sm-flow">
+
+			<!-- STEP 1 — Source -->
+			<section class="sm-step is-active" id="sm-step-upload">
+				<div class="sm-panel">
+					<div class="sm-panel-head">
+						<span class="sm-eyebrow">Шаг 1</span>
+						<h2 class="sm-title">Загрузите стрим</h2>
+						<p class="sm-subtitle">Вставьте ссылку на VOD или загрузите файл — ИИ сам найдёт в нём темы, из
+							которых получатся клипы.</p>
+					</div>
+
+					<div class="sm-tabs" role="tablist" aria-label="Источник">
+						<button class="sm-tab is-active" data-sm-mode="url" role="tab" aria-selected="true">
+							<i class="fa-solid fa-link"></i> Ссылка
+						</button>
+						<button class="sm-tab" data-sm-mode="file" role="tab" aria-selected="false">
+							<i class="fa-solid fa-folder-open"></i> Файл
+						</button>
+					</div>
+
+					<div class="sm-upload-mode is-active" id="sm-mode-url">
+						<div class="sm-input-row" id="sm-url-row">
+							<i class="fa-solid fa-link" id="sm-url-icon"></i>
+							<input type="url" id="sm-video-url" placeholder="Вставьте ссылку на стрим (Twitch, YouTube VOD, VK)…"
+								autocomplete="off" spellcheck="false">
+						</div>
+						<div class="sm-field-msg" id="sm-url-msg" hidden></div>
+					</div>
+
+					<div class="sm-upload-mode" id="sm-mode-file">
+						<label class="sm-dropzone" id="sm-dropzone" for="sm-file-input">
+							<i class="fa-solid fa-cloud-arrow-up"></i>
+							<span class="sm-dropzone-title">Перетащите видео сюда или <span>выберите файл</span></span>
+							<span class="sm-dropzone-hint">MP4, MOV, MKV — до 8 ГБ</span>
+							<input type="file" id="sm-file-input" accept="video/*" class="visually-hidden">
+						</label>
+						<div class="sm-file-chip" id="sm-file-chip">
+							<i class="fa-solid fa-film sm-file-chip-icon"></i>
+							<div class="sm-file-chip-info">
+								<span class="sm-file-chip-name" id="sm-file-name"></span>
+								<span class="sm-file-chip-size" id="sm-file-size"></span>
+								<div class="sm-file-progress" id="sm-file-progress" hidden>
+									<div class="sm-file-progress-bar" id="sm-file-progress-bar"></div>
+								</div>
+							</div>
+							<button type="button" class="sm-file-chip-remove" id="sm-file-remove" aria-label="Удалить файл">
+								<i class="fa-solid fa-xmark"></i>
+							</button>
+						</div>
+						<div class="sm-field-msg" id="sm-file-msg" hidden></div>
+					</div>
+
+					<div class="sm-panel-footer">
+						<button class="btn-primary" id="sm-btn-1" disabled>
+							<span class="btn-label">Продолжить</span>
+							<span class="btn-arrow"><i class="fa-solid fa-arrow-right"></i></span>
+						</button>
+					</div>
+				</div>
+			</section>
+
+			<!-- STEP 2 — Analysis + topic selection -->
+			<section class="sm-step" id="sm-step-topics">
+				<div class="sm-panel">
+					<div class="sm-panel-head">
+						<span class="sm-eyebrow">Шаг 2</span>
+						<h2 class="sm-title">Нарезка по темам</h2>
+						<p class="sm-subtitle">ИИ разбил стрим на смысловые сегменты. Выберите, какие темы превратить в
+							клипы — остальное можно пропустить.</p>
+					</div>
+
+					<!-- Analysis / loading -->
+					<div class="sm-loading" id="sm-loading">
+						<div class="sm-loading-cloth" aria-hidden="true">
+							<canvas class="sm-clip-cloth" data-cloth-canvas></canvas>
+							<div class="sm-clip-cloth-glare" aria-hidden="true"></div>
+						</div>
+						<div class="sm-loading-text" id="sm-loading-text">Анализируем стрим…</div>
+						<div class="sm-loading-sub" id="sm-loading-stage">Получаем видео</div>
+						<div class="sm-loading-progress">
+							<div class="sm-loading-progress-bar" id="sm-loading-progress-bar"></div>
+						</div>
+						<button class="sm-link-btn sm-loading-cancel" id="sm-analysis-cancel" type="button">Отменить</button>
+					</div>
+
+					<!-- Analysis error -->
+					<div class="sm-analysis-error is-hidden" id="sm-analysis-error">
+						<span class="sm-analysis-error-icon"><i class="fa-solid fa-triangle-exclamation"></i></span>
+						<div class="sm-analysis-error-text">
+							<div class="sm-analysis-error-title">Не удалось проанализировать стрим</div>
+							<div class="sm-analysis-error-sub" id="sm-analysis-error-msg">Попробуйте ещё раз или вернитесь и проверьте источник.</div>
+						</div>
+						<div class="sm-analysis-error-actions">
+							<button class="btn-secondary sm-btn-sm" id="sm-analysis-retry" type="button">
+								<i class="fa-solid fa-rotate-right"></i> Повторить
+							</button>
+							<button class="sm-link-btn" id="sm-analysis-back" type="button">Назад к источнику</button>
+						</div>
+					</div>
+
+					<!-- Topics body -->
+					<div class="sm-topics-body is-hidden" id="sm-topics-body">
+						<div class="sm-toolbar">
+							<span class="sm-toolbar-count"><b id="sm-topics-selected-count">0</b> из <span id="sm-topics-total-count">0</span> выбрано</span>
+							<div class="sm-toolbar-actions">
+								<button class="sm-link-btn" id="sm-topics-select-all" type="button">Выбрать все</button>
+								<button class="sm-link-btn" id="sm-topics-select-none" type="button">Снять все</button>
+							</div>
+						</div>
+						<div class="sm-topics-grid" id="sm-topics-grid"></div>
+
+						<div class="sm-topics-empty is-hidden" id="sm-topics-empty">
+							<span class="sm-topics-empty-icon"><i class="fa-regular fa-folder-open"></i></span>
+							<div class="sm-topics-empty-title">Темы не найдены</div>
+							<p class="sm-topics-empty-sub">ИИ не смог выделить смысловые сегменты в этом видео. Попробуйте другой источник.</p>
+							<button class="btn-secondary sm-btn-sm" id="sm-topics-empty-back" type="button">Назад к источнику</button>
+						</div>
+
+						<div class="sm-preset-summary">
+							<div class="sm-preset-summary-text">
+								<span class="sm-preset-summary-title">Шаблон стримера</span>
+								<span class="sm-preset-summary-sub">Субтитры · Реклама · Автоотбор · Telegram</span>
+							</div>
+							<button class="btn-secondary sm-btn-sm" id="sm-preset-configure" type="button">Настроить</button>
+						</div>
+					</div>
+
+					<div class="sm-panel-footer">
+						<button class="btn-primary" id="sm-btn-2" disabled>
+							<span class="btn-label">Создать клипы</span>
+							<span class="btn-arrow"><i class="fa-solid fa-bolt"></i></span>
+						</button>
+					</div>
+				</div>
+			</section>
+
+			<!-- STEP 3 — Clip review -->
+			<section class="sm-step" id="sm-step-clips">
+				<div class="sm-panel-head">
+					<span class="sm-eyebrow">Шаг 3</span>
+					<h2 class="sm-title">Клипы готовы к проверке</h2>
+					<p class="sm-subtitle">ИИ предложил название и оверлей для каждого клипа. Одобрите, включите
+						авто-режим — или отправьте клип в редактор без подписей.</p>
+				</div>
+
+				<div class="sm-clips-toolbar" id="sm-clips-toolbar">
+					<div class="sm-stats">
+						<div class="sm-stat"><span class="sm-stat-num" id="sm-stat-pending">0</span><span class="sm-stat-label">Ожидает</span></div>
+						<div class="sm-stat sm-stat--approved"><span class="sm-stat-num" id="sm-stat-approved">0</span><span class="sm-stat-label">Одобрено</span></div>
+						<div class="sm-stat sm-stat--skipped"><span class="sm-stat-num" id="sm-stat-skipped">0</span><span class="sm-stat-label">Без подписей</span></div>
+						<div class="sm-stat sm-stat--failed" id="sm-stat-failed-wrap" hidden><span class="sm-stat-num" id="sm-stat-failed">0</span><span class="sm-stat-label">Ошибка</span></div>
+					</div>
+					<div class="sm-toolbar-controls">
+						<button class="btn-secondary sm-btn-sm" id="sm-approve-recommended" type="button" hidden>
+							<i class="fa-regular fa-circle-check"></i> Одобрить рекомендованные
+						</button>
+						<button class="btn-secondary sm-btn-sm" id="sm-approve-all" type="button">
+							<i class="fa-solid fa-check-double"></i> Одобрить все
+						</button>
+						<button class="btn-secondary sm-btn-sm" id="sm-skip-all" type="button">
+							<i class="fa-solid fa-eye-slash"></i> Без подписей все
+						</button>
+						<label class="sm-auto-toggle">
+							<div class="sm-auto-toggle-label">
+								<span>Авто-режим</span>
+								<span>ИИ одобряет клипы сам</span>
+							</div>
+							<label class="toggle-switch">
+								<input type="checkbox" id="sm-auto-mode">
+								<span class="toggle-slider"></span>
+							</label>
+						</label>
+					</div>
+				</div>
+
+				<!-- Neutral status line — no "leave the tab" promise until a
+				     real async batch backs this (see JS: LONG_PROCESSING note).
+				     Shown only while at least one clip is still processing. -->
+				<div class="sm-processing-note is-hidden" id="sm-processing-note">
+					<i class="fa-solid fa-gear sm-processing-note-icon"></i>
+					Обрабатываем стрим и готовим клипы.
+				</div>
+
+				<div class="sm-clips-grid" id="sm-clips-grid"></div>
+
+				<div class="sm-complete" id="sm-complete">
+					<div class="sm-complete-text">
+						<h3>Все клипы разобраны</h3>
+						<p>Одобренные клипы готовы к экспорту, остальные ждут вас в редакторе.</p>
+						<p class="sm-complete-retention">Клипы будут доступны в SONYA ограниченное время.</p>
+					</div>
+					<div class="sm-complete-actions">
+						<button class="btn-secondary sm-btn-sm" id="sm-download-approved" type="button" disabled title="Появится после подключения к бэкенду">
+							<i class="fa-solid fa-download"></i> Скачать одобренные
+						</button>
+						<button class="btn-secondary sm-btn-sm" id="sm-open-editor" type="button" disabled title="Появится после подключения к бэкенду">
+							<i class="fa-solid fa-film"></i> Открыть одобренные в редакторе
+						</button>
+						<a class="btn-primary sm-btn-sm" href="index.html">
+							<span class="btn-label">Начать новый стрим</span>
+							<span class="btn-arrow"><i class="fa-solid fa-arrow-right"></i></span>
+						</a>
+					</div>
+				</div>
+			</section>
+
+		</main>
+
+		<!-- Streamer Preset drawer — account-level config (subtitles / promo /
+		     auto-review / Telegram). One overlay for all four, not four pages. -->
+		<div class="sm-drawer-overlay is-hidden" id="sm-preset-drawer-overlay">
+			<div class="sm-drawer" id="sm-preset-drawer" role="dialog" aria-modal="true" aria-labelledby="sm-preset-drawer-title">
+				<div class="sm-drawer-header">
+					<h3 class="sm-drawer-title" id="sm-preset-drawer-title">Шаблон стримера</h3>
+					<button class="sm-drawer-close" id="sm-preset-drawer-close" type="button" aria-label="Закрыть">
+						<i class="fa-solid fa-xmark"></i>
+					</button>
+				</div>
+
+				<div class="sm-drawer-tabs" role="tablist" aria-label="Раздел шаблона">
+					<button class="sm-drawer-tab is-active" data-preset-tab="subtitles" role="tab" aria-selected="true">Субтитры</button>
+					<button class="sm-drawer-tab" data-preset-tab="promo" role="tab" aria-selected="false">Реклама</button>
+					<button class="sm-drawer-tab" data-preset-tab="auto" role="tab" aria-selected="false">Автоотбор</button>
+					<button class="sm-drawer-tab" data-preset-tab="telegram" role="tab" aria-selected="false">Telegram</button>
+				</div>
+
+				<div class="sm-drawer-body">
+					<!-- Субтитры -->
+					<div class="sm-drawer-panel is-active" data-preset-panel="subtitles">
+						<div class="sm-subpreset-grid" id="sm-subpreset-grid"></div>
+						<div class="sm-preset-controls" id="sm-subpreset-controls"></div>
+					</div>
+
+					<!-- Реклама -->
+					<div class="sm-drawer-panel" data-preset-panel="promo">
+						<div class="sm-promo-list" id="sm-promo-list"></div>
+						<div class="sm-promo-empty is-hidden" id="sm-promo-empty">
+							<span class="sm-promo-empty-icon"><i class="fa-regular fa-rectangle-list"></i></span>
+							<p>Пока нет рекламных материалов.</p>
+						</div>
+						<label class="sm-dropzone sm-dropzone--compact" id="sm-promo-dropzone" for="sm-promo-file-input">
+							<i class="fa-solid fa-plus"></i>
+							<span class="sm-dropzone-title">Добавить материал</span>
+							<span class="sm-dropzone-hint">Видео, изображение или оверлей — демо-файл</span>
+							<input type="file" id="sm-promo-file-input" accept="video/*,image/*" class="visually-hidden">
+						</label>
+					</div>
+
+					<!-- Автоотбор -->
+					<div class="sm-drawer-panel" data-preset-panel="auto">
+						<div class="sm-autoreview-options" id="sm-autoreview-options"></div>
+					</div>
+
+					<!-- Telegram -->
+					<div class="sm-drawer-panel" data-preset-panel="telegram">
+						<label class="sm-telegram-row">
+							<div class="sm-auto-toggle-label">
+								<span>Уведомить, когда всё готово</span>
+								<span>Сообщение в Telegram по завершении обработки</span>
+							</div>
+							<label class="toggle-switch">
+								<input type="checkbox" id="sm-telegram-notify-toggle">
+								<span class="toggle-slider"></span>
+							</label>
+						</label>
+						<div class="sm-telegram-status" id="sm-telegram-status"></div>
+					</div>
+				</div>
+
+				<div class="sm-drawer-footer">
+					<button class="btn-primary sm-btn-sm" id="sm-preset-drawer-done" type="button">Готово</button>
+				</div>
+			</div>
+		</div>
+
+		<!-- Subtitle quick editor drawer — per-clip, NOT OpenCut. Edits
+		     transcript/preset/position for one clip and triggers a scoped
+		     mock re-render of just that clip's card. -->
+		<div class="sm-drawer-overlay is-hidden" id="sm-subtitle-drawer-overlay">
+			<div class="sm-drawer" id="sm-subtitle-drawer" role="dialog" aria-modal="true" aria-labelledby="sm-subtitle-drawer-title">
+				<div class="sm-drawer-header">
+					<h3 class="sm-drawer-title" id="sm-subtitle-drawer-title">Субтитры клипа</h3>
+					<button class="sm-drawer-close" id="sm-subtitle-drawer-close" type="button" aria-label="Закрыть">
+						<i class="fa-solid fa-xmark"></i>
+					</button>
+				</div>
+
+				<div class="sm-drawer-body">
+					<div class="sm-drawer-section-label">Текст</div>
+					<div class="sm-transcript-list" id="sm-transcript-list"></div>
+
+					<div class="sm-drawer-section-label">Пресет субтитров</div>
+					<div class="sm-subpreset-grid sm-subpreset-grid--compact" id="sm-clip-subpreset-grid"></div>
+					<div class="sm-preset-controls" id="sm-clip-subpreset-controls"></div>
+				</div>
+
+				<div class="sm-drawer-footer">
+					<span class="sm-drawer-footer-status" id="sm-subtitle-rerender-status"></span>
+					<button class="btn-primary sm-btn-sm" id="sm-subtitle-rerender" type="button">
+						<i class="fa-solid fa-arrows-rotate"></i> Пересобрать клип
+					</button>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<script src="streamer-mode.js?v=3" defer></script>
+</body>
+
+</html>
