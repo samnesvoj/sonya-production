@@ -33,9 +33,9 @@ def _mock_pipeline(monkeypatch, tmp_path, created_jobs):
     video_path = tmp_path / "downloaded.mp4"
     video_path.write_bytes(b"\x00\x00\x00\x18ftyp" + b"\x00" * 64)
 
-    monkeypatch.setattr(url_ingest, "probe", lambda url, platform: {"duration": 42})
+    monkeypatch.setattr(url_ingest, "probe", lambda url, platform, mode=None: {"duration": 42})
     monkeypatch.setattr(url_ingest, "download_video",
-                         lambda url, platform, progress_cb=None: (str(video_path), ".mp4"))
+                         lambda url, platform, progress_cb=None, mode=None: (str(video_path), ".mp4"))
     monkeypatch.setattr(url_ingest, "cleanup", lambda path: None)
 
     def fake_create_job_with_quota(job_id, user_id, mode, params, s3_input_key,
@@ -125,9 +125,9 @@ def test_from_url_full_success_flow(client, monkeypatch, tmp_path):
 
 def test_from_url_download_failure_reports_failed_status(client, monkeypatch):
     _login(client, monkeypatch)
-    monkeypatch.setattr(url_ingest, "probe", lambda url, platform: {"duration": 10})
+    monkeypatch.setattr(url_ingest, "probe", lambda url, platform, mode=None: {"duration": 10})
 
-    def _boom(url, platform, progress_cb=None):
+    def _boom(url, platform, progress_cb=None, mode=None):
         raise url_ingest.DownloadFailed("network unreachable")
     monkeypatch.setattr(url_ingest, "download_video", _boom)
 
@@ -145,7 +145,7 @@ def test_from_url_download_failure_reports_failed_status(client, monkeypatch):
 def test_from_url_duration_limit_reports_failed_status(client, monkeypatch):
     _login(client, monkeypatch)
 
-    def _too_long(url, platform):
+    def _too_long(url, platform, mode=None):
         raise url_ingest.DownloadLimitExceeded("Видео слишком длинное (120 мин). Максимум — 60 мин.")
     monkeypatch.setattr(url_ingest, "probe", _too_long)
 

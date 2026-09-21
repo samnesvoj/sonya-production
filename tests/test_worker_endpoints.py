@@ -73,6 +73,36 @@ def test_worker_status_update_works_with_secret(client, monkeypatch):
     assert calls == [("job-1", "downloading")]
 
 
+def test_worker_heartbeat_requires_secret(client):
+    resp = client.post("/api/worker/jobs/job-1/heartbeat", json={})
+    assert resp.status_code == 403
+
+
+def test_worker_heartbeat_works_with_secret(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "scripts.prod_generation_api.touch_job_heartbeat",
+        lambda job_id: calls.append(job_id),
+    )
+    resp = client.post("/api/worker/jobs/job-1/heartbeat", json={}, headers=AUTH_HEADER)
+    assert resp.status_code == 200
+    assert calls == ["job-1"]
+
+
+def test_worker_heartbeat_does_not_touch_status(client, monkeypatch):
+    """The heartbeat endpoint must call touch_job_heartbeat(), never
+    update_job_status() — liveness only, no semantic status change."""
+    status_calls = []
+    monkeypatch.setattr("scripts.prod_generation_api.touch_job_heartbeat", lambda job_id: None)
+    monkeypatch.setattr(
+        "scripts.prod_generation_api.update_job_status",
+        lambda job_id, status: status_calls.append((job_id, status)),
+    )
+    resp = client.post("/api/worker/jobs/job-1/heartbeat", json={}, headers=AUTH_HEADER)
+    assert resp.status_code == 200
+    assert status_calls == []
+
+
 def test_worker_complete_job_works_with_secret(client, monkeypatch):
     calls = []
     monkeypatch.setattr(

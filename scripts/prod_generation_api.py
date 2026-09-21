@@ -32,6 +32,7 @@ Worker-internal endpoints (require Authorization: Bearer WORKER_SECRET --
 unchanged, never cookie/session based):
   POST /api/worker/claim
   POST /api/worker/jobs/{job_id}/status
+  POST /api/worker/jobs/{job_id}/heartbeat   (liveness only -- no status change; migration 011)
   POST /api/worker/jobs/{job_id}/complete
   POST /api/worker/jobs/{job_id}/fail
   POST /api/worker/jobs/{job_id}/files
@@ -82,6 +83,7 @@ from scripts.prod_job_store import (
     get_job_by_idempotency_key,
     list_job_files,
     list_user_jobs,
+    touch_job_heartbeat,
     update_job_status,
 )
 from scripts.prod_s3_storage import (
@@ -438,9 +440,12 @@ async def create_generation_job(
             detail={"error": "payment_required", "code": "FREE_PLAN_USED", "trace_id": trace_id},
         )
 
-    # Upload validation (magic bytes, size, extension)
+    # Upload validation (magic bytes, size, extension) — mode-conditional
+    # size cap: streamer allows long-form VODs, every other mode keeps the
+    # original MAX_UPLOAD_SIZE_MB default (url_ingest._max_bytes is the one
+    # canonical place this is computed; see PHASE A audit).
     try:
-        content, safe_name = await validate_upload(file)
+        content, safe_name = await validate_upload(file, max_size_bytes=url_ingest._max_bytes(mode))
     except HTTPException as exc:
         audit(EVT_UPLOAD_REJECTED, user_id=user_id, trace_id=trace_id,
               details={"mode": mode, "reason": str(exc.detail)},
@@ -792,7 +797,7 @@ def _run_url_ingest(
     local_path: Optional[str] = None
     try:
         _ingest_set(ingest_id, status="checking", message="Проверяем ссылку", percent=5.0)
-        url_ingest.probe(url, platform)
+        url_ingest.probe(url, platform, mode=mode)
 
         _ingest_set(ingest_id, status="downloading", message="Получаем видео", percent=15.0)
 
@@ -802,12 +807,12 @@ def _run_url_ingest(
             _ingest_set(ingest_id, status="downloading", message="Получаем видео",
                         percent=15.0 + max(0.0, min(100.0, pct)) * 0.55)
 
-        local_path, _ext = url_ingest.download_video(url, platform, progress_cb=_progress)
+        local_path, _ext = url_ingest.download_video(url, platform, progress_cb=_progress, mode=mode)
 
         _ingest_set(ingest_id, status="uploading", message="Загружаем видео", percent=75.0)
 
         content, safe_name = url_ingest.validate_downloaded_file(
-            local_path, hint_name=f"{platform}_video{Path(local_path).suffix or '.mp4'}"
+            local_path, hint_name=f"{platform}_video{Path(local_path).suffix or '.mp4'}", mode=mode
         )
 
         idempotency_fingerprint = (
@@ -972,6 +977,21 @@ async def worker_update_status(
         raise HTTPException(status_code=400, detail={"error": "invalid_status"})
     update_job_status(job_id, body.status)
     return {"ok": True, "job_id": job_id, "status": body.status}
+
+
+@app.post("/api/worker/jobs/{job_id}/heartbeat")
+async def worker_heartbeat(
+    job_id: str,
+    _auth: None = Depends(verify_worker_secret),
+):
+    """
+    Liveness only — refreshes heartbeat_at (migration 011), no status
+    change. Called periodically by a worker during a long-running mode
+    step so requeue_stale_jobs() never mistakes a slow-but-alive job for a
+    stuck one. See scripts/prod_job_store.py::touch_job_heartbeat().
+    """
+    touch_job_heartbeat(job_id)
+    return {"ok": True, "job_id": job_id}
 
 
 def _cleanup_ephemeral_instance(job: Optional[Dict[str, Any]]) -> None:

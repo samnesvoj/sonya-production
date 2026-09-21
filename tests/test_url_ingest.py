@@ -91,6 +91,45 @@ def test_max_duration_reads_env(monkeypatch):
     assert url_ingest._max_duration_sec() == 120
 
 
+# ── D: mode-conditional limits (PHASE A) ────────────────────────────────
+# streamer gets its own long-form ceiling; every other mode (None included,
+# the default for any pre-PHASE-A caller) keeps the original env vars.
+
+def test_streamer_duration_limit_uses_dedicated_env(monkeypatch):
+    monkeypatch.setenv("STREAMER_URL_MAX_DURATION_SEC", "25200")  # 7h
+    assert url_ingest._max_duration_sec(mode="streamer") == 25200
+
+
+def test_streamer_duration_limit_default_is_7_hours(monkeypatch):
+    monkeypatch.delenv("STREAMER_URL_MAX_DURATION_SEC", raising=False)
+    assert url_ingest._max_duration_sec(mode="streamer") == 7 * 60 * 60
+
+
+def test_streamer_upload_size_limit_uses_dedicated_env(monkeypatch):
+    monkeypatch.setenv("STREAMER_MAX_UPLOAD_SIZE_MB", "30000")
+    assert url_ingest._max_bytes(mode="streamer") == 30000 * 1024 * 1024
+
+
+def test_other_modes_keep_original_duration_limit_even_with_streamer_env_set(monkeypatch):
+    """The streamer-only env var must never leak into any other mode's
+    limit, even when both are set at once."""
+    monkeypatch.setenv("URL_DOWNLOAD_MAX_DURATION_SEC", "3600")
+    monkeypatch.setenv("STREAMER_URL_MAX_DURATION_SEC", "25200")
+
+    assert url_ingest._max_duration_sec(mode="virality") == 3600
+    assert url_ingest._max_duration_sec(mode=None) == 3600
+    assert url_ingest._max_duration_sec(mode="streamer") == 25200
+
+
+def test_other_modes_keep_original_upload_limit_even_with_streamer_env_set(monkeypatch):
+    monkeypatch.setenv("MAX_UPLOAD_SIZE_MB", "2048")
+    monkeypatch.setenv("STREAMER_MAX_UPLOAD_SIZE_MB", "20480")
+
+    assert url_ingest._max_bytes(mode="educational") == 2048 * 1024 * 1024
+    assert url_ingest._max_bytes(mode=None) == 2048 * 1024 * 1024
+    assert url_ingest._max_bytes(mode="streamer") == 20480 * 1024 * 1024
+
+
 # ── safe filename helper ────────────────────────────────────────────────
 
 def test_safe_filename_strips_forbidden_chars():

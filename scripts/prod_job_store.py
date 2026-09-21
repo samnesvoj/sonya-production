@@ -32,7 +32,13 @@ Functions:
   fail_job               mark failed, optionally requeue as queued
   claim_next_pending_job FOR UPDATE SKIP LOCKED — poll mode
   claim_specific_job     claim a known job_id — --once mode
-  requeue_stale_jobs     reset stuck jobs → queued
+  requeue_stale_jobs     reset stuck jobs → queued (liveness-aware — see
+                         touch_job_heartbeat below)
+  touch_job_heartbeat    refresh heartbeat_at only (migration 011) — proves
+                         a worker is still alive on a long-running job
+                         without touching status/updated_at; called
+                         periodically by gpu_worker.py during a long mode
+                         run (e.g. streamer's multi-hour enrichment)
   add_job_file           register an S3 file with a job
   list_job_files         list all files for a job
 
@@ -595,6 +601,15 @@ def requeue_stale_jobs(stale_minutes: int = 30) -> int:
     """
     Reset stuck active jobs → queued when stuck longer than stale_minutes.
     Returns count of requeued jobs.
+
+    Liveness check is COALESCE(heartbeat_at, claimed_at): a job whose
+    worker is periodically calling touch_job_heartbeat() (long streamer
+    enrichment, say) keeps getting a fresh timestamp here and is never
+    mistaken for stuck, no matter how long a single status phase runs. A
+    job that never heartbeats (every other mode today, and any job whose
+    worker actually died) falls back to the original claimed_at-only
+    check — unchanged behavior for the case this function already
+    handled correctly.
     """
     conn = _get_conn()
     try:
@@ -605,17 +620,39 @@ def requeue_stale_jobs(stale_minutes: int = 30) -> int:
                 cur.execute(
                     f"""
                     UPDATE generation_jobs
-                    SET status      = %s,
-                        worker_id   = NULL,
-                        claimed_at  = NULL,
-                        updated_at  = %s
+                    SET status       = %s,
+                        worker_id    = NULL,
+                        claimed_at   = NULL,
+                        heartbeat_at = NULL,
+                        updated_at   = %s
                     WHERE status IN ({placeholders})
-                      AND claimed_at < NOW() - INTERVAL '%s minutes'
+                      AND COALESCE(heartbeat_at, claimed_at) < NOW() - INTERVAL '%s minutes'
                       AND retry_count < max_retries
                     """,
                     (JOB_STATUS_QUEUED, _now(), *active_list, stale_minutes),
                 )
                 return cur.rowcount
+    finally:
+        conn.close()
+
+
+def touch_job_heartbeat(job_id: str) -> None:
+    """
+    Refresh heartbeat_at only — proves the worker processing this job is
+    still alive, without implying any status transition (no semantic
+    status change, no updated_at bump). See requeue_stale_jobs() above for
+    how this is consumed, and gpu_worker.py for the periodic caller that
+    starts when a long mode run begins and stops (via try/finally) the
+    moment it completes, fails, or the process exits.
+    """
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE generation_jobs SET heartbeat_at=%s WHERE id=%s",
+                    (_now(), job_id),
+                )
     finally:
         conn.close()
 

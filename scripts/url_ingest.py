@@ -83,12 +83,32 @@ class DownloadFailed(UrlIngestError):
 
 
 # ── Config ────────────────────────────────────────────────────────────────
+#
+# Mode-conditional limits: streamer mode is the one long-form use case
+# (multi-hour VODs) — every other mode keeps today's short-clip limits
+# completely unchanged. `mode` defaults to None everywhere below, which
+# always resolves to the original (pre-streamer) env vars/defaults, so any
+# caller that doesn't pass `mode` yet behaves exactly as before. These two
+# functions are the ONLY place either limit is computed — every call site
+# in this module threads `mode` through rather than re-deriving a value.
 
-def _max_bytes() -> int:
+_STREAMER_DEFAULT_MAX_DURATION_SEC = 7 * 60 * 60  # 7h — see PHASE A audit: real streams run 4-7h
+_STREAMER_DEFAULT_MAX_UPLOAD_MB = 20480            # 20 GB — generous starting point for a multi-hour
+                                                     # VOD at typical stream bitrates; an ops-tunable
+                                                     # default, not a rigorously derived ceiling.
+
+
+def _max_bytes(mode: Optional[str] = None) -> int:
+    if mode == "streamer":
+        return int(os.environ.get("STREAMER_MAX_UPLOAD_SIZE_MB",
+                                    str(_STREAMER_DEFAULT_MAX_UPLOAD_MB))) * 1024 * 1024
     return int(os.environ.get("MAX_UPLOAD_SIZE_MB", "2048")) * 1024 * 1024
 
 
-def _max_duration_sec() -> int:
+def _max_duration_sec(mode: Optional[str] = None) -> int:
+    if mode == "streamer":
+        return int(os.environ.get("STREAMER_URL_MAX_DURATION_SEC",
+                                    str(_STREAMER_DEFAULT_MAX_DURATION_SEC)))
     return int(os.environ.get("URL_DOWNLOAD_MAX_DURATION_SEC", "3600"))  # 60 min
 
 
@@ -213,7 +233,7 @@ _YTDLP_FORMAT = (
 )
 
 
-def probe(url: str, platform: str) -> dict:
+def probe(url: str, platform: str, mode: Optional[str] = None) -> dict:
     """Metadata-only lookup (no download). Raises DownloadLimitExceeded if
     the video is already known to exceed the duration cap; raises
     DownloadFailed if the video can't be resolved at all."""
@@ -222,7 +242,7 @@ def probe(url: str, platform: str) -> dict:
     if platform not in ("youtube", "vk", "twitch"):
         # 'direct' is probed via a lightweight HEAD/range request instead —
         # see _probe_direct().
-        return _probe_direct(url)
+        return _probe_direct(url, mode=mode)
 
     if not YT_DLP_AVAILABLE:
         raise DownloadFailed("yt-dlp is not installed")
@@ -244,23 +264,23 @@ def probe(url: str, platform: str) -> dict:
         raise DownloadFailed(f"probe failed: {exc}") from exc
 
     duration = info.get("duration")
-    if duration and duration > _max_duration_sec():
+    if duration and duration > _max_duration_sec(mode):
         raise DownloadLimitExceeded(
             f"Видео слишком длинное ({int(duration // 60)} мин). "
-            f"Максимум — {_max_duration_sec() // 60} мин."
+            f"Максимум — {_max_duration_sec(mode) // 60} мин."
         )
 
     filesize = info.get("filesize") or info.get("filesize_approx")
-    if filesize and filesize > _max_bytes():
+    if filesize and filesize > _max_bytes(mode):
         raise DownloadLimitExceeded(
             f"Видео слишком большое ({filesize // (1024 * 1024)} МБ). "
-            f"Максимум — {_max_bytes() // (1024 * 1024)} МБ."
+            f"Максимум — {_max_bytes(mode) // (1024 * 1024)} МБ."
         )
 
     return {"title": info.get("title"), "duration": duration, "filesize": filesize}
 
 
-def _probe_direct(url: str) -> dict:
+def _probe_direct(url: str, mode: Optional[str] = None) -> dict:
     try:
         resp = requests.head(url, headers={"User-Agent": _UA}, timeout=30, allow_redirects=True)
         # Some servers don't support HEAD properly (405 / no content-length) —
@@ -287,10 +307,10 @@ def _probe_direct(url: str) -> dict:
             size = int(content_length)
         except ValueError:
             size = None
-        if size and size > _max_bytes():
+        if size and size > _max_bytes(mode):
             raise DownloadLimitExceeded(
                 f"Файл слишком большой ({size // (1024 * 1024)} МБ). "
-                f"Максимум — {_max_bytes() // (1024 * 1024)} МБ."
+                f"Максимум — {_max_bytes(mode) // (1024 * 1024)} МБ."
             )
 
     return {"content_type": content_type}
@@ -302,6 +322,7 @@ def download_video(
     url: str,
     platform: str,
     progress_cb: Optional[Callable[[float], None]] = None,
+    mode: Optional[str] = None,
 ) -> tuple[str, str]:
     """
     Downloads the video to a fresh temp file.
@@ -315,14 +336,15 @@ def download_video(
     tmp_dir = tempfile.mkdtemp(prefix="sonya_url_ingest_")
 
     if platform in ("youtube", "vk", "twitch"):
-        return _download_via_ytdlp(url, platform, tmp_dir, progress_cb)
+        return _download_via_ytdlp(url, platform, tmp_dir, progress_cb, mode=mode)
     if platform == "direct":
-        return _download_direct(url, tmp_dir, progress_cb)
+        return _download_direct(url, tmp_dir, progress_cb, mode=mode)
     raise UnsupportedUrlError()
 
 
 def _download_via_ytdlp(url: str, platform: str, tmp_dir: str,
-                         progress_cb: Optional[Callable[[float], None]]) -> tuple[str, str]:
+                         progress_cb: Optional[Callable[[float], None]],
+                         mode: Optional[str] = None) -> tuple[str, str]:
     if not YT_DLP_AVAILABLE:
         raise DownloadFailed("yt-dlp is not installed")
 
@@ -351,7 +373,7 @@ def _download_via_ytdlp(url: str, platform: str, tmp_dir: str,
         "overwrites": True,
         "retries": 3,
         "socket_timeout": 30,
-        "max_filesize": _max_bytes(),
+        "max_filesize": _max_bytes(mode),
         "http_headers": {"User-Agent": _UA},
         "progress_hooks": [_hook],
         # Deliberately no cookiefile / proxy / POT-provider — only public,
@@ -394,8 +416,9 @@ def _find_downloaded_file(info: Optional[dict], tmp_dir: str) -> Optional[str]:
 
 
 def _download_direct(url: str, tmp_dir: str,
-                      progress_cb: Optional[Callable[[float], None]]) -> tuple[str, str]:
-    limit = _max_bytes()
+                      progress_cb: Optional[Callable[[float], None]],
+                      mode: Optional[str] = None) -> tuple[str, str]:
+    limit = _max_bytes(mode)
     ext = Path(urlparse(url).path).suffix.lower()
     if ext not in _DIRECT_VIDEO_EXT:
         ext = ".mp4"
@@ -463,7 +486,7 @@ def _rmtree(tmp_dir: str) -> None:
         pass
 
 
-def validate_downloaded_file(local_path: str, hint_name: str) -> tuple[bytes, str]:
+def validate_downloaded_file(local_path: str, hint_name: str, mode: Optional[str] = None) -> tuple[bytes, str]:
     """
     Read a downloaded file from disk and run it through the exact same
     filename/size/magic-byte validation a browser-uploaded file goes
@@ -477,16 +500,16 @@ def validate_downloaded_file(local_path: str, hint_name: str) -> tuple[bytes, st
     from scripts.upload_security import validate_video_bytes  # local import: avoid a hard fastapi dep at module load for pure-unit tests
 
     size = os.path.getsize(local_path)
-    if size > _max_bytes():
+    if size > _max_bytes(mode):
         raise DownloadLimitExceeded(
             f"Файл слишком большой ({size // (1024 * 1024)} МБ). "
-            f"Максимум — {_max_bytes() // (1024 * 1024)} МБ."
+            f"Максимум — {_max_bytes(mode) // (1024 * 1024)} МБ."
         )
 
     with open(local_path, "rb") as fh:
         content = fh.read()
 
-    safe_name = validate_video_bytes(content, hint_name, max_size_bytes=_max_bytes())
+    safe_name = validate_video_bytes(content, hint_name, max_size_bytes=_max_bytes(mode))
     return content, safe_name
 
 

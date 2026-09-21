@@ -37,6 +37,7 @@ import shutil
 import socket
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -74,6 +75,7 @@ if _WORKER_MODE == "db":
         fail_job               as _db_fail,
         get_job                as _db_get_job,
         requeue_stale_jobs     as _db_requeue_stale,
+        touch_job_heartbeat    as _db_heartbeat,
         update_job_status      as _db_update_status,
     )
 
@@ -88,6 +90,11 @@ from scripts.security import new_trace_id
 
 POLL_INTERVAL  = int(os.environ.get("WORKER_POLL_INTERVAL", "10"))
 STALE_INTERVAL = int(os.environ.get("WORKER_STALE_REQUEUE_INTERVAL", "300"))
+
+# Heartbeat cadence during a long mode run (see _do_heartbeat / _HeartbeatPulse
+# below) — comfortably under WORKER_STALE_REQUEUE_INTERVAL's default
+# stale_minutes=30 check, so a heartbeat is always fresh when checked.
+HEARTBEAT_INTERVAL_SEC = int(os.environ.get("WORKER_HEARTBEAT_INTERVAL_SEC", "120"))
 
 _CONTENT_TYPES = {
     ".mp4": "video/mp4",
@@ -166,6 +173,14 @@ class _BackendAPIClient:
             self._post(f"/api/worker/jobs/{job_id}/status", {"status": status})
         except Exception as exc:
             logger.warning("[api] update_status failed job_id=%s status=%s: %s", job_id, status, exc)
+
+    def heartbeat(self, job_id: str) -> None:
+        try:
+            self._post(f"/api/worker/jobs/{job_id}/heartbeat", {})
+        except Exception as exc:
+            # Never fatal — a missed heartbeat just means this job relies
+            # on the pre-heartbeat claimed_at fallback for one more cycle.
+            logger.warning("[api] heartbeat failed job_id=%s: %s", job_id, exc)
 
     def complete_job(
         self,
@@ -249,6 +264,19 @@ def _update_status(job_id: str, status: str) -> None:
         _db_update_status(job_id, status)
 
 
+def _do_heartbeat(job_id: str) -> None:
+    try:
+        if _WORKER_MODE == "api":
+            _get_api_client().heartbeat(job_id)
+        else:
+            _db_heartbeat(job_id)
+    except Exception as exc:
+        # Never fatal — see _HeartbeatPulse, which swallows this the same
+        # way so a transient DB hiccup can't ever take down the actual
+        # mode run it's just trying to keep alive.
+        logger.warning("[worker] heartbeat_failed job_id=%s: %s", job_id, exc)
+
+
 def _do_complete_job(
     job_id: str,
     s3_output_key: str,
@@ -308,6 +336,59 @@ def ensure_models_for_mode(mode: str) -> bool:
         logger.warning("[worker] no mode.yaml for mode=%s — skipping model download", mode)
         return True
     return download_models_for_mode(mode_yaml)
+
+
+# ── Heartbeat ──────────────────────────────────────────────────────────────────
+
+class _HeartbeatPulse:
+    """
+    Background thread that calls _do_heartbeat(job_id) every
+    HEARTBEAT_INTERVAL_SEC seconds until stop()ped. No separate daemon/
+    process — this is one thread inside the same worker process already
+    running the job, started right before a long mode run and always
+    stopped in a finally so it can never outlive process_job().
+
+    Uses threading.Event.wait() as the sleep, not a recursive
+    threading.Timer chain — a single wait() call is interruptible by
+    stop() immediately (no waiting out the last partial interval), and
+    there's no risk of overlapping timers if start()/stop() were ever
+    called twice.
+    """
+
+    def __init__(self, job_id: str, interval_sec: int = HEARTBEAT_INTERVAL_SEC) -> None:
+        self._job_id = job_id
+        self._interval = interval_sec
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def _run(self) -> None:
+        # First beat only after one interval — process_job() has already
+        # just set a fresh status (which bumps updated_at) right before
+        # starting this, so there's no liveness gap to cover immediately.
+        while not self._stop_event.wait(self._interval):
+            try:
+                _do_heartbeat(self._job_id)
+            except Exception:
+                # _do_heartbeat() already swallows its own exceptions —
+                # this is defense in depth so nothing unexpected can ever
+                # kill the pulse thread and silently stop all future
+                # beats for the rest of a multi-hour job.
+                logger.exception("[worker] heartbeat_pulse_iteration_failed job_id=%s", self._job_id)
+
+    def start(self) -> None:
+        if self._thread is not None:
+            return  # already running — start() is idempotent, not additive
+        self._thread = threading.Thread(
+            target=self._run, name=f"heartbeat-{self._job_id}", daemon=True
+        )
+        self._thread.start()
+
+    def stop(self) -> None:
+        if self._thread is None:
+            return
+        self._stop_event.set()
+        self._thread.join(timeout=5)
+        self._thread = None
 
 
 # ── Core job processing ────────────────────────────────────────────────────────
@@ -389,6 +470,13 @@ def process_job(job: dict, worker_id: str) -> None:
             except Exception:
                 pass
 
+        # Heartbeat only around the actual mode run — the one phase that
+        # can legitimately run long (e.g. streamer's multi-hour enrichment)
+        # without a status transition in between. Started right before,
+        # always stopped in finally so it can never survive this call,
+        # success or failure.
+        heartbeat = _HeartbeatPulse(job_id)
+        heartbeat.start()
         try:
             runner = get_runner(mode)
             result = runner(
@@ -403,6 +491,8 @@ def process_job(job: dict, worker_id: str) -> None:
             )
             _fail(job_id, "RUNNER_FAILED", str(exc)[:500], retry=False)
             return
+        finally:
+            heartbeat.stop()
 
         # ── 4. Collect output files ───────────────────────────────────────────
         output_files = [f for f in output_dir.rglob("*") if f.is_file()]
