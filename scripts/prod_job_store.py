@@ -1655,32 +1655,39 @@ def segments_from_analysis(
     """
     Maps modes.streamer.runner.analyze()'s return shape into the dict shape
     replace_streamer_segments() expects — the segment-persistence "store
-    contract" from the PHASE A brief. NOT wired into the worker/production
-    flow yet (see that brief) — a caller constructs this explicitly for
-    now; nothing in gpu_worker.py calls it.
+    contract" from the PHASE A brief. Called by submit_streamer_analysis_
+    result() (see scripts/gpu_worker.py's analyze-phase branch and POST
+    /api/worker/streamer/batches/{id}/analysis-result).
 
-    `titles` is optional and positional (index-matched to
-    analysis_result["segments"]) — analyze() itself produces no titles
-    (a product-layer concern, e.g. a future captioning step), so a
-    caller-supplied list is used when given, and a generic numbered
-    placeholder otherwise. `recommended` is always False here — no
-    recommendation-scoring heuristic is invented in this helper; that is a
-    separate, explicitly out-of-scope concern (see set_streamer_segment_
-    selection for toggling it after the fact via whatever logic decides
-    it).
+    Per-segment title/description/recommended are read straight off each
+    input segment dict when present, falling back to a generic numbered
+    title / no description / not-recommended otherwise. Today's real
+    analyze() output (modes/streamer/runner.py, via _fallback_segments())
+    never includes these keys — only start_sec/duration_sec/score/source —
+    so this fallback is what actually runs in production right now; the
+    pass-through exists so a caller that DOES have real per-segment
+    content (a future real analyzer, or a test/dev harness submitting
+    fixture segments through this exact same worker contract) doesn't have
+    it silently discarded. `titles` (positional, index-matched) is a
+    second, narrower override kept for backward compatibility with any
+    existing caller — a segment's own "title" key wins if both are given.
     """
     segments = analysis_result.get("segments", [])
     crop_hints = analysis_result.get("crop_hints") or {}
     out = []
     for i, seg in enumerate(segments):
-        title = titles[i] if titles and i < len(titles) else f"Тема {i + 1}"
+        if titles and i < len(titles):
+            title = titles[i]
+        else:
+            title = seg.get("title") or f"Тема {i + 1}"
         out.append({
             "ordinal": i,
             "start_sec": seg["start_sec"],
             "duration_sec": seg["duration_sec"],
             "title": title,
+            "description": seg.get("description"),
             "score": seg.get("score"),
-            "recommended": False,
+            "recommended": bool(seg.get("recommended", False)),
             "crop_hints": crop_hints,
             "metadata": {"source": seg.get("source")},
         })
