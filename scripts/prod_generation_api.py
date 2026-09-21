@@ -34,6 +34,13 @@ Robokassa payment endpoints (see scripts/payment_routes.py):
   POST /api/telegram/unlink                  (browser)
   GET  /api/telegram/status                  (browser)
 
+Streamer batch flow endpoints (see scripts/streamer_routes.py):
+  POST /api/streamer/batches                       (browser, URL or file source)
+  GET  /api/streamer/batches/{batch_id}             (browser, owner only)
+  GET  /api/streamer/batches                        (browser, list own batches)
+  POST /api/streamer/batches/{batch_id}/selection   (browser, confirm segments -> compose jobs)
+  POST /api/worker/streamer/batches/{batch_id}/analysis-result  (worker, WORKER_SECRET)
+
 Worker-internal endpoints (require Authorization: Bearer WORKER_SECRET --
 unchanged, never cookie/session based):
   POST /api/worker/claim
@@ -89,8 +96,11 @@ from scripts.prod_job_store import (
     get_job_by_idempotency_key,
     list_job_files,
     list_user_jobs,
+    reconcile_streamer_batch,
+    set_streamer_batch_status,
     touch_job_heartbeat,
     update_job_status,
+    StreamerBatchTransitionError,
 )
 from scripts.prod_s3_storage import (
     build_input_key,
@@ -102,6 +112,7 @@ from scripts.prod_s3_storage import (
 from scripts.auth_routes import router as auth_router
 from scripts.payment_routes import router as payment_router
 from scripts.telegram_routes import router as telegram_router
+from scripts.streamer_routes import router as streamer_router
 from scripts.quota_guard import check_user_quota
 from scripts.rate_limiter import RateLimiter
 from scripts.security import (
@@ -196,6 +207,9 @@ app.include_router(payment_router)
 
 # @sonya_group_bot account-linking endpoints (see scripts/telegram_routes.py)
 app.include_router(telegram_router)
+
+# Streamer batch flow endpoints (see scripts/streamer_routes.py)
+app.include_router(streamer_router)
 
 # ── Mode registry ——————————————————————————————————————————————————————————————
 
@@ -1004,6 +1018,50 @@ async def worker_heartbeat(
     return {"ok": True, "job_id": job_id}
 
 
+def _maybe_reconcile_streamer_batch(job: Optional[Dict[str, Any]]) -> None:
+    """
+    Called after a job reaches a terminal state via worker/complete or
+    worker/fail below -- the primary trigger for batch-status
+    reconciliation (GET /api/streamer/batches/{id} in
+    scripts/streamer_routes.py is the defensive backstop for the rare
+    case this is ever missed). No-op for any job that isn't part of a
+    streamer batch (params carries no streamer_batch_id -- true for every
+    non-streamer job, and for a plain streamer job with no batch behind
+    it).
+
+    A compose-phase job's own completion/failure is reconciled against
+    every OTHER compose job in the same batch (reconcile_streamer_batch()
+    reads them all) -- see that function's docstring for the ready /
+    partially_failed / failed decision. An analyze-phase job failing
+    permanently (status actually "failed", not requeued for retry) fails
+    the whole batch directly instead -- there's nothing to "reconcile"
+    against other jobs at that point, since no compose jobs can exist yet
+    (they're only created after awaiting_selection, which an analyze
+    failure never reaches).
+    """
+    if not job:
+        return
+    params = job.get("params") or {}
+    batch_id = params.get("streamer_batch_id")
+    if not batch_id:
+        return
+
+    phase = params.get("streamer_phase")
+    try:
+        if phase == "compose":
+            reconcile_streamer_batch(batch_id)
+        elif phase == "analyze" and job.get("status") == JOB_STATUS_FAILED:
+            set_streamer_batch_status(
+                batch_id, "failed",
+                error=job.get("last_error") or job.get("error") or "analyze_failed",
+            )
+    except StreamerBatchTransitionError:
+        pass  # batch already terminal (e.g. cancelled) -- nothing to do
+    except Exception as exc:
+        logger.warning("[api] streamer_batch_reconcile_failed batch_id=%s job_id=%s: %s",
+                        batch_id, job.get("id"), exc)
+
+
 def _cleanup_ephemeral_instance(job: Optional[Dict[str, Any]]) -> None:
     """
     Best-effort destroy of the vast.ai instance backing a job that just
@@ -1048,6 +1106,7 @@ async def worker_complete_job(
           job_id=job_id, trace_id=trace_id,
           details={"clip_count": body.clip_count, "processing_ms": body.processing_ms})
     logger.info("[api] job_completed job_id=%s clips=%s ms=%s", job_id, body.clip_count, body.processing_ms)
+    _maybe_reconcile_streamer_batch(job)
     background_tasks.add_task(_cleanup_ephemeral_instance, job)
     return {"ok": True, "job_id": job_id}
 
@@ -1071,6 +1130,7 @@ async def worker_fail_job(
           job_id=job_id, trace_id=trace_id,
           details={"error_code": body.error_code, "retry": body.retry})
     logger.warning("[api] job_failed job_id=%s code=%s retry=%s", job_id, body.error_code, body.retry)
+    _maybe_reconcile_streamer_batch(job)
     background_tasks.add_task(_cleanup_ephemeral_instance, job)
     return {"ok": True, "job_id": job_id}
 

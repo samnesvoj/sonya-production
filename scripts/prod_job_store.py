@@ -423,6 +423,40 @@ def update_job_status(job_id: str, status: str) -> None:
         conn.close()
 
 
+def cancel_orphan_job(job_id: str) -> bool:
+    """
+    Cancels a just-created generation_jobs row that lost a concurrent race
+    to attach itself somewhere (see streamer_routes.py's POST .../selection:
+    two simultaneous requests can both pass create_job() for the same
+    segment before either reaches attach_streamer_clip_job(), and the
+    join-table's own PRIMARY KEY on segment_id lets only one of those
+    attachments win). The losing job_id would otherwise sit at status
+    'queued' forever with nothing referencing it -- NOT harmless, since
+    get_next_queued_job_for_dispatch() picks up ANY queued row regardless
+    of whether anything is attached to it, so a real GPU worker would
+    eventually claim, download, and process a duplicate clip nobody will
+    ever see.
+
+    Atomic conditional UPDATE, only from 'queued' -- if the tiny race
+    window meant a worker already claimed this job before we got here
+    (status is no longer 'queued'), this is a no-op (returns False): let
+    that in-flight run finish rather than cancel work already underway.
+    Returns True if this call actually cancelled the job.
+    """
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE generation_jobs SET status=%s, updated_at=%s "
+                    "WHERE id=%s AND status=%s",
+                    (JOB_STATUS_CANCELLED, _now(), job_id, JOB_STATUS_QUEUED),
+                )
+                return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
 def complete_job(
     job_id: str,
     s3_output_key: str,
@@ -1260,6 +1294,7 @@ def create_streamer_batch(
     user_id: str,
     preset_snapshot: Dict[str, Any],
     analysis_job_id: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new batch, optionally already pointed at an analysis job.
@@ -1267,6 +1302,25 @@ def create_streamer_batch(
     from the start of ingest, before the analysis generation_jobs row
     necessarily exists yet — see attach_analysis_job_to_batch() for
     attaching it once it does.
+
+    idempotency_key (migration 014) makes batch creation itself idempotent:
+    a double-click or network retry on POST /api/streamer/batches with the
+    SAME (user_id, idempotency_key) must not create a second batch (and,
+    downstream, must not charge Free-plan quota twice). Enforced via an
+    atomic INSERT ... ON CONFLICT (user_id, idempotency_key) DO NOTHING —
+    exact same pattern as create_job_idempotent() (migration 009) — not a
+    SELECT-then-INSERT, so two truly concurrent requests with the same key
+    still resolve to exactly one row. idempotency_key=None (no header —
+    legacy behavior) never conflicts with anything: NULL is distinct from
+    every other NULL under PostgreSQL UNIQUE semantics, so this is a no-op
+    change for every existing caller that doesn't pass it.
+
+    The returned dict carries one extra, non-persisted key —
+    "_created_now": True when this call's own INSERT won (a genuinely new
+    batch), False when it returned a pre-existing row instead. The caller
+    (POST /api/streamer/batches) uses this to decide whether to proceed
+    with ingest/quota at all, or short-circuit and return the existing
+    batch's current state untouched.
     """
     batch_id = str(uuid.uuid4())
     conn = _get_conn()
@@ -1277,14 +1331,28 @@ def create_streamer_batch(
                     """
                     INSERT INTO streamer_batches
                         (id, user_id, analysis_job_id, preset_snapshot, status,
-                         created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                         idempotency_key, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (user_id, idempotency_key) DO NOTHING
                     RETURNING *
                     """,
                     (batch_id, user_id, analysis_job_id, json.dumps(preset_snapshot),
-                     STREAMER_BATCH_STATUS_QUEUED, _now(), _now()),
+                     STREAMER_BATCH_STATUS_QUEUED, idempotency_key, _now(), _now()),
                 )
-                return dict(cur.fetchone())
+                row = cur.fetchone()
+                if row:
+                    result = dict(row)
+                    result["_created_now"] = True
+                    return result
+
+                existing = _row(
+                    conn,
+                    "SELECT * FROM streamer_batches WHERE user_id=%s AND idempotency_key=%s",
+                    (user_id, idempotency_key),
+                )
+                result = dict(existing)
+                result["_created_now"] = False
+                return result
     finally:
         conn.close()
 
@@ -1617,3 +1685,165 @@ def segments_from_analysis(
             "metadata": {"source": seg.get("source")},
         })
     return out
+
+
+def get_streamer_batch_by_id(batch_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Unscoped (no user_id) batch lookup — worker-internal use only (see
+    POST /api/worker/streamer/batches/{batch_id}/analysis-result in
+    scripts/streamer_routes.py, authenticated by WORKER_SECRET, which has
+    no session/user context to scope by). Every browser-facing route must
+    keep using get_streamer_batch(batch_id, user_id) instead, which
+    enforces ownership in the query itself.
+    """
+    conn = _get_conn()
+    try:
+        return _row(conn, "SELECT * FROM streamer_batches WHERE id = %s", (batch_id,))
+    finally:
+        conn.close()
+
+
+def submit_streamer_analysis_result(
+    batch_id: str,
+    analysis_result: Dict[str, Any],
+) -> List[Dict[str, Any]]:
+    """
+    Single entry point for "the analyze phase worker job just finished":
+    normalize analyze()'s raw segments via segments_from_analysis() and
+    persist them, then move the batch to awaiting_selection.
+
+    Shared by both gpu_worker.py backend modes: the "db" worker calls this
+    directly (see _db_submit_streamer_segments), and the "api" worker
+    reaches it indirectly via POST /api/worker/streamer/batches/{id}/
+    analysis-result (scripts/streamer_routes.py), which just calls this
+    same function server-side.
+
+    Idempotent under retry: the analyze job's OWN generation_jobs row can
+    be retried by the dispatcher after a TRANSIENT failure in a step that
+    runs AFTER segments were already successfully persisted here (e.g. the
+    analysis-manifest S3 upload in gpu_worker.py's
+    _finish_streamer_analyze_job — see retry=True there) — re-running
+    analyze() and calling this function a second time for the SAME batch
+    must NOT delete and re-insert segments with fresh UUIDs: that would
+    invalidate anything the frontend already rendered/cached, and could
+    turn an in-flight POST .../selection (using the first call's segment
+    ids) into a spurious "foreign_segment" rejection. So: if this batch
+    already has segments, this call is a no-op that returns them
+    unchanged -- first-call-wins, not last-call-wins. Locks the batch row
+    (SELECT ... FOR UPDATE) before checking, so two genuinely concurrent
+    submits for the same batch_id serialize here instead of both reading
+    "no segments yet" and both inserting.
+
+    Does NOT use replace_streamer_segments() (that function is an
+    unconditional force-replace, still used/tested as its own primitive
+    elsewhere) -- this is a separate, narrower "insert once" contract.
+
+    Deliberately does NOT touch analysis_job_id (already attached at
+    batch-creation time — see attach_analysis_job_to_batch()) or the
+    analysis generation_jobs row's own status (the caller still reports
+    that job's own completion through the normal worker/complete flow,
+    separately — this function is purely about the batch and its
+    segments).
+    """
+    segments = segments_from_analysis(analysis_result)
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1 FROM streamer_batches WHERE id=%s FOR UPDATE", (batch_id,))
+                cur.execute(
+                    "SELECT * FROM streamer_segments WHERE batch_id=%s ORDER BY ordinal ASC",
+                    (batch_id,),
+                )
+                existing = [dict(r) for r in cur.fetchall()]
+                if existing:
+                    return existing
+
+                inserted: List[Dict[str, Any]] = []
+                for i, seg in enumerate(segments):
+                    seg_id = str(uuid.uuid4())
+                    cur.execute(
+                        """
+                        INSERT INTO streamer_segments
+                            (id, batch_id, ordinal, start_sec, duration_sec, title,
+                             description, score, recommended, selected,
+                             crop_hints, metadata, created_at, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        RETURNING *
+                        """,
+                        (
+                            seg_id, batch_id, seg.get("ordinal", i),
+                            seg["start_sec"], seg["duration_sec"], seg["title"],
+                            seg.get("description"), seg.get("score"),
+                            seg.get("recommended", False), seg.get("selected", True),
+                            json.dumps(seg.get("crop_hints") or {}),
+                            json.dumps(seg.get("metadata") or {}),
+                            _now(), _now(),
+                        ),
+                    )
+                    inserted.append(dict(cur.fetchone()))
+    finally:
+        conn.close()
+
+    set_streamer_batch_status(batch_id, STREAMER_BATCH_STATUS_AWAITING_SELECTION)
+    return inserted
+
+
+def reconcile_streamer_batch(batch_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Defensive batch-status reconciliation from its compose (streamer_clip_
+    jobs) generation_jobs' current statuses. Called from two places: right
+    after a compose job's worker/complete or worker/fail endpoint runs
+    (the primary trigger), and defensively from GET /api/streamer/batches/
+    {id} in case that hook was ever missed (worker crash between its own
+    /complete call and this reconciliation, process restart, etc).
+
+    No-op (returns the batch as-is) if:
+      - the batch doesn't exist (returns None)
+      - the batch is already terminal (ready/partially_failed/failed/
+        cancelled) — reconciliation never re-opens a settled batch
+      - the batch has no streamer_clip_jobs yet (still awaiting_selection
+        or earlier — nothing to reconcile)
+      - at least one attached clip job's generation_jobs row is still
+        non-terminal (queued/claimed/...) — batch stays "generating",
+        no status write happens at all (idempotent no-op, not even a
+        same-status UPDATE)
+
+    Once every attached clip job has reached a terminal generation_jobs
+    status (completed/failed/cancelled):
+      - all completed                       -> ready
+      - none completed (all failed/cancelled) -> failed
+      - a mix                               -> partially_failed
+
+    Uses set_streamer_batch_status()'s own atomic terminal-transition guard
+    — this function never needs its own locking on top of that.
+    """
+    conn = _get_conn()
+    try:
+        batch = _row(conn, "SELECT * FROM streamer_batches WHERE id=%s", (batch_id,))
+    finally:
+        conn.close()
+    if not batch:
+        return None
+    if batch["status"] in _STREAMER_BATCH_TERMINAL_STATUSES:
+        return batch
+
+    clip_jobs = list_streamer_clip_jobs(batch_id)
+    if not clip_jobs:
+        return batch
+
+    _TERMINAL_JOB_STATUSES = {JOB_STATUS_COMPLETED, JOB_STATUS_FAILED, JOB_STATUS_CANCELLED}
+    statuses = []
+    for cj in clip_jobs:
+        job = get_job(cj["job_id"])
+        statuses.append(job["status"] if job else JOB_STATUS_FAILED)
+
+    if not all(s in _TERMINAL_JOB_STATUSES for s in statuses):
+        return batch
+
+    completed = sum(1 for s in statuses if s == JOB_STATUS_COMPLETED)
+    if completed == len(statuses):
+        return set_streamer_batch_status(batch_id, STREAMER_BATCH_STATUS_READY)
+    if completed == 0:
+        return set_streamer_batch_status(batch_id, STREAMER_BATCH_STATUS_FAILED)
+    return set_streamer_batch_status(batch_id, STREAMER_BATCH_STATUS_PARTIALLY_FAILED)

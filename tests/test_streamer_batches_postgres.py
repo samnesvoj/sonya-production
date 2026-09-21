@@ -240,6 +240,59 @@ def test_attaching_a_different_job_to_an_already_linked_segment_conflicts(store,
         store.attach_streamer_clip_job(batch["id"], seg["id"], job_b)
 
 
+def test_cancel_orphan_job_cancels_a_queued_job(store, user_id):
+    job_id = _mk_job(store, user_id)
+    assert store.get_job(job_id)["status"] == "queued"
+
+    cancelled = store.cancel_orphan_job(job_id)
+
+    assert cancelled is True
+    assert store.get_job(job_id)["status"] == "cancelled"
+
+
+def test_cancel_orphan_job_is_noop_once_no_longer_queued(store, user_id):
+    job_id = _mk_job(store, user_id)
+    store.update_job_status(job_id, "claimed")  # simulates a worker having already picked it up
+
+    cancelled = store.cancel_orphan_job(job_id)
+
+    assert cancelled is False
+    assert store.get_job(job_id)["status"] == "claimed"  # left alone, not stomped
+
+
+def test_concurrent_selection_race_leaves_exactly_one_live_job_per_segment(store, user_id):
+    """
+    Mirrors what scripts/streamer_routes.py's POST .../selection actually
+    does per segment: create_job() then attach_streamer_clip_job(), with
+    the loser of a concurrent race calling cancel_orphan_job() on conflict.
+    Two threads racing to attach a job to the SAME segment must leave
+    exactly one streamer_clip_jobs row and exactly one non-cancelled
+    generation_jobs row -- the loser's job must not be left sitting at
+    'queued' forever (see cancel_orphan_job's own docstring for why that
+    would NOT be harmless: a real GPU worker would eventually claim it).
+    """
+    batch = store.create_streamer_batch(user_id, preset_snapshot={})
+    store.replace_streamer_segments(batch["id"], _segments(1))
+    seg = store.list_streamer_segments(batch["id"])[0]
+
+    def attempt(_i):
+        job_id = _mk_job(store, user_id)
+        try:
+            return store.attach_streamer_clip_job(batch["id"], seg["id"], job_id), job_id
+        except store.StreamerClipJobConflictError:
+            store.cancel_orphan_job(job_id)
+            return None, job_id
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        results = list(ex.map(attempt, range(2)))
+
+    clip_jobs = store.list_streamer_clip_jobs(batch["id"])
+    assert len(clip_jobs) == 1  # exactly one attachment survives
+
+    statuses = sorted(store.get_job(job_id)["status"] for _link, job_id in results)
+    assert statuses == ["cancelled", "queued"]  # winner stays queued for a real worker, loser cancelled
+
+
 def test_same_job_cannot_be_attached_to_two_segments(store, user_id):
     """job_id UNIQUE on streamer_clip_jobs -- one job belongs to at most
     one segment record."""
@@ -423,6 +476,103 @@ def test_segments_from_analysis_persists_via_replace_streamer_segments(store, us
     assert listed[0]["title"] == "Highlight"
     assert listed[0]["start_sec"] == 3.0
     assert listed[0]["crop_hints"] == {"x": 1}
+
+
+# ── submit_streamer_analysis_result / reconcile_streamer_batch
+#    (REAL STREAMER BATCH FLOW) — route-level behavior is covered in
+#    tests/test_streamer_batch_flow_postgres.py; these are the pure
+#    store-level edge cases that don't need an HTTP round trip. ─────────
+
+def test_submit_streamer_analysis_result_persists_and_transitions(store, user_id):
+    batch = store.create_streamer_batch(user_id, preset_snapshot={})
+    analysis_result = {
+        "segments": [{"start_sec": 1.0, "duration_sec": 5.0, "score": 1.0, "source": "x"}],
+        "crop_hints": {"anchor": "center"},
+    }
+
+    inserted = store.submit_streamer_analysis_result(batch["id"], analysis_result)
+
+    assert len(inserted) == 1
+    fetched = store.get_streamer_batch(batch["id"], user_id)
+    assert fetched["status"] == store.STREAMER_BATCH_STATUS_AWAITING_SELECTION
+
+
+def test_submit_streamer_analysis_result_is_idempotent_first_call_wins(store, user_id):
+    """
+    A worker retry (e.g. the analyze job's own generation_jobs row gets
+    retried after a transient failure in a step that runs AFTER segments
+    were already persisted -- see gpu_worker.py's
+    _finish_streamer_analyze_job) must NOT regenerate segment UUIDs or
+    change segment content on a second submit -- that would invalidate
+    anything the frontend already rendered/cached for the first result.
+    """
+    batch = store.create_streamer_batch(user_id, preset_snapshot={})
+    result_a = {"segments": [{"start_sec": 1.0, "duration_sec": 5.0}]}
+    result_b = {"segments": [{"start_sec": 2.0, "duration_sec": 5.0}, {"start_sec": 9.0, "duration_sec": 5.0}]}
+
+    first = store.submit_streamer_analysis_result(batch["id"], result_a)
+    second = store.submit_streamer_analysis_result(batch["id"], result_b)
+
+    segments = store.list_streamer_segments(batch["id"])
+    assert len(segments) == 1  # second (different) submission is a no-op
+    assert [s["id"] for s in segments] == [s["id"] for s in first]
+    assert second == first  # caller of the second submit sees the SAME rows back
+    assert segments[0]["start_sec"] == 1.0  # result_a's content, not result_b's
+
+
+def test_submit_streamer_analysis_result_concurrent_double_submit_never_flips_segment_ids(store, user_id):
+    batch = store.create_streamer_batch(user_id, preset_snapshot={})
+    result_a = {"segments": [{"start_sec": 1.0, "duration_sec": 5.0}]}
+    result_b = {"segments": [{"start_sec": 2.0, "duration_sec": 5.0}]}
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f1 = ex.submit(store.submit_streamer_analysis_result, batch["id"], result_a)
+        f2 = ex.submit(store.submit_streamer_analysis_result, batch["id"], result_b)
+        out1, out2 = f1.result(), f2.result()
+
+    segments = store.list_streamer_segments(batch["id"])
+    assert len(segments) == 1  # exactly one submission's segments survive, never both
+    # Whichever call actually won the race, both callers must see the SAME
+    # persisted row back -- neither sees its own input silently discarded
+    # in favor of a THIRD, different value.
+    assert out1[0]["id"] == out2[0]["id"] == segments[0]["id"]
+
+
+def test_reconcile_streamer_batch_missing_batch_returns_none(store):
+    assert store.reconcile_streamer_batch(str(uuid.uuid4())) is None
+
+
+def test_reconcile_streamer_batch_noop_without_clip_jobs(store, user_id):
+    batch = store.create_streamer_batch(user_id, preset_snapshot={})
+    store.set_streamer_batch_status(batch["id"], "awaiting_selection")
+
+    reconciled = store.reconcile_streamer_batch(batch["id"])
+    assert reconciled["status"] == "awaiting_selection"  # nothing to reconcile yet
+
+
+def test_reconcile_streamer_batch_noop_when_already_terminal(store, user_id):
+    batch = store.create_streamer_batch(user_id, preset_snapshot={})
+    store.set_streamer_batch_status(batch["id"], "ready")
+
+    reconciled = store.reconcile_streamer_batch(batch["id"])
+    assert reconciled["status"] == "ready"
+
+
+def test_reconcile_streamer_batch_ready_all_completed(store, user_id):
+    batch = store.create_streamer_batch(user_id, preset_snapshot={})
+    store.replace_streamer_segments(batch["id"], _segments(2))
+    segs = store.list_streamer_segments(batch["id"])
+    store.set_streamer_batch_status(batch["id"], "generating")
+
+    for seg in segs:
+        job_id = _mk_job(store, user_id)
+        store.attach_streamer_clip_job(batch["id"], seg["id"], job_id)
+        store.complete_job(job_id, s3_output_key="k", clip_count=1)
+
+    reconciled = store.reconcile_streamer_batch(batch["id"])
+    assert reconciled["status"] == "ready"
 
 
 # ── 13: migration idempotent ────────────────────────────────────────────

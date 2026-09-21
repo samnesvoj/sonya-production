@@ -68,15 +68,16 @@ JOB_STATUS_UPLOADING_RESULT  = "uploading_result"
 
 if _WORKER_MODE == "db":
     from scripts.prod_job_store import (
-        add_job_file           as _db_add_file,
-        claim_next_pending_job as _db_claim_next,
-        claim_specific_job     as _db_claim_specific,
-        complete_job           as _db_complete,
-        fail_job               as _db_fail,
-        get_job                as _db_get_job,
-        requeue_stale_jobs     as _db_requeue_stale,
-        touch_job_heartbeat    as _db_heartbeat,
-        update_job_status      as _db_update_status,
+        add_job_file                    as _db_add_file,
+        claim_next_pending_job          as _db_claim_next,
+        claim_specific_job              as _db_claim_specific,
+        complete_job                    as _db_complete,
+        fail_job                        as _db_fail,
+        get_job                         as _db_get_job,
+        requeue_stale_jobs              as _db_requeue_stale,
+        submit_streamer_analysis_result as _db_submit_streamer_segments,
+        touch_job_heartbeat             as _db_heartbeat,
+        update_job_status               as _db_update_status,
     )
 
 from scripts.mode_registry import get_runner
@@ -243,6 +244,30 @@ class _BackendAPIClient:
         except Exception as exc:
             logger.warning("[api] add_file failed job_id=%s file=%s: %s", job_id, filename, exc)
 
+    def submit_streamer_segments(self, batch_id: str, analysis_result: Dict[str, Any]) -> None:
+        """
+        Worker-side counterpart of prod_job_store.submit_streamer_analysis_
+        result() for API-mode workers (no direct DB access) — see
+        scripts/streamer_routes.py's POST /api/worker/streamer/batches/
+        {batch_id}/analysis-result, which calls that same store function
+        server-side on receipt of this request. Not wrapped in try/except
+        here (unlike heartbeat/add_file/fail_job above) — a failure here
+        must propagate so the caller (process_job's analyze-phase branch)
+        fails and retries the job, rather than silently completing an
+        analysis job whose segments were never persisted.
+        """
+        self._post(
+            f"/api/worker/streamer/batches/{batch_id}/analysis-result",
+            {
+                "segments": analysis_result.get("segments", []),
+                "crop_hints": analysis_result.get("crop_hints") or {},
+                "warnings": analysis_result.get("warnings") or [],
+                "webcam_boxes_found": analysis_result.get("webcam_boxes_found"),
+                "active_speaker_segs": analysis_result.get("active_speaker_segs"),
+            },
+            timeout=30,
+        )
+
 
 # Instantiate the API client lazily (only when mode=api)
 _api_client: Optional[_BackendAPIClient] = None
@@ -327,6 +352,18 @@ def _do_add_file(
         )
 
 
+def _do_submit_streamer_segments(batch_id: str, analysis_result: Dict[str, Any]) -> None:
+    """
+    Deliberately NOT swallowed in try/except (unlike heartbeat/add_file/
+    fail_job) — see _BackendAPIClient.submit_streamer_segments's own
+    docstring for why a failure here must propagate to the caller.
+    """
+    if _WORKER_MODE == "api":
+        _get_api_client().submit_streamer_segments(batch_id, analysis_result)
+    else:
+        _db_submit_streamer_segments(batch_id, analysis_result)
+
+
 # ── Model download ─────────────────────────────────────────────────────────────
 
 def ensure_models_for_mode(mode: str) -> bool:
@@ -392,6 +429,65 @@ class _HeartbeatPulse:
 
 
 # ── Core job processing ────────────────────────────────────────────────────────
+
+def _finish_streamer_analyze_job(
+    job_id: str,
+    user_id: str,
+    params: dict,
+    analyze_result: Dict[str, Any],
+    output_dir: Path,
+    t_start: float,
+) -> None:
+    """
+    Completion path for a streamer_phase="analyze" job — replaces steps
+    4-6 of process_job() (generic output-file collection) because a JSON
+    segments manifest classifies as file_type="enrichment_json"
+    (_FILE_TYPES above), never "output", so the generic loop's own
+    s3_output_key selection would never find one and always fail this job
+    with ALL_UPLOADS_FAILED. The real result of this job — the segments
+    themselves — is persisted to streamer_segments via
+    _do_submit_streamer_segments(), not via any uploaded file; the JSON
+    manifest uploaded below exists only so this generation_jobs row still
+    has a normal, inspectable completed artifact like every other job.
+    """
+    batch_id = params.get("streamer_batch_id")
+    if not batch_id:
+        _fail(job_id, "STREAMER_BATCH_ID_MISSING",
+              "analyze-phase job has no streamer_batch_id in params", retry=False)
+        return
+
+    try:
+        _do_submit_streamer_segments(batch_id, analyze_result)
+    except Exception as exc:
+        logger.exception(
+            "[worker] streamer_segments_submit_failed job_id=%s batch_id=%s: %s",
+            job_id, batch_id, exc,
+        )
+        _fail(job_id, "STREAMER_SEGMENTS_SUBMIT_FAILED", str(exc)[:500], retry=True)
+        return
+
+    _update_status(job_id, JOB_STATUS_UPLOADING_RESULT)
+    manifest_path = output_dir / "analysis.json"
+    manifest_path.write_text(json.dumps(analyze_result, ensure_ascii=False), encoding="utf-8")
+    s3_key = build_output_key(user_id=user_id, job_id=job_id, mode="streamer", filename="analysis.json")
+    try:
+        upload_file(manifest_path, s3_key, content_type="application/json")
+    except Exception as exc:
+        logger.error("[worker] analysis_manifest_upload_failed job_id=%s: %s", job_id, exc)
+        _fail(job_id, "ANALYSIS_MANIFEST_UPLOAD_FAILED", str(exc)[:500], retry=True)
+        return
+
+    processing_ms = int((time.monotonic() - t_start) * 1000)
+    segments = analyze_result.get("segments") or []
+    _do_complete_job(
+        job_id=job_id, s3_output_key=s3_key, clip_count=len(segments),
+        processing_ms=processing_ms, enrichment_keys=[],
+    )
+    logger.info(
+        "[worker] streamer_analyze_done job_id=%s batch_id=%s segments=%d ms=%d",
+        job_id, batch_id, len(segments), processing_ms,
+    )
+
 
 def _fail(job_id: str, error_code: str, error_message: str, retry: bool) -> None:
     logger.error(
@@ -470,6 +566,16 @@ def process_job(job: dict, worker_id: str) -> None:
             except Exception:
                 pass
 
+        # streamer batch flow (see docs/SONYA_AUDIT.md batch-flow brief):
+        # a "streamer" job's params carry an explicit streamer_phase
+        # discriminator when it's part of a two-phase batch (analyze once,
+        # compose per selected segment) instead of the old single-shot
+        # run() path. Absent (None) for every other job — including a
+        # plain streamer job with no batch behind it, e.g. run via the
+        # legacy /api/generation/jobs path — which keeps the exact
+        # pre-existing behavior below.
+        streamer_phase = params.get("streamer_phase") if mode == "streamer" else None
+
         # Heartbeat only around the actual mode run — the one phase that
         # can legitimately run long (e.g. streamer's multi-hour enrichment)
         # without a status transition in between. Started right before,
@@ -478,13 +584,36 @@ def process_job(job: dict, worker_id: str) -> None:
         heartbeat = _HeartbeatPulse(job_id)
         heartbeat.start()
         try:
-            runner = get_runner(mode)
-            result = runner(
-                input_video_path=str(input_path),
-                output_dir=str(output_dir),
-                params=params,
-                progress_callback=_progress,
-            )
+            if streamer_phase == "analyze":
+                from modes.streamer.runner import analyze as _streamer_analyze
+                analyze_result = _streamer_analyze(
+                    input_video_path=str(input_path),
+                    output_dir=str(output_dir),
+                    params=params,
+                    progress_callback=_progress,
+                )
+            elif streamer_phase == "compose":
+                # compose_one() writes exactly one clip; falls through to
+                # the exact same generic output-collection/upload/complete
+                # path below as every other mode's result — no special
+                # handling needed past this point for a compose job.
+                from modes.streamer.runner import compose_one as _streamer_compose_one
+                out_path = str(output_dir / "clip.mp4")
+                _streamer_compose_one(
+                    input_video_path=str(input_path),
+                    output_path=out_path,
+                    segment=params.get("streamer_segment") or {},
+                    crop_hints=params.get("streamer_crop_hints"),
+                )
+                result = {"clips": [out_path], "mode": "streamer", "warnings": []}
+            else:
+                runner = get_runner(mode)
+                result = runner(
+                    input_video_path=str(input_path),
+                    output_dir=str(output_dir),
+                    params=params,
+                    progress_callback=_progress,
+                )
         except Exception as exc:
             logger.exception(
                 "[worker] runner_failed job_id=%s mode=%s: %s", job_id, mode, exc
@@ -493,6 +622,10 @@ def process_job(job: dict, worker_id: str) -> None:
             return
         finally:
             heartbeat.stop()
+
+        if streamer_phase == "analyze":
+            _finish_streamer_analyze_job(job_id, user_id, params, analyze_result, output_dir, t_start)
+            return
 
         # ── 4. Collect output files ───────────────────────────────────────────
         output_files = [f for f in output_dir.rglob("*") if f.is_file()]

@@ -1,17 +1,15 @@
 /* SONYA — Режим стримера v2
-   Интерактивный прототип расширенного флоу «Стример»: источник →
-   анализ + выбор тем → обработка и проверка клипов.
+   Источник → анализ + выбор тем → обработка и проверка клипов.
 
-   Всё ещё БЕЗ обращения к бэкенду — сегментация, заголовки/оверлеи и
-   статусы обработки клипов остаются мок-данными (см. блок "MOCK DATA"
-   ниже, помечен явно). Что уже добавлено против v1: полноценные
-   состояния (ошибка/пусто/failed/retry/cancel), инлайн-валидация
-   источника, единый toast-хелпер и state, разложенный по разделам
-   (source/analysis/topics/clips) с отдельными render*Step()
-   функциями — так следующий шаг (реальный /api/generation/jobs,
-   topic-detection API, OpenCut-интеграция) сможет просто заменить
-   мок-функции без переписывания разметки/рендера. См. раздел
-   "NOT DONE YET" в конце файла. */
+   Источник/анализ/темы/клипы теперь backed by the real streamer batch
+   flow (POST/GET /api/streamer/batches..., see the REAL BATCH FLOW
+   section below and scripts/streamer_routes.py) — submitSource() /
+   pollBatchUntilSelectable() / confirmSelection() / pollBatchUntilDone() /
+   applyBatchClips() / rehydrateFromUrl() replaced the old mock timers,
+   reusing every render*Step()/clipCardHTML()/topicCardHTML() function
+   unchanged. Subtitle quick-editor, promo assets, and single-clip retry
+   remain explicit mock/unwired — see "NOT DONE YET" at the end of the
+   file and each function's own comment. */
 (() => {
 	'use strict';
 
@@ -121,48 +119,20 @@
 		return { ok: true };
 	}
 
-	// MOCK-only QA hook: typing/naming a source with "faildemo" in it
-	// deterministically exercises the analysis-error and clip-failed
-	// paths below, so those states can be reviewed without a real
-	// backend. Remove once real API calls can actually fail.
-	function mockShouldSimulateFailure() {
-		const url = (state.source.url || '').toLowerCase();
-		const name = (state.source.file && state.source.file.name || '').toLowerCase();
-		return url.includes('faildemo') || name.includes('faildemo');
-	}
-
 	/* ============================================================
 	   MOCK DATA — stands in for the not-yet-built topic-detection
 	   and clip-generation APIs. Shaped the way the real API response
 	   is expected to look, so swapping this out later shouldn't
 	   require changing renderTopicsStep()/renderClipsStep().
 	   ============================================================ */
-	const MOCK_ANALYSIS_STAGES = [
-		'Получаем видео',
-		'Распознаём речь',
-		'Ищем темы и сильные моменты',
-		'Готовим сегменты',
-	];
-
-	const MOCK_TOPICS = [
-		{ start: '00:00', end: '02:15', title: 'Приветствие чата и разогрев', description: 'Стример включается, здоровается с чатом, читает донаты.', icon: 'fa-comments' },
-		{ start: '02:15', end: '07:40', title: 'Первая безумная катка', description: 'Насыщенный игровой отрезок с резкими поворотами сюжета.', icon: 'fa-gamepad' },
-		{ start: '07:40', end: '09:10', title: 'Смешной фейл на ровном месте', description: 'Короткий комичный момент, реакция стримера и чата.', icon: 'fa-face-laugh-squint' },
-		{ start: '09:10', end: '14:55', title: 'Клатч на респауне', description: 'Напряжённый игровой момент с развязкой в конце.', icon: 'fa-trophy' },
-		{ start: '14:55', end: '17:30', title: 'Реакция на донат', description: 'Эмоциональная реакция на крупный донат от зрителя.', icon: 'fa-heart' },
-		{ start: '17:30', end: '23:05', title: 'Жаркий спор со зрителями', description: 'Дискуссия в чате перерастает в живую полемику.', icon: 'fa-fire' },
-		{ start: '23:05', end: '26:40', title: 'Финальный хайлайт и прощание', description: 'Итоговый яркий момент и прощание со зрителями.', icon: 'fa-flag-checkered' },
-	];
-
-	const MOCK_CLIP_SUGGESTIONS = [
-		{ title: 'Чат сразу включился', overlay: 'ЭТО НАЧАЛО СТРИМА?!' },
-		{ title: 'Никто не ожидал такого старта', overlay: 'ПЕРВАЯ ЖЕ КАТКА' },
-		{ title: 'Он сам не понял, что произошло', overlay: 'КАК ЭТО ВООБЩЕ' },
-		{ title: 'Этот клатч решил всё', overlay: 'НИКТО НЕ ВЕРИЛ' },
-		{ title: 'Такую реакцию нужно видеть', overlay: 'СПАСИБО ЗА ДОНАТ' },
-		{ title: 'Чат разнёс комментарии', overlay: 'ГОРЯЧО В ЧАТЕ' },
-		{ title: 'Так стрим ещё не заканчивался', overlay: 'ФИНАЛЬНЫЙ ХАЙЛАЙТ' },
-	];
+	// Loading-state copy for each real streamer_batches.status value while
+	// a batch is still being ingested/analyzed — see pollBatchUntilSelectable()
+	// and rehydrateFromUrl() in the REAL BATCH FLOW section below.
+	const ANALYSIS_STAGE_LABELS = {
+		queued: 'Ставим в очередь',
+		ingesting: 'Получаем видео',
+		analyzing: 'Анализируем стрим',
+	};
 
 	// Built-in subtitle presets. "Свой пресет" (see openPresetDrawer's
 	// subtitles tab) just pushes a clone of the currently-selected one
@@ -228,7 +198,7 @@
 		},
 		analysis: {
 			status: 'idle',         // idle | running | error | done
-			stageIndex: 0,
+			stageLabel: '',
 			progress: 0,
 			error: null,
 		},
@@ -239,6 +209,12 @@
 			items: [],
 			autoMode: false,
 		},
+		// Real streamer_batches.id once POST /api/streamer/batches (or
+		// rehydration from ?batch=) succeeds — see the REAL BATCH FLOW
+		// section below. null until then; also doubles as the "supersede a
+		// stray poll from a previous batch" guard (each poll loop captures
+		// it at start and bails the moment it no longer matches).
+		batchId: null,
 		// Account-level "Streamer Preset" — lives above any single batch,
 		// edited via the drawer (see section E). Seeded from mock data now;
 		// a real account would load/save this server-side.
@@ -248,8 +224,6 @@
 			...MOCK_STREAMER_PRESET,
 		},
 	};
-
-	let analysisToken = 0; // invalidates stray timeouts after cancel/retry
 	let presetDrawerActiveTab = 'subtitles';
 	let subtitleEditorClipId = null; // which clip's drawer is currently open
 
@@ -512,10 +486,7 @@
 		handleFile(e.dataTransfer.files[0]);
 	});
 
-	btn1.addEventListener('click', () => {
-		goToStep('topics');
-		startAnalysis();
-	});
+	btn1.addEventListener('click', () => { submitSource(); });
 
 	/* ============================================================
 	   B. renderAnalysisState() — analysis/loading inside step "topics"
@@ -536,7 +507,7 @@
 		analysisErrorEl.classList.toggle('is-hidden', st !== 'error');
 		topicsBody.classList.toggle('is-hidden', st !== 'done');
 		if (st === 'running') {
-			loadingStageEl.textContent = MOCK_ANALYSIS_STAGES[state.analysis.stageIndex] || MOCK_ANALYSIS_STAGES[0];
+			loadingStageEl.textContent = state.analysis.stageLabel || ANALYSIS_STAGE_LABELS.queued;
 			loadingProgressBar.style.width = state.analysis.progress + '%';
 		}
 		if (st === 'error') {
@@ -544,67 +515,26 @@
 		}
 	}
 
-	function startAnalysis() {
-		const myToken = ++analysisToken;
-		state.analysis.status = 'running';
-		state.analysis.stageIndex = 0;
-		state.analysis.progress = 0;
-		state.analysis.error = null;
-		renderAnalysisState();
-
-		const loadingCloth = $('[data-cloth-canvas]', loadingEl);
-		if (loadingCloth) ClothEngine.attach(loadingCloth);
-
-		const stageDuration = 620;
-		const totalStages = MOCK_ANALYSIS_STAGES.length;
-
-		function tick(stageIndex) {
-			if (myToken !== analysisToken) return; // cancelled/superseded
-			state.analysis.stageIndex = stageIndex;
-			state.analysis.progress = Math.round(((stageIndex + 1) / totalStages) * 100);
-			renderAnalysisState();
-			if (stageIndex + 1 < totalStages) {
-				setTimeout(() => tick(stageIndex + 1), stageDuration);
-				return;
-			}
-			setTimeout(() => finishAnalysis(myToken), stageDuration);
-		}
-		tick(0);
-	}
-
-	function finishAnalysis(myToken) {
-		if (myToken !== analysisToken) return;
-		if (mockShouldSimulateFailure()) {
-			state.analysis.status = 'error';
-			state.analysis.error = 'Не удалось скачать или распознать видео. Проверьте ссылку/файл и попробуйте снова.';
-			renderAnalysisState();
-			showToast('Анализ стрима не удался', 'error');
-			return;
-		}
-		state.topics.items = MOCK_TOPICS.map((t, i) => ({
-			...t,
-			id: 't' + i,
-			origIndex: i,
-			selected: true,
-			durationLabel: formatDuration(timecodeToSeconds(t.end) - timecodeToSeconds(t.start)),
-		}));
-		state.analysis.status = 'done';
-		renderAnalysisState();
-		renderTopicsStep();
-		showToast(`Анализ завершён — найдено тем: ${state.topics.items.length}`, 'success');
-	}
-
 	analysisCancelBtn.addEventListener('click', () => {
-		analysisToken++; // invalidate any in-flight timers
+		stopPolling();
+		state.batchId = null;
 		state.analysis.status = 'idle';
 		state.analysis.progress = 0;
-		state.analysis.stageIndex = 0;
+		state.analysis.stageLabel = '';
+		history.pushState({}, '', window.location.pathname);
 		goToStep('upload');
 	});
-	analysisRetryBtn.addEventListener('click', () => startAnalysis());
+	// "Попробовать ещё раз" starts a brand-new batch from the same source
+	// fields already in state.source — there is no endpoint to retry a
+	// specific failed batch's analysis in place (see the REAL BATCH FLOW
+	// section below), so this is the honest equivalent of the user
+	// re-submitting the source.
+	analysisRetryBtn.addEventListener('click', () => submitSource());
 	analysisBackBtn.addEventListener('click', () => {
-		analysisToken++;
+		stopPolling();
+		state.batchId = null;
 		state.analysis.status = 'idle';
+		history.pushState({}, '', window.location.pathname);
 		goToStep('upload');
 	});
 
@@ -680,11 +610,7 @@
 	});
 	topicsEmptyBack.addEventListener('click', () => goToStep('upload'));
 
-	btn2.addEventListener('click', () => {
-		buildClips();
-		goToStep('clips');
-		runClipProcessing();
-	});
+	btn2.addEventListener('click', () => { confirmSelection(); });
 
 	/* ============================================================
 	   D. renderClipsStep() — step "clips"
@@ -702,35 +628,39 @@
 	const approveRecommendedBtn = $('#sm-approve-recommended');
 	const processingNote = $('#sm-processing-note');
 
+	// clip.overlay stays empty — the real streamer_segments backend has no
+	// overlay-text concept (that belongs to the still-mock promo/subtitle
+	// system, explicitly out of scope for this pass — see the REAL BATCH
+	// FLOW section below), so this field is honestly blank rather than
+	// filled with invented copy.
+	function makeClipFromTopic(topic, i) {
+		return {
+			id: 'c' + topic.id,
+			topic,
+			title: topic.title,
+			overlay: '',
+			// Kept strictly in the cyan → violet → magenta band (200–340°,
+			// +40 for the gradient's second stop) so per-card thumb gradients
+			// never drift into gold/orange/brown hues.
+			hue: 200 + ((i * 47) % 100),
+			status: 'processing', // processing → pending → approved | skipped | failed
+			progressPct: 0,
+			previewUrl: null,     // filled in by applyBatchClips() once the compose job completes
+			downloadUrl: null,    // gates the "Скачать одобренные" batch action
+			remoteId: null,       // real generation_jobs id — set by applyBatchClips()
+			failReason: null,
+			recommended: !!topic.recommended, // real streamer_segments.recommended (see segments_from_analysis — always false until a real scoring heuristic exists)
+			rerendering: false,             // transient — subtitle quick-editor rerender in progress
+			transcript: null,               // lazily filled by ensureTranscript() on first editor open
+			subtitlePresetId: state.accountPreset.activeSubtitlePresetId,
+			subtitleOverrides: {},
+			renderVersion: 1,
+		};
+	}
+
 	function buildClips() {
 		const selected = state.topics.items.filter(t => t.selected);
-		state.clips.items = selected.map((topic, i) => {
-			const suggestion = MOCK_CLIP_SUGGESTIONS[topic.origIndex] || MOCK_CLIP_SUGGESTIONS[i % MOCK_CLIP_SUGGESTIONS.length];
-			return {
-				id: 'c' + i,
-				topic,
-				title: suggestion.title,
-				overlay: suggestion.overlay,
-				// Kept strictly in the cyan → violet → magenta band (200–340°,
-				// +40 for the gradient's second stop) so per-card thumb gradients
-				// never drift into gold/orange/brown hues.
-				hue: 200 + ((i * 47) % 100),
-				status: 'processing', // processing → pending → approved | skipped | failed
-				progressPct: 0,
-				previewUrl: null,     // set by the real backend once it exists
-				downloadUrl: null,    // gates the "Скачать одобренные" batch action
-				remoteId: null,       // real job/clip id — gates "Открыть в редакторе"/Edit
-				failReason: null,
-				// MOCK scoring placeholder for auto-review's "recommend"/"auto"
-				// modes — a real scoring signal replaces this rule later.
-				recommended: topic.origIndex % 2 === 1,
-				rerendering: false,             // transient — subtitle quick-editor rerender in progress
-				transcript: null,               // lazily filled by ensureTranscript() on first editor open
-				subtitlePresetId: state.accountPreset.activeSubtitlePresetId,
-				subtitleOverrides: {},
-				renderVersion: 1,
-			};
-		});
+		state.clips.items = selected.map((topic, i) => makeClipFromTopic(topic, i));
 	}
 
 	function clipCardHTML(clip) {
@@ -900,12 +830,13 @@
 		checkComplete();
 	}
 
+	// Re-composing a single failed segment isn't part of this pass's
+	// backend (see the REAL BATCH FLOW section below — POST .../selection
+	// creates each segment's compose job exactly once, and there's no
+	// endpoint to replace just one); honest refusal here beats a fake
+	// success animation.
 	function retryClip(clip) {
-		clip.status = 'processing';
-		clip.progressPct = 0;
-		clip.failReason = null;
-		rerenderClip(clip);
-		processClip(clip, { forceSucceed: true });
+		showToast('Повтор одного клипа пока не поддерживается — запустите обработку заново из шага «Источник».', 'error');
 	}
 
 	function updateStats() {
@@ -952,52 +883,15 @@
 		approveRecommendedBtn.hidden = !(relevant && hasPendingRecommended);
 	}
 
-	// Neutral "still working" line — see the LONG PROCESSING UX note at
-	// the top of the file for why it stops at "обрабатываем", not "можно
-	// закрыть вкладку".
+	// A real batch backs this now (see the REAL BATCH FLOW section below)
+	// — SONYA keeps composing clips server-side regardless of this tab, so
+	// it's honest to say so once at least one clip is still processing.
 	function updateProcessingNote() {
 		const stillProcessing = state.clips.items.some(c => c.status === 'processing');
 		processingNote.classList.toggle('is-hidden', !stillProcessing);
-	}
-
-	function processClip(clip, opts = {}) {
-		const progressTimer = setInterval(() => {
-			if (clip.status !== 'processing') { clearInterval(progressTimer); return; }
-			clip.progressPct = Math.min(96, clip.progressPct + 6 + Math.random() * 10);
-			const el = document.getElementById('clip-' + clip.id);
-			const pctEl = el && $('.sm-clip-processing-pct', el);
-			if (pctEl) pctEl.textContent = Math.round(clip.progressPct) + '%';
-		}, 260);
-
-		const delay = 900 + Math.random() * 1400;
-		setTimeout(() => {
-			clearInterval(progressTimer);
-			const shouldFail = !opts.forceSucceed && mockShouldSimulateFailure() && clip.topic.origIndex === 1;
-			if (shouldFail) {
-				clip.status = 'failed';
-				clip.failReason = 'GPU-воркер не смог обработать сегмент. Попробуйте ещё раз.';
-				rerenderClip(clip);
-				showToast(`Не удалось обработать клип «${clip.title}»`, 'error');
-				return;
-			}
-			clip.status = 'pending';
-			clip.progressPct = 100;
-			// Auto-review only ever auto-approves *recommended* clips (see
-			// AUTO REVIEW in the file header) — everything else still lands
-			// in "pending" for manual review, even with the toggle on.
-			if (state.clips.autoMode && clip.recommended) clip.status = 'approved';
-			rerenderClip(clip);
-			checkComplete();
-		}, delay);
-	}
-
-	function runClipProcessing() {
-		// Seed the toggle's default posture from the account preset —
-		// still a per-session, user-overridable switch once on this step.
-		state.clips.autoMode = state.accountPreset.autoReviewMode === 'auto';
-		autoModeToggle.checked = state.clips.autoMode;
-		renderClipsStep();
-		state.clips.items.forEach(clip => processClip(clip));
+		processingNote.innerHTML = stillProcessing
+			? `<i class="fa-solid fa-gear sm-processing-note-icon"></i> Можно закрыть вкладку — SONYA продолжит обработку.`
+			: '';
 	}
 
 	autoModeToggle.addEventListener('change', () => {
@@ -1026,6 +920,311 @@
 			setTimeout(() => resolveClip(clip, 'skipped'), i * 120);
 		});
 	});
+
+	/* ============================================================
+	   REAL BATCH FLOW — POST /api/streamer/batches -> analyze once ->
+	   segments -> POST .../selection -> N real compose jobs -> real
+	   clips. Backed by scripts/streamer_routes.py. Replaces the old
+	   startAnalysis()/finishAnalysis()/buildClips()/runClipProcessing()
+	   mock timers above with real submit + poll calls, reusing every
+	   render*Step()/clipCardHTML()/topicCardHTML() function unchanged —
+	   only the data source changed. smApiFetch (see the Telegram section
+	   below) is used the same way here.
+
+	   Still explicitly mock/unwired in this pass (see module docstring in
+	   scripts/streamer_routes.py for the authoritative list): subtitle
+	   quick-editor rerender, promo assets, "Открыть в редакторе"/OpenCut,
+	   single-clip retry (see retryClip() above), and any Telegram
+	   completion notification.
+	   ============================================================ */
+
+	function formatTimecode(seconds) {
+		const s = Math.max(0, Math.round(Number(seconds) || 0));
+		return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+	}
+
+	function segmentToTopic(seg, index) {
+		return {
+			id: seg.segment_id,
+			start: formatTimecode(seg.start_sec),
+			end: formatTimecode(seg.start_sec + seg.duration_sec),
+			title: seg.title,
+			description: seg.description || '',
+			icon: 'fa-clapperboard', // real segments carry no per-topic icon — one neutral default for all
+			selected: seg.selected !== false,
+			origIndex: index,
+			durationLabel: formatDuration(seg.duration_sec),
+			recommended: !!seg.recommended,
+		};
+	}
+
+	let pollTimer = null;
+	function stopPolling() {
+		if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+	}
+
+	const POLL_INTERVAL_MS = 2500;
+	const _LOADING_STATUSES = ['queued', 'ingesting', 'analyzing'];
+	const _CLIP_STEP_STATUSES = ['generating', 'ready', 'partially_failed'];
+
+	let _submittingSource = false;
+
+	async function submitSource() {
+		// Guards the common double-click case directly (ignore a re-entrant
+		// call while one is already in flight); the Idempotency-Key below
+		// is the server-side backstop for everything this can't catch on
+		// its own (a network-level retry of a request already sent, or a
+		// second tab/click that slips past this in-memory flag).
+		if (_submittingSource) return;
+
+		const formData = new FormData();
+		if (state.source.mode === 'url' && state.source.url.trim()) {
+			formData.append('source_type', 'url');
+			formData.append('url', state.source.url.trim());
+		} else if (state.source.mode === 'file' && state.source.file) {
+			formData.append('source_type', 'file');
+			formData.append('file', state.source.file);
+		} else {
+			return;
+		}
+
+		_submittingSource = true;
+		stopPolling();
+		state.batchId = null;
+		goToStep('topics');
+		state.analysis.status = 'running';
+		state.analysis.stageLabel = ANALYSIS_STAGE_LABELS.queued;
+		state.analysis.progress = 15;
+		state.analysis.error = null;
+		renderAnalysisState();
+		const loadingCloth = $('[data-cloth-canvas]', loadingEl);
+		if (loadingCloth) ClothEngine.attach(loadingCloth);
+
+		const idempotencyKey = _getOrCreateBatchIdempotencyKey();
+		let resp;
+		try {
+			resp = await smApiFetch('/api/streamer/batches', {
+				method: 'POST', headers: { 'Idempotency-Key': idempotencyKey }, body: formData,
+			});
+			// A network-level failure (resp === null) means the client
+			// doesn't know whether the server actually received this
+			// request -- KEEP the key so a retry of this same attempt
+			// converges server-side on one batch. Any real response
+			// (success or a definitive error) settles this attempt --
+			// clear it so the next click is always a new logical run.
+			if (resp) _clearBatchIdempotencyKey();
+
+			if (!resp || !resp.ok) {
+				let message = 'Не удалось запустить обработку. Проверьте источник и попробуйте снова.';
+				if (resp && resp.status === 402) {
+					message = 'Бесплатная генерация уже использована. Оформите SONYA Pro.';
+				} else if (resp) {
+					try {
+						const errBody = await resp.json();
+						if (errBody && errBody.detail && errBody.detail.message) message = errBody.detail.message;
+					} catch (_) { /* non-JSON error body — keep the default message */ }
+				}
+				state.analysis.status = 'error';
+				state.analysis.error = message;
+				renderAnalysisState();
+				showToast('Не удалось запустить обработку', 'error');
+				return;
+			}
+
+			const data = await resp.json();
+			state.batchId = data.batch_id;
+			history.pushState({ batchId: data.batch_id }, '', `?batch=${encodeURIComponent(data.batch_id)}`);
+			pollBatchUntilSelectable();
+		} finally {
+			_submittingSource = false;
+		}
+	}
+
+	function pollBatchUntilSelectable() {
+		stopPolling();
+		const myBatchId = state.batchId;
+		const tick = async () => {
+			if (state.batchId !== myBatchId) return; // superseded by a newer batch
+			const resp = await smApiFetch(`/api/streamer/batches/${encodeURIComponent(myBatchId)}`);
+			if (state.batchId !== myBatchId) return;
+			if (!resp || !resp.ok) {
+				pollTimer = setTimeout(tick, POLL_INTERVAL_MS);
+				return;
+			}
+			const data = await resp.json();
+
+			if (_LOADING_STATUSES.includes(data.status)) {
+				state.analysis.stageLabel = ANALYSIS_STAGE_LABELS[data.status] || ANALYSIS_STAGE_LABELS.queued;
+				state.analysis.progress = Math.min(90, state.analysis.progress + 8);
+				renderAnalysisState();
+				pollTimer = setTimeout(tick, POLL_INTERVAL_MS);
+				return;
+			}
+			if (data.status === 'awaiting_selection') {
+				state.topics.items = (data.segments || []).map(segmentToTopic);
+				state.analysis.status = 'done';
+				renderAnalysisState();
+				renderTopicsStep();
+				showToast(`Анализ завершён — найдено тем: ${state.topics.items.length}`, 'success');
+				return;
+			}
+			if (_CLIP_STEP_STATUSES.includes(data.status)) {
+				// Rehydration landed mid-flight (selection already happened,
+				// e.g. this poll was still running from before a reload) —
+				// skip straight to the clips step.
+				enterClipsStepFromBatch(data);
+				return;
+			}
+			if (data.status === 'failed' || data.status === 'cancelled') {
+				state.analysis.status = 'error';
+				state.analysis.error = data.error === 'FREE_PLAN_USED'
+					? 'Бесплатная генерация уже использована. Оформите SONYA Pro.'
+					: 'Не удалось скачать или распознать видео. Проверьте ссылку/файл и попробуйте снова.';
+				renderAnalysisState();
+				showToast('Анализ стрима не удался', 'error');
+				return;
+			}
+			pollTimer = setTimeout(tick, POLL_INTERVAL_MS); // unknown status — keep polling defensively
+		};
+		tick();
+	}
+
+	async function confirmSelection() {
+		buildClips();
+		goToStep('clips');
+		state.clips.autoMode = state.accountPreset.autoReviewMode === 'auto';
+		autoModeToggle.checked = state.clips.autoMode;
+		renderClipsStep();
+
+		const segmentIds = state.clips.items.map(c => c.topic.id);
+		const resp = await smApiFetch(`/api/streamer/batches/${encodeURIComponent(state.batchId)}/selection`, {
+			method: 'POST',
+			body: JSON.stringify({ segment_ids: segmentIds }),
+		});
+		if (!resp || !resp.ok) {
+			showToast('Не удалось запустить создание клипов', 'error');
+			return;
+		}
+		pollBatchUntilDone();
+	}
+
+	function enterClipsStepFromBatch(data) {
+		const clipSegmentIds = new Set((data.clips || []).map(c => c.segment_id));
+		state.topics.items = (data.segments || []).map(segmentToTopic);
+		state.clips.items = state.topics.items
+			.filter(t => clipSegmentIds.has(t.id))
+			.map((t, i) => makeClipFromTopic(t, i));
+		state.clips.autoMode = state.accountPreset.autoReviewMode === 'auto';
+		autoModeToggle.checked = state.clips.autoMode;
+		goToStep('clips');
+		renderClipsStep();
+		applyBatchClips(data);
+		if (data.status === 'generating') pollBatchUntilDone();
+	}
+
+	function pollBatchUntilDone() {
+		stopPolling();
+		const myBatchId = state.batchId;
+		const tick = async () => {
+			if (state.batchId !== myBatchId) return;
+			const resp = await smApiFetch(`/api/streamer/batches/${encodeURIComponent(myBatchId)}`);
+			if (state.batchId !== myBatchId) return;
+			if (!resp || !resp.ok) {
+				pollTimer = setTimeout(tick, POLL_INTERVAL_MS);
+				return;
+			}
+			const data = await resp.json();
+			applyBatchClips(data);
+			if (data.status === 'generating') {
+				pollTimer = setTimeout(tick, POLL_INTERVAL_MS);
+			}
+			// ready / partially_failed / failed: terminal, stop polling.
+		};
+		tick();
+	}
+
+	// Merges real generation_jobs status per segment into state.clips.items
+	// — never touches a clip the user has already manually approved/
+	// skipped (that's a local review decision, not something a later poll
+	// tick should silently revert).
+	function applyBatchClips(data) {
+		const byId = new Map((data.clips || []).map(c => [c.segment_id, c]));
+		state.clips.items.forEach(clip => {
+			if (clip.status === 'approved' || clip.status === 'skipped') return;
+			const backendClip = byId.get(clip.topic.id);
+			if (!backendClip) return;
+			clip.remoteId = backendClip.job_id;
+
+			let nextStatus = 'processing';
+			if (backendClip.status === 'completed') nextStatus = 'pending';
+			else if (backendClip.status === 'failed') nextStatus = 'failed';
+
+			if (nextStatus === 'pending') {
+				clip.progressPct = 100;
+				clip.previewUrl = backendClip.previewUrl || null;
+				clip.downloadUrl = backendClip.downloadUrl || null;
+			} else if (nextStatus === 'failed') {
+				clip.failReason = backendClip.error || 'GPU-воркер не смог обработать сегмент.';
+			}
+
+			if (clip.status !== nextStatus) {
+				clip.status = nextStatus;
+				rerenderClip(clip);
+				// Auto-review only ever auto-approves *recommended* clips
+				// (see AUTO REVIEW in the file header) — everything else
+				// still lands in "pending" for manual review.
+				if (nextStatus === 'pending' && state.clips.autoMode && clip.recommended) {
+					resolveClip(clip, 'approved');
+				}
+			}
+		});
+		updateProcessingNote();
+	}
+
+	// ?batch=<id> rehydration — restores the correct step on page load
+	// without a reload, per the batch's real server-side status. Silently
+	// falls back to the empty source step for a stale/foreign/deleted
+	// batch id rather than surfacing an error for what is, from the
+	// user's perspective, just an old link.
+	async function rehydrateFromUrl() {
+		const batchId = new URLSearchParams(window.location.search).get('batch');
+		if (!batchId) return;
+
+		const resp = await smApiFetch(`/api/streamer/batches/${encodeURIComponent(batchId)}`);
+		if (!resp || !resp.ok) return;
+		const data = await resp.json();
+		state.batchId = batchId;
+
+		if (_LOADING_STATUSES.includes(data.status)) {
+			goToStep('topics');
+			state.analysis.status = 'running';
+			state.analysis.stageLabel = ANALYSIS_STAGE_LABELS[data.status] || ANALYSIS_STAGE_LABELS.queued;
+			state.analysis.progress = 30;
+			renderAnalysisState();
+			const loadingCloth = $('[data-cloth-canvas]', loadingEl);
+			if (loadingCloth) ClothEngine.attach(loadingCloth);
+			pollBatchUntilSelectable();
+			return;
+		}
+		if (data.status === 'awaiting_selection') {
+			state.topics.items = (data.segments || []).map(segmentToTopic);
+			state.analysis.status = 'done';
+			goToStep('topics');
+			renderAnalysisState();
+			renderTopicsStep();
+			return;
+		}
+		if (_CLIP_STEP_STATUSES.includes(data.status)) {
+			enterClipsStepFromBatch(data);
+			return;
+		}
+		if (data.status === 'failed' || data.status === 'cancelled') {
+			goToStep('topics');
+			state.analysis.status = 'error';
+			state.analysis.error = 'Обработка этого стрима не удалась. Запустите заново из шага «Источник».';
+			renderAnalysisState();
+		}
+	}
 
 	/* ============================================================
 	   E. Streamer Preset drawer — account-level config (subtitles /
@@ -1263,6 +1462,30 @@
 			console.warn('[streamer-mode] api_fetch_failed path=' + path, err);
 			return null;
 		}
+	}
+
+	/* Same pattern as auth.js's _getOrCreateJobIdempotencyKey() /
+	   clearJobIdempotencyKey() for the plain upload flow — duplicated here
+	   rather than shared, since streamer-mode.html doesn't load auth.js.
+	   Held across a network-level failure (smApiFetch returned null — the
+	   client doesn't know whether the server actually received the
+	   request) so a retry of THIS SAME submit attempt converges, server-
+	   side, on the one batch already reserved for it (see POST
+	   /api/streamer/batches' Idempotency-Key handling in
+	   scripts/streamer_routes.py). Cleared the moment any real HTTP
+	   response comes back (success or a definitive error) — that means
+	   this attempt is settled, so the next click (including a manual
+	   "retry" after a failed batch) is always a new logical run, not a
+	   replay of the failed one. */
+	let _batchIdempotencyKey = null;
+	function _getOrCreateBatchIdempotencyKey() {
+		if (!_batchIdempotencyKey) {
+			_batchIdempotencyKey = (crypto.randomUUID ? crypto.randomUUID() : `sm-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		}
+		return _batchIdempotencyKey;
+	}
+	function _clearBatchIdempotencyKey() {
+		_batchIdempotencyKey = null;
 	}
 
 	async function fetchTelegramStatus() {
@@ -1528,21 +1751,19 @@
 	/* Initial paint */
 	renderSourceStep();
 	fetchTelegramStatus(); // real backend call — see the Telegram section above
+	rehydrateFromUrl();    // real backend call — see the REAL BATCH FLOW section above
 
 	/* ============================================================
-	   NOT DONE YET (intentionally, this pass is still frontend-mock for
-	   everything except Telegram account linking, which now calls the
-	   real /api/telegram/* endpoints — see that section above):
-	   - no backend calls anywhere else in this file
-	   - startAnalysis()/finishAnalysis() -> replace with a real
-	     topic-detection API call + polling; keep renderAnalysisState()
-	   - buildClips()/processClip() -> replace with POST /api/generation/
-	     jobs (mode: "streamer") per selected topic + polling, reusing
-	     the pattern already in app.js (submitGenerationJob/pollJob);
-	     keep renderClipsStep()/clipCardHTML()
-	   - clip.remoteId -> set from the real job/clip id once created;
-	     updateOpenEditorState() already gates on it
-	   - "Открыть в редакторе" -> once remoteId exists, navigate to
-	     opencut.html with the approved clip ids
+	   NOT DONE YET (intentionally still frontend-mock — see the REAL
+	   BATCH FLOW and Telegram sections above for everything that now
+	   calls a real backend):
+	   - single-clip retry after a compose failure (retryClip() shows an
+	     honest "not supported yet" toast instead)
+	   - subtitle quick-editor rerender, promo assets, auto-review scoring
+	     (recommended is real but always false — see segments_from_analysis
+	     in scripts/prod_job_store.py)
+	   - clip.remoteId is real (set by applyBatchClips()); "Открыть в
+	     редакторе"/OpenCut navigation itself still doesn't exist
+	   - Telegram completion notifications (linking itself is real)
 	   ============================================================ */
 })();
