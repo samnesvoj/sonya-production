@@ -77,6 +77,45 @@ def verify_worker_hmac(payload: bytes, signature: str) -> bool:
     return hmac.compare_digest(expected, signature)
 
 
+# ── Telegram webhook auth ────────────────────────────────────————————————————————
+
+_TELEGRAM_WEBHOOK_SECRET: Optional[str] = None
+
+
+def _get_telegram_webhook_secret() -> str:
+    global _TELEGRAM_WEBHOOK_SECRET
+    if _TELEGRAM_WEBHOOK_SECRET is None:
+        _TELEGRAM_WEBHOOK_SECRET = os.environ.get("TELEGRAM_WEBHOOK_SECRET", "")
+    if not _TELEGRAM_WEBHOOK_SECRET:
+        raise RuntimeError("TELEGRAM_WEBHOOK_SECRET not configured")
+    return _TELEGRAM_WEBHOOK_SECRET
+
+
+def verify_telegram_webhook_secret(
+    x_telegram_bot_api_secret_token: str = Header(default="", alias="X-Telegram-Bot-Api-Secret-Token"),
+) -> None:
+    """
+    FastAPI dependency: verify Telegram's webhook secret_token header
+    (set via the `secret_token` param on Bot API `setWebhook` —
+    https://core.telegram.org/bots/api#setwebhook). Never in the URL, only
+    this header. Constant-time compare, generic 403, never reveals what
+    was wrong — same shape as verify_worker_secret() above. Runs as a
+    FastAPI dependency, so it executes before the webhook route body does:
+    an unauthenticated POST never reaches the DB or the update-parsing
+    logic at all.
+    """
+    trace_id = new_trace_id()
+    expected = _get_telegram_webhook_secret()
+    provided = x_telegram_bot_api_secret_token.strip()
+
+    if not hmac.compare_digest(provided.encode(), expected.encode()):
+        logger.warning("[security] telegram_webhook_auth_failed trace_id=%s", trace_id)
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"error": "forbidden", "trace_id": trace_id},
+        )
+
+
 # ── User / owner checks ————————————————————————————————————————————————————————
 
 def assert_job_owner(job: dict, user_id: str) -> None:

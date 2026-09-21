@@ -193,8 +193,12 @@
 		activeSubtitlePresetId: 'sub-default',
 		autoReviewMode: 'manual', // 'manual' | 'recommend' | 'auto'
 		telegramNotifyEnabled: false,
+		// telegramLinked/telegramLinkedAt are seeded false/null here and
+		// overwritten by the real GET /api/telegram/status on load — see
+		// fetchTelegramStatus(). Everything else in accountPreset is still
+		// pure mock; this is the one field backed by a real endpoint.
 		telegramLinked: false,
-		telegramHandle: null,
+		telegramLinkedAt: null,
 	};
 
 	function timecodeToSeconds(tc) {
@@ -1238,30 +1242,111 @@
 		});
 	}
 
-	/* ── Telegram ── */
+	/* ── Telegram ──
+	   Real backend, not mock — see scripts/telegram_routes.py. Everything
+	   else in this file is still mock (no real job creation yet); this is
+	   the one deliberate exception, per the account-linking backend pass.
+	   Notify-on-completion delivery itself is NOT implemented yet (no
+	   streamer_batches sender exists) — telegramNotifyEnabled here is
+	   still just a local UI preference, not wired to anything server-side. */
+	const SONYA_API_BASE = window.SONYA_API_BASE || '';
+	let awaitingTelegramLink = false;
+
+	async function smApiFetch(path, options = {}) {
+		try {
+			return await fetch(SONYA_API_BASE + path, {
+				credentials: 'include', // send the HttpOnly sonya_session cookie
+				headers: { 'Content-Type': 'application/json' },
+				...options,
+			});
+		} catch (err) {
+			console.warn('[streamer-mode] api_fetch_failed path=' + path, err);
+			return null;
+		}
+	}
+
+	async function fetchTelegramStatus() {
+		const resp = await smApiFetch('/api/telegram/status');
+		if (!resp || !resp.ok) return; // not logged in yet, or a transient error — leave state as-is
+		const data = await resp.json();
+		state.accountPreset.telegramLinked = !!data.linked;
+		state.accountPreset.telegramLinkedAt = data.linked_at || null;
+		renderTelegramTab();
+	}
+
 	function renderTelegramTab() {
 		telegramNotifyToggle.checked = state.accountPreset.telegramNotifyEnabled;
 		telegramStatusEl.classList.toggle('is-linked', state.accountPreset.telegramLinked);
 		telegramStatusEl.innerHTML = state.accountPreset.telegramLinked
-			? `<span class="sm-telegram-status-text"><span class="sm-telegram-status-dot"></span> Telegram подключён · ${escapeHtml(state.accountPreset.telegramHandle || '')}</span>
+			? `<span class="sm-telegram-status-text">
+					<span class="sm-telegram-status-dot"></span>
+					<span>
+						<span class="sm-telegram-status-title">Telegram подключён</span>
+						<span class="sm-telegram-status-sub">@sonya_group_bot сообщит, когда обработка стрима будет готова.</span>
+					</span>
+				</span>
 			   <button class="sm-link-btn" type="button" id="sm-telegram-unlink">Отключить</button>`
 			: `<span class="sm-telegram-status-text"><span class="sm-telegram-status-dot"></span> Telegram не подключён</span>
-			   <button class="btn-secondary sm-btn-sm" type="button" id="sm-telegram-link">Подключить Telegram</button>`;
+			   <button class="btn-secondary sm-btn-sm" type="button" id="sm-telegram-link">Подключить @sonya_group_bot</button>`;
 		const linkBtn = $('#sm-telegram-link', telegramStatusEl);
-		if (linkBtn) linkBtn.addEventListener('click', () => {
-			// MOCK — no real OAuth here, see NOT DONE YET.
-			state.accountPreset.telegramLinked = true;
-			state.accountPreset.telegramHandle = '@streamer_demo';
-			renderTelegramTab();
-			showToast('Telegram подключён (демо)', 'success');
-		});
+		if (linkBtn) linkBtn.addEventListener('click', requestTelegramLink);
 		const unlinkBtn = $('#sm-telegram-unlink', telegramStatusEl);
-		if (unlinkBtn) unlinkBtn.addEventListener('click', () => {
-			state.accountPreset.telegramLinked = false;
-			state.accountPreset.telegramHandle = null;
-			renderTelegramTab();
-		});
+		if (unlinkBtn) unlinkBtn.addEventListener('click', unlinkTelegram);
 	}
+
+	async function requestTelegramLink() {
+		// window.open() must happen synchronously, as the very first thing
+		// in this handler, before any `await` — calling it AFTER an awaited
+		// fetch risks popup blockers (Safari especially) no longer crediting
+		// the call to the click's own user gesture and silently discarding
+		// it. The blank tab gets its real destination assigned once the
+		// token request resolves.
+		const popup = window.open('about:blank', '_blank', 'noopener');
+		const popupBlocked = !popup || popup.closed || typeof popup.closed === 'undefined';
+
+		const resp = await smApiFetch('/api/telegram/link-token', { method: 'POST' });
+		if (!resp || !resp.ok) {
+			if (popup && !popup.closed) popup.close();
+			showToast('Не удалось получить ссылку для подключения Telegram', 'error');
+			return;
+		}
+		const data = await resp.json();
+		awaitingTelegramLink = true;
+
+		if (popupBlocked) {
+			// The synchronous open was already blocked (e.g. popups
+			// disabled entirely) — no silent failure: navigate this tab
+			// there directly rather than leaving the click with no visible
+			// effect at all.
+			window.location.href = data.deep_link;
+			return;
+		}
+		popup.location = data.deep_link;
+	}
+
+	async function unlinkTelegram() {
+		const resp = await smApiFetch('/api/telegram/unlink', { method: 'POST' });
+		if (!resp || !resp.ok) {
+			showToast('Не удалось отключить Telegram', 'error');
+			return;
+		}
+		state.accountPreset.telegramLinked = false;
+		state.accountPreset.telegramLinkedAt = null;
+		renderTelegramTab();
+	}
+
+	// "После возврата/фокуса страницы: GET /api/telegram/status" — the
+	// user leaves this tab to hit Start in Telegram, then comes back.
+	function maybeRefreshTelegramStatus() {
+		if (!awaitingTelegramLink) return;
+		awaitingTelegramLink = false;
+		fetchTelegramStatus();
+	}
+	document.addEventListener('visibilitychange', () => {
+		if (document.visibilityState === 'visible') maybeRefreshTelegramStatus();
+	});
+	window.addEventListener('focus', maybeRefreshTelegramStatus);
+
 	telegramNotifyToggle.addEventListener('change', () => {
 		state.accountPreset.telegramNotifyEnabled = telegramNotifyToggle.checked;
 	});
@@ -1282,6 +1367,7 @@
 		renderPromoTab();
 		renderAutoTab();
 		renderTelegramTab();
+		fetchTelegramStatus(); // refresh from the real backend every time the drawer opens
 		presetDrawerOverlay.classList.remove('is-hidden');
 	}
 	function closePresetDrawer() {
@@ -1441,10 +1527,13 @@
 
 	/* Initial paint */
 	renderSourceStep();
+	fetchTelegramStatus(); // real backend call — see the Telegram section above
 
 	/* ============================================================
-	   NOT DONE YET (intentionally, this pass is frontend-only):
-	   - no backend calls anywhere in this file
+	   NOT DONE YET (intentionally, this pass is still frontend-mock for
+	   everything except Telegram account linking, which now calls the
+	   real /api/telegram/* endpoints — see that section above):
+	   - no backend calls anywhere else in this file
 	   - startAnalysis()/finishAnalysis() -> replace with a real
 	     topic-detection API call + polling; keep renderAnalysisState()
 	   - buildClips()/processClip() -> replace with POST /api/generation/

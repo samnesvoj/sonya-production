@@ -28,6 +28,12 @@ Robokassa payment endpoints (see scripts/payment_routes.py):
   POST /api/billing/robokassa/result         (Robokassa server-to-server, ResultURL -- source of truth)
   GET  /api/billing/payment-status           (browser, polled from payment/success.html + fail.html)
 
+@sonya_group_bot account-linking endpoints (see scripts/telegram_routes.py):
+  POST /api/telegram/link-token              (browser, one-time deep-link token)
+  POST /api/telegram/webhook                 (Telegram servers -- X-Telegram-Bot-Api-Secret-Token, not session)
+  POST /api/telegram/unlink                  (browser)
+  GET  /api/telegram/status                  (browser)
+
 Worker-internal endpoints (require Authorization: Bearer WORKER_SECRET --
 unchanged, never cookie/session based):
   POST /api/worker/claim
@@ -95,6 +101,7 @@ from scripts.prod_s3_storage import (
 )
 from scripts.auth_routes import router as auth_router
 from scripts.payment_routes import router as payment_router
+from scripts.telegram_routes import router as telegram_router
 from scripts.quota_guard import check_user_quota
 from scripts.rate_limiter import RateLimiter
 from scripts.security import (
@@ -186,6 +193,9 @@ app.include_router(auth_router)
 
 # Robokassa checkout + webhook endpoints (see scripts/payment_routes.py)
 app.include_router(payment_router)
+
+# @sonya_group_bot account-linking endpoints (see scripts/telegram_routes.py)
+app.include_router(telegram_router)
 
 # ── Mode registry ——————————————————————————————————————————————————————————————
 
