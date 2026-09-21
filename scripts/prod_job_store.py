@@ -42,6 +42,20 @@ Functions:
   add_job_file           register an S3 file with a job
   list_job_files         list all files for a job
 
+Streamer batches (migration 012) — batch foundation only, no HTTP
+endpoints and no worker phase dispatch wired up yet:
+  create_streamer_batch          new batch, analysis_job_id nullable
+  get_streamer_batch             user_id required — ownership enforced in the query
+  list_user_streamer_batches     paginated list for a user
+  set_streamer_batch_status      terminal-status transitions are locked (see its docstring)
+  attach_analysis_job_to_batch   set analysis_job_id once the generation job exists
+  replace_streamer_segments      atomic delete-all + insert for one batch
+  list_streamer_segments         ordered by ordinal
+  set_streamer_segment_selection toggle one segment's `selected`
+  attach_streamer_clip_job       link a real generation_jobs row to a segment (idempotent)
+  list_streamer_clip_jobs        all clip-job links for a batch
+  segments_from_analysis         maps analyze()'s return shape -> replace_streamer_segments() input
+
 GPU dispatcher / Vast startup SLA (migration 006 + 007):
   get_stale_gpu_requested_jobs  find jobs stuck past VAST_STARTUP_TIMEOUT_SEC
   mark_gpu_startup_timeout      requeue (another offer) or fail a timed-out job
@@ -1192,3 +1206,414 @@ def count_active_gpu_jobs() -> int:
         return int(row["n"]) if row else 0
     finally:
         conn.close()
+
+
+# ── Streamer batches (PHASE A batch foundation, migration 012) ─────────────────
+#
+# streamer_batches / streamer_segments / streamer_clip_jobs. See
+# modes/streamer/runner.py's analyze()/compose_one() split and the
+# PHASE A / batch-foundation audit for the architecture this backs.
+#
+# Store layer only — no HTTP endpoints, no worker phase dispatch yet. Every
+# read that takes a user_id enforces ownership in the query itself (defense
+# in depth, not dependent on a future API-layer check remembering to).
+#
+# generation_jobs itself is NOT touched by any of this — batch-awareness is
+# entirely a side table (streamer_clip_jobs), never a new column or FK
+# direction on generation_jobs's own load-bearing schema.
+
+STREAMER_BATCH_STATUS_QUEUED             = "queued"
+STREAMER_BATCH_STATUS_INGESTING          = "ingesting"
+STREAMER_BATCH_STATUS_ANALYZING          = "analyzing"
+STREAMER_BATCH_STATUS_AWAITING_SELECTION = "awaiting_selection"
+STREAMER_BATCH_STATUS_GENERATING         = "generating"
+STREAMER_BATCH_STATUS_READY              = "ready"
+STREAMER_BATCH_STATUS_PARTIALLY_FAILED   = "partially_failed"
+STREAMER_BATCH_STATUS_FAILED             = "failed"
+STREAMER_BATCH_STATUS_CANCELLED          = "cancelled"
+
+_STREAMER_BATCH_TERMINAL_STATUSES = frozenset({
+    STREAMER_BATCH_STATUS_READY,
+    STREAMER_BATCH_STATUS_PARTIALLY_FAILED,
+    STREAMER_BATCH_STATUS_FAILED,
+    STREAMER_BATCH_STATUS_CANCELLED,
+})
+
+
+class StreamerBatchTransitionError(ValueError):
+    """Raised by set_streamer_batch_status() when asked to move a batch
+    out of a terminal status — see that function's docstring."""
+
+
+class StreamerClipJobConflictError(ValueError):
+    """Raised by attach_streamer_clip_job() when a segment already has a
+    DIFFERENT job attached — see that function's docstring."""
+
+
+class StreamerSegmentsLockedError(ValueError):
+    """Raised by replace_streamer_segments() when the batch already has at
+    least one streamer_clip_jobs row attached — see that function's
+    docstring."""
+
+
+def create_streamer_batch(
+    user_id: str,
+    preset_snapshot: Dict[str, Any],
+    analysis_job_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Create a new batch, optionally already pointed at an analysis job.
+    analysis_job_id is nullable by design (migration 012): a batch exists
+    from the start of ingest, before the analysis generation_jobs row
+    necessarily exists yet — see attach_analysis_job_to_batch() for
+    attaching it once it does.
+    """
+    batch_id = str(uuid.uuid4())
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO streamer_batches
+                        (id, user_id, analysis_job_id, preset_snapshot, status,
+                         created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    RETURNING *
+                    """,
+                    (batch_id, user_id, analysis_job_id, json.dumps(preset_snapshot),
+                     STREAMER_BATCH_STATUS_QUEUED, _now(), _now()),
+                )
+                return dict(cur.fetchone())
+    finally:
+        conn.close()
+
+
+def get_streamer_batch(batch_id: str, user_id: str) -> Optional[Dict[str, Any]]:
+    """
+    user_id is required, not optional — ownership is enforced in the query
+    itself (WHERE id=... AND user_id=...) so a caller can never accidentally
+    return another user's batch by forgetting a check afterward. A batch
+    that exists but belongs to someone else returns None, same as one that
+    doesn't exist at all — never distinguishes the two.
+    """
+    conn = _get_conn()
+    try:
+        return _row(
+            conn,
+            "SELECT * FROM streamer_batches WHERE id = %s AND user_id = %s",
+            (batch_id, user_id),
+        )
+    finally:
+        conn.close()
+
+
+def list_user_streamer_batches(
+    user_id: str,
+    limit: int = 20,
+    offset: int = 0,
+    status: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    conn = _get_conn()
+    try:
+        if status:
+            sql = """
+                SELECT * FROM streamer_batches
+                WHERE user_id = %s AND status = %s
+                ORDER BY created_at DESC LIMIT %s OFFSET %s
+            """
+            params = (user_id, status, limit, offset)
+        else:
+            sql = """
+                SELECT * FROM streamer_batches
+                WHERE user_id = %s
+                ORDER BY created_at DESC LIMIT %s OFFSET %s
+            """
+            params = (user_id, limit, offset)
+        return _rows(conn, sql, params)
+    finally:
+        conn.close()
+
+
+def set_streamer_batch_status(
+    batch_id: str,
+    status: str,
+    error: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Update a batch's status. Minimal transition guard only, not a state-
+    machine framework: once a batch is in a terminal status (ready /
+    partially_failed / failed / cancelled), it can never move to a
+    DIFFERENT status again — e.g. ready -> analyzing or failed ->
+    generating both raise StreamerBatchTransitionError. Setting the SAME
+    terminal status again is a no-op success (idempotent replay), not an
+    error. No ordering/forward-flow validation beyond that — any
+    non-terminal -> any status is allowed, same looseness
+    update_job_status() already has for generation_jobs.
+
+    There is no existing "transition validation" layer anywhere in this
+    codebase to place this above instead — update_job_status() for
+    generation_jobs is a plain unconditional UPDATE, legality enforced
+    purely by which callers invoke it in what order. This is a new,
+    deliberately minimal rule specific to batches, living in the store
+    layer because no batch API layer exists yet to put it in instead.
+
+    The guard is enforced by the UPDATE's own WHERE clause (status <>
+    ALL(terminal_statuses) OR status = the new status), NOT by a separate
+    SELECT-then-UPDATE — a check-then-write here would leave a window for
+    a second, concurrent call to slip a real transition through between
+    the read and the write. The single statement is atomic: Postgres
+    evaluates WHERE against the row as it stands at that instant, so two
+    concurrent set_streamer_batch_status() calls on the same terminal
+    batch can never both "win" — at most one row-affecting UPDATE happens,
+    same guarantee create_job_with_quota's ON CONFLICT already relies on
+    elsewhere in this file, just via WHERE instead of a unique index. The
+    follow-up SELECT below only ever runs to build a clear error message
+    after the UPDATE already found 0 rows to touch — it never decides
+    whether the mutation happens.
+
+    Raises ValueError if batch_id doesn't exist, StreamerBatchTransitionError
+    if it exists but is terminal and `status` differs from its current one.
+    """
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                # COALESCE keeps the original completed_at on an idempotent
+                # same-terminal-status replay, and leaves it untouched (NULL)
+                # for a non-terminal status.
+                new_completed_at = _now() if status in _STREAMER_BATCH_TERMINAL_STATUSES else None
+                cur.execute(
+                    """
+                    UPDATE streamer_batches
+                    SET status = %s, error = %s, updated_at = %s,
+                        completed_at = COALESCE(completed_at, %s)
+                    WHERE id = %s
+                      AND (status <> ALL(%s) OR status = %s)
+                    RETURNING *
+                    """,
+                    (status, error, _now(), new_completed_at, batch_id,
+                     list(_STREAMER_BATCH_TERMINAL_STATUSES), status),
+                )
+                row = cur.fetchone()
+                if row:
+                    return dict(row)
+
+                # 0 rows affected — either the batch doesn't exist, or it's
+                # terminal and this was a real (rejected) transition. This
+                # SELECT is diagnostic only, purely to phrase the right
+                # error; see the atomicity note above.
+                existing = _row(conn, "SELECT * FROM streamer_batches WHERE id=%s", (batch_id,))
+                if not existing:
+                    raise ValueError(f"streamer_batch not found: {batch_id}")
+                raise StreamerBatchTransitionError(
+                    f"streamer_batch {batch_id} is terminal ({existing['status']!r}) — "
+                    f"cannot transition to {status!r}"
+                )
+    finally:
+        conn.close()
+
+
+def attach_analysis_job_to_batch(batch_id: str, analysis_job_id: str) -> None:
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE streamer_batches SET analysis_job_id=%s, updated_at=%s WHERE id=%s",
+                    (analysis_job_id, _now(), batch_id),
+                )
+    finally:
+        conn.close()
+
+
+def replace_streamer_segments(
+    batch_id: str,
+    segments: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Atomically replace ALL segments for a batch: delete every existing row
+    for this batch_id, then insert the given list, one transaction — no
+    orphaned rows left behind from a previous analysis pass, and a failure
+    partway through never leaves a mix of old and new segments.
+
+    Each item in `segments` must provide start_sec/duration_sec/title;
+    score/description/recommended/selected/crop_hints/metadata are
+    optional (DB defaults apply: recommended=False, selected=True).
+    `ordinal` is taken from list position (0-based) unless given
+    explicitly. See segments_from_analysis() for building this list from
+    modes.streamer.runner.analyze()'s own return shape.
+
+    Only callable before any streamer_clip_jobs exist for this batch —
+    enforced, not just documented: raises StreamerSegmentsLockedError if
+    even one clip job is already attached. Without this guard, ON DELETE
+    CASCADE on streamer_clip_jobs.segment_id would silently delete those
+    join rows the moment their segment is deleted here (never the
+    underlying generation_jobs rows themselves, but the batch would
+    silently lose track of jobs already in flight). Intended caller is the
+    analyze phase, once, before any selection/generation has happened; if
+    segments genuinely need to change after generation started, that's a
+    deliberate decision for a caller to make explicitly (e.g. cancel the
+    batch first), not something this function does on its own.
+    """
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM streamer_clip_jobs WHERE batch_id=%s LIMIT 1",
+                    (batch_id,),
+                )
+                if cur.fetchone():
+                    raise StreamerSegmentsLockedError(
+                        f"streamer_batch {batch_id} already has clip jobs attached — "
+                        f"refusing to replace its segments"
+                    )
+                cur.execute("DELETE FROM streamer_segments WHERE batch_id=%s", (batch_id,))
+                inserted: List[Dict[str, Any]] = []
+                for i, seg in enumerate(segments):
+                    seg_id = str(uuid.uuid4())
+                    cur.execute(
+                        """
+                        INSERT INTO streamer_segments
+                            (id, batch_id, ordinal, start_sec, duration_sec, title,
+                             description, score, recommended, selected,
+                             crop_hints, metadata, created_at, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        RETURNING *
+                        """,
+                        (
+                            seg_id, batch_id, seg.get("ordinal", i),
+                            seg["start_sec"], seg["duration_sec"], seg["title"],
+                            seg.get("description"), seg.get("score"),
+                            seg.get("recommended", False), seg.get("selected", True),
+                            json.dumps(seg.get("crop_hints") or {}),
+                            json.dumps(seg.get("metadata") or {}),
+                            _now(), _now(),
+                        ),
+                    )
+                    inserted.append(dict(cur.fetchone()))
+                return inserted
+    finally:
+        conn.close()
+
+
+def list_streamer_segments(batch_id: str) -> List[Dict[str, Any]]:
+    conn = _get_conn()
+    try:
+        return _rows(
+            conn,
+            "SELECT * FROM streamer_segments WHERE batch_id=%s ORDER BY ordinal ASC",
+            (batch_id,),
+        )
+    finally:
+        conn.close()
+
+
+def set_streamer_segment_selection(segment_id: str, selected: bool) -> None:
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE streamer_segments SET selected=%s, updated_at=%s WHERE id=%s",
+                    (selected, _now(), segment_id),
+                )
+    finally:
+        conn.close()
+
+
+def attach_streamer_clip_job(batch_id: str, segment_id: str, job_id: str) -> Dict[str, Any]:
+    """
+    Link a real generation_jobs row to a segment. segment_id is PRIMARY KEY
+    on streamer_clip_jobs (migration 012), so at most one job can ever be
+    attached to a given segment.
+
+    Idempotent for an exact repeat: calling this again with the SAME
+    segment_id + job_id that's already attached returns the existing row,
+    no error — matches this codebase's existing idempotency-key philosophy
+    (see create_job_with_quota's own "existing" outcome). A genuine
+    conflict — segment_id already attached to a DIFFERENT job_id — raises
+    StreamerClipJobConflictError instead of silently overwriting the link.
+    """
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO streamer_clip_jobs (batch_id, segment_id, job_id, created_at)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT (segment_id) DO NOTHING
+                    RETURNING *
+                    """,
+                    (batch_id, segment_id, job_id, _now()),
+                )
+                row = cur.fetchone()
+                if row:
+                    return dict(row)
+
+                existing = _row(
+                    conn,
+                    "SELECT * FROM streamer_clip_jobs WHERE segment_id=%s",
+                    (segment_id,),
+                )
+                if existing and existing["job_id"] == job_id:
+                    return existing  # idempotent replay
+                raise StreamerClipJobConflictError(
+                    f"segment {segment_id} is already attached to a different job "
+                    f"({existing['job_id'] if existing else '?'} != {job_id})"
+                )
+    finally:
+        conn.close()
+
+
+def list_streamer_clip_jobs(batch_id: str) -> List[Dict[str, Any]]:
+    conn = _get_conn()
+    try:
+        return _rows(
+            conn,
+            "SELECT * FROM streamer_clip_jobs WHERE batch_id=%s ORDER BY created_at ASC",
+            (batch_id,),
+        )
+    finally:
+        conn.close()
+
+
+def segments_from_analysis(
+    analysis_result: Dict[str, Any],
+    titles: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Maps modes.streamer.runner.analyze()'s return shape into the dict shape
+    replace_streamer_segments() expects — the segment-persistence "store
+    contract" from the PHASE A brief. NOT wired into the worker/production
+    flow yet (see that brief) — a caller constructs this explicitly for
+    now; nothing in gpu_worker.py calls it.
+
+    `titles` is optional and positional (index-matched to
+    analysis_result["segments"]) — analyze() itself produces no titles
+    (a product-layer concern, e.g. a future captioning step), so a
+    caller-supplied list is used when given, and a generic numbered
+    placeholder otherwise. `recommended` is always False here — no
+    recommendation-scoring heuristic is invented in this helper; that is a
+    separate, explicitly out-of-scope concern (see set_streamer_segment_
+    selection for toggling it after the fact via whatever logic decides
+    it).
+    """
+    segments = analysis_result.get("segments", [])
+    crop_hints = analysis_result.get("crop_hints") or {}
+    out = []
+    for i, seg in enumerate(segments):
+        title = titles[i] if titles and i < len(titles) else f"Тема {i + 1}"
+        out.append({
+            "ordinal": i,
+            "start_sec": seg["start_sec"],
+            "duration_sec": seg["duration_sec"],
+            "title": title,
+            "score": seg.get("score"),
+            "recommended": False,
+            "crop_hints": crop_hints,
+            "metadata": {"source": seg.get("source")},
+        })
+    return out
