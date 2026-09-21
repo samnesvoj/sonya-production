@@ -113,6 +113,7 @@ from scripts.auth_routes import router as auth_router
 from scripts.payment_routes import router as payment_router
 from scripts.telegram_routes import router as telegram_router
 from scripts.streamer_routes import router as streamer_router
+from scripts.streamer_notify import notify_streamer_batch_completion
 from scripts.quota_guard import check_user_quota
 from scripts.rate_limiter import RateLimiter
 from scripts.security import (
@@ -1062,6 +1063,27 @@ def _maybe_reconcile_streamer_batch(job: Optional[Dict[str, Any]]) -> None:
                         batch_id, job.get("id"), exc)
 
 
+def _maybe_notify_streamer_batch(job: Optional[Dict[str, Any]]) -> None:
+    """
+    Runs as a FastAPI background task, scheduled AFTER _maybe_reconcile_
+    streamer_batch(job) has already run synchronously above -- so by the
+    time this actually executes, the batch's terminal status (if this
+    job's completion/failure caused one) is already committed. This is
+    exactly why it's backgrounded: Telegram network latency (or an outage)
+    must never delay this endpoint's own response to the GPU worker, and
+    notify_streamer_batch_completion() itself never raises (see its own
+    docstring) so it can never turn this into a failed background task
+    either. No-op for any job that isn't part of a streamer batch, same
+    guard as _maybe_reconcile_streamer_batch above.
+    """
+    if not job:
+        return
+    batch_id = (job.get("params") or {}).get("streamer_batch_id")
+    if not batch_id:
+        return
+    notify_streamer_batch_completion(batch_id)
+
+
 def _cleanup_ephemeral_instance(job: Optional[Dict[str, Any]]) -> None:
     """
     Best-effort destroy of the vast.ai instance backing a job that just
@@ -1107,6 +1129,7 @@ async def worker_complete_job(
           details={"clip_count": body.clip_count, "processing_ms": body.processing_ms})
     logger.info("[api] job_completed job_id=%s clips=%s ms=%s", job_id, body.clip_count, body.processing_ms)
     _maybe_reconcile_streamer_batch(job)
+    background_tasks.add_task(_maybe_notify_streamer_batch, job)
     background_tasks.add_task(_cleanup_ephemeral_instance, job)
     return {"ok": True, "job_id": job_id}
 
@@ -1131,6 +1154,7 @@ async def worker_fail_job(
           details={"error_code": body.error_code, "retry": body.retry})
     logger.warning("[api] job_failed job_id=%s code=%s retry=%s", job_id, body.error_code, body.retry)
     _maybe_reconcile_streamer_batch(job)
+    background_tasks.add_task(_maybe_notify_streamer_batch, job)
     background_tasks.add_task(_cleanup_ephemeral_instance, job)
     return {"ok": True, "job_id": job_id}
 

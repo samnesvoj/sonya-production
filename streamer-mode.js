@@ -171,6 +171,42 @@
 		telegramLinkedAt: null,
 	};
 
+	/* Local persistence for preset UI preferences (currently just
+	   telegramNotifyEnabled) — survives reload and carries across batches,
+	   which a real batch's own preset_snapshot deliberately does NOT (see
+	   submitSource()'s own note on that immutability). SONYA-scoped key,
+	   versioned so the shape can grow later (subtitles/promo/auto-review)
+	   without a migration: bump the "v1" suffix if a future change isn't
+	   backward compatible, and let _loadLocalPreset() ignore unknown/stale
+	   shapes rather than throw. NEVER stores auth/session data, Telegram
+	   IDs, or any secret — only this one UI preference. */
+	const PRESET_STORAGE_KEY = 'sonya.streamer.preset.v1';
+
+	function loadLocalPreset() {
+		try {
+			const raw = window.localStorage.getItem(PRESET_STORAGE_KEY);
+			if (!raw) return {};
+			const parsed = JSON.parse(raw);
+			if (!parsed || typeof parsed !== 'object') return {};
+			const out = {};
+			if (typeof parsed.telegramNotifyEnabled === 'boolean') out.telegramNotifyEnabled = parsed.telegramNotifyEnabled;
+			return out;
+		} catch (_) {
+			return {}; // private browsing, disabled storage, corrupt JSON — never block page load over this
+		}
+	}
+
+	function saveLocalPreset() {
+		try {
+			window.localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify({
+				telegramNotifyEnabled: !!state.accountPreset.telegramNotifyEnabled,
+			}));
+		} catch (_) {
+			// Quota exceeded / private mode / storage disabled — the toggle
+			// still works for this page session, it just won't persist.
+		}
+	}
+
 	function timecodeToSeconds(tc) {
 		const parts = String(tc).split(':').map(Number);
 		return parts.reduce((acc, v) => acc * 60 + v, 0);
@@ -215,13 +251,27 @@
 		// stray poll from a previous batch" guard (each poll loop captures
 		// it at start and bails the moment it no longer matches).
 		batchId: null,
+		// What THIS batch's own preset_snapshot actually said, once known
+		// (set in submitSource() at the moment of submission — the
+		// authoritative source, since we construct that snapshot ourselves
+		// — and reconfirmed from the server's own preset_snapshot on every
+		// GET response, e.g. after a reload/rehydration). Deliberately
+		// separate from accountPreset.telegramNotifyEnabled: the toggle is
+		// a live, ongoing preference that can change after this batch was
+		// created, but the "can close this tab" copy must reflect what
+		// THIS batch actually committed to, not whatever the toggle
+		// currently shows — see updateProcessingNote().
+		batchNotifyEnabled: false,
 		// Account-level "Streamer Preset" — lives above any single batch,
-		// edited via the drawer (see section E). Seeded from mock data now;
-		// a real account would load/save this server-side.
+		// edited via the drawer (see section E). Seeded from mock data,
+		// overlaid with whatever the user last saved locally (see
+		// loadLocalPreset() above) — a real account would load/save this
+		// server-side instead.
 		accountPreset: {
 			subtitlePresets: MOCK_SUBTITLE_PRESETS.map(p => ({ ...p })),
 			promoAssets: MOCK_PROMO_ASSETS.map(a => ({ ...a })),
 			...MOCK_STREAMER_PRESET,
+			...loadLocalPreset(),
 		},
 	};
 	let presetDrawerActiveTab = 'subtitles';
@@ -889,9 +939,21 @@
 	function updateProcessingNote() {
 		const stillProcessing = state.clips.items.some(c => c.status === 'processing');
 		processingNote.classList.toggle('is-hidden', !stillProcessing);
-		processingNote.innerHTML = stillProcessing
-			? `<i class="fa-solid fa-gear sm-processing-note-icon"></i> Можно закрыть вкладку — SONYA продолжит обработку.`
+		if (!stillProcessing) {
+			processingNote.innerHTML = '';
+			return;
+		}
+		// Only promise the Telegram notification when THIS BATCH's own
+		// preset_snapshot actually asked for one -- state.batchNotifyEnabled,
+		// not the live accountPreset toggle, which may have been flipped
+		// since this batch was created (see submitSource()'s own note: the
+		// snapshot is immutable once the batch exists, so this copy must
+		// match that fixed decision, not whatever the toggle shows today).
+		const telegramLine = state.batchNotifyEnabled
+			? ' @sonya_group_bot сообщит, когда клипы будут готовы.'
 			: '';
+		processingNote.innerHTML =
+			`<i class="fa-solid fa-gear sm-processing-note-icon"></i> Можно закрыть вкладку — SONYA продолжит обработку.${telegramLine}`;
 	}
 
 	autoModeToggle.addEventListener('change', () => {
@@ -987,6 +1049,19 @@
 		} else {
 			return;
 		}
+		// The Telegram completion-notification decision is fixed into the
+		// batch at creation time (see scripts/streamer_notify.py) — a later
+		// change to this toggle never affects a batch already in flight.
+		// Captured into its own local + state.batchNotifyEnabled right here
+		// (not read again from accountPreset later) so this exact value —
+		// what we are ABOUT to submit — is what updateProcessingNote() ends
+		// up showing, even if the user flips the toggle again a moment
+		// later while this request is still in flight.
+		const notifyEnabledForThisBatch = !!state.accountPreset.telegramNotifyEnabled;
+		state.batchNotifyEnabled = notifyEnabledForThisBatch;
+		formData.append('preset_snapshot', JSON.stringify({
+			telegram_notify_enabled: notifyEnabledForThisBatch,
+		}));
 
 		_submittingSource = true;
 		stopPolling();
@@ -1109,6 +1184,12 @@
 	}
 
 	function enterClipsStepFromBatch(data) {
+		// Set BEFORE renderClipsStep() below (which is what actually reads
+		// it, via updateProcessingNote()) -- this is the server's own
+		// preset_snapshot for this exact batch, the authoritative source
+		// whenever we didn't just create the batch ourselves in this page
+		// session (reload, or a mid-flight rehydration).
+		state.batchNotifyEnabled = !!(data.preset_snapshot && data.preset_snapshot.telegram_notify_enabled);
 		const clipSegmentIds = new Set((data.clips || []).map(c => c.segment_id));
 		state.topics.items = (data.segments || []).map(segmentToTopic);
 		state.clips.items = state.topics.items
@@ -1148,6 +1229,11 @@
 	// skipped (that's a local review decision, not something a later poll
 	// tick should silently revert).
 	function applyBatchClips(data) {
+		// Re-confirmed from the server on every poll tick (redundant with
+		// enterClipsStepFromBatch's own set, but this is what actually runs
+		// for the plain confirmSelection() -> pollBatchUntilDone() path,
+		// where nothing else has read preset_snapshot yet).
+		state.batchNotifyEnabled = !!(data.preset_snapshot && data.preset_snapshot.telegram_notify_enabled);
 		const byId = new Map((data.clips || []).map(c => [c.segment_id, c]));
 		state.clips.items.forEach(clip => {
 			if (clip.status === 'approved' || clip.status === 'skipped') return;
@@ -1194,6 +1280,11 @@
 		if (!resp || !resp.ok) return;
 		const data = await resp.json();
 		state.batchId = batchId;
+		// Covers every branch below, including awaiting_selection -- by the
+		// time the user reaches confirmSelection() -> renderClipsStep(),
+		// this is already correct instead of waiting for the first poll
+		// tick inside pollBatchUntilDone() to fix it a moment later.
+		state.batchNotifyEnabled = !!(data.preset_snapshot && data.preset_snapshot.telegram_notify_enabled);
 
 		if (_LOADING_STATUSES.includes(data.status)) {
 			goToStep('topics');
@@ -1246,6 +1337,8 @@
 	const autoreviewOptions = $('#sm-autoreview-options');
 	const telegramNotifyToggle = $('#sm-telegram-notify-toggle');
 	const telegramStatusEl = $('#sm-telegram-status');
+	const sourceTelegramSummarySub = $('#sm-source-telegram-summary-sub');
+	const sourceTelegramConfigureBtn = $('#sm-source-telegram-configure');
 
 	const SIZE_OPTIONS = [{ id: 's', label: 'S' }, { id: 'm', label: 'M' }, { id: 'l', label: 'L' }];
 	const POSITION_OPTIONS = [{ id: 'top', label: 'Верх' }, { id: 'bottom', label: 'Низ' }];
@@ -1515,6 +1608,27 @@
 		if (linkBtn) linkBtn.addEventListener('click', requestTelegramLink);
 		const unlinkBtn = $('#sm-telegram-unlink', telegramStatusEl);
 		if (unlinkBtn) unlinkBtn.addEventListener('click', unlinkTelegram);
+		renderSourcePresetSummary();
+	}
+
+	// Compact status line on Step 1 (Source) — the notify decision for
+	// the batch about to be created must be visible and settable BEFORE
+	// submit, since the batch's own preset_snapshot is fixed at creation
+	// (see submitSource()). Mirrors renderTelegramTab()'s own three
+	// states, condensed to one line: off / on+linked / on+not-linked yet
+	// (per spec: don't block batch creation over this — the backend
+	// policy already allows linking any time before completion).
+	function renderSourcePresetSummary() {
+		if (!sourceTelegramSummarySub) return;
+		const enabled = state.accountPreset.telegramNotifyEnabled;
+		const linked = state.accountPreset.telegramLinked;
+		if (!enabled) {
+			sourceTelegramSummarySub.textContent = 'Выключено';
+		} else if (linked) {
+			sourceTelegramSummarySub.textContent = 'Включено — @sonya_group_bot сообщит о готовности';
+		} else {
+			sourceTelegramSummarySub.textContent = 'Включено — подключите @sonya_group_bot, чтобы получить уведомление';
+		}
 	}
 
 	async function requestTelegramLink() {
@@ -1572,6 +1686,8 @@
 
 	telegramNotifyToggle.addEventListener('change', () => {
 		state.accountPreset.telegramNotifyEnabled = telegramNotifyToggle.checked;
+		saveLocalPreset();
+		renderSourcePresetSummary();
 	});
 
 	/* ── Drawer open/close/tabs ── */
@@ -1604,6 +1720,7 @@
 		}
 	}
 	presetConfigureBtn.addEventListener('click', () => openPresetDrawer('subtitles'));
+	if (sourceTelegramConfigureBtn) sourceTelegramConfigureBtn.addEventListener('click', () => openPresetDrawer('telegram'));
 	presetDrawerTabs.forEach(t => t.addEventListener('click', () => switchPresetTab(t.dataset.presetTab)));
 	presetDrawerClose.addEventListener('click', closePresetDrawer);
 	presetDrawerDone.addEventListener('click', closePresetDrawer);
@@ -1750,6 +1867,7 @@
 
 	/* Initial paint */
 	renderSourceStep();
+	renderSourcePresetSummary(); // local toggle state is known immediately, no need to wait on the network below
 	fetchTelegramStatus(); // real backend call — see the Telegram section above
 	rehydrateFromUrl();    // real backend call — see the REAL BATCH FLOW section above
 

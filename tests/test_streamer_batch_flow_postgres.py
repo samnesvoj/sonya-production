@@ -625,6 +625,158 @@ def test_reconcile_batch_failed_when_all_compose_jobs_fail(client, monkeypatch, 
     assert batch["status"] == "failed"
 
 
+# ── 5b. Telegram completion notification actually fires through the real
+#        worker/complete, worker/fail, and GET trigger points (not just
+#        the standalone notify_streamer_batch_completion() unit tests in
+#        tests/test_streamer_notify_postgres.py) ───────────────────────
+
+def _link_telegram_for_notify_tests(user_id: str) -> int:
+    chat_id = int(uuid.uuid4().int % 1_000_000_000)
+    conn = auth_store._get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE users SET telegram_linked=TRUE, telegram_chat_id=%s, "
+                    "telegram_user_id=%s, telegram_linked_at=NOW() WHERE id=%s",
+                    (chat_id, int(uuid.uuid4().int % 1_000_000_000), user_id),
+                )
+    finally:
+        conn.close()
+    return chat_id
+
+
+def _batch_awaiting_selection_with_notify(store, user_id, n_segments=2):
+    batch = store.create_streamer_batch(user_id, preset_snapshot={"telegram_notify_enabled": True})
+    job_id = str(uuid.uuid4())
+    store.create_job(
+        job_id=job_id, user_id=user_id, mode="streamer", params={},
+        s3_input_key=f"users/{user_id}/jobs/{job_id}/streamer/input/source.mp4",
+    )
+    store.attach_analysis_job_to_batch(batch["id"], job_id)
+    segments = [
+        {"start_sec": 10.0 * (i + 1), "duration_sec": 5.0, "title": f"Тема {i}"}
+        for i in range(n_segments)
+    ]
+    inserted = store.replace_streamer_segments(batch["id"], segments)
+    store.set_streamer_batch_status(batch["id"], "awaiting_selection")
+    return batch["id"], job_id, inserted
+
+
+@pytest.fixture()
+def fake_sender(monkeypatch):
+    from scripts import streamer_notify
+    calls = []
+
+    def _fake(chat_id, text, button_text=None, button_url=None):
+        calls.append({"chat_id": chat_id, "text": text, "button_text": button_text, "button_url": button_url})
+        return True
+
+    monkeypatch.setattr(streamer_notify.telegram_bot, "send_message", _fake)
+    return calls
+
+
+def test_worker_complete_triggers_real_notification_send(client, monkeypatch, store, fake_sender):
+    user = _create_user()
+    chat_id = _link_telegram_for_notify_tests(user["id"])
+    _login_as(client, monkeypatch, user["id"])
+    batch_id, _job_id, segs = _batch_awaiting_selection_with_notify(store, user["id"], n_segments=2)
+    resp = client.post(f"/api/streamer/batches/{batch_id}/selection", json={"segment_ids": [s["id"] for s in segs]})
+    job_ids = [cj["job_id"] for cj in resp.json()["clip_jobs"]]
+
+    for jid in job_ids:
+        r = client.post(
+            f"/api/worker/jobs/{jid}/complete",
+            json={"s3_output_key": f"users/{user['id']}/jobs/{jid}/streamer/output/clip.mp4", "clip_count": 1},
+            headers=AUTH_HEADER,
+        )
+        assert r.status_code == 200
+
+    # TestClient runs BackgroundTasks synchronously before returning --
+    # the notification (scheduled after reconcile inside worker/complete)
+    # has already run by the time this assertion executes.
+    assert len(fake_sender) == 1
+    assert fake_sender[0]["chat_id"] == chat_id
+    batch = store.get_streamer_batch(batch_id, user["id"])
+    assert batch["status"] == "ready"
+    assert batch["telegram_notified_at"] is not None
+
+
+def test_worker_fail_partial_triggers_real_notification_send(client, monkeypatch, store, fake_sender):
+    user = _create_user()
+    _link_telegram_for_notify_tests(user["id"])
+    _login_as(client, monkeypatch, user["id"])
+    batch_id, _job_id, segs = _batch_awaiting_selection_with_notify(store, user["id"], n_segments=2)
+    resp = client.post(f"/api/streamer/batches/{batch_id}/selection", json={"segment_ids": [s["id"] for s in segs]})
+    ok_id, fail_id = [cj["job_id"] for cj in resp.json()["clip_jobs"]]
+
+    client.post(
+        f"/api/worker/jobs/{ok_id}/complete",
+        json={"s3_output_key": f"users/{user['id']}/jobs/{ok_id}/streamer/output/clip.mp4", "clip_count": 1},
+        headers=AUTH_HEADER,
+    )
+    client.post(
+        f"/api/worker/jobs/{fail_id}/fail",
+        json={"error_code": "RUNNER_FAILED", "error_message": "boom", "retry": False},
+        headers=AUTH_HEADER,
+    )
+
+    assert len(fake_sender) == 1
+    assert "Большинство клипов готово" in fake_sender[0]["text"]
+    batch = store.get_streamer_batch(batch_id, user["id"])
+    assert batch["status"] == "partially_failed"
+
+
+def test_worker_complete_no_notify_when_preset_disabled(client, monkeypatch, store, fake_sender):
+    user = _create_user()
+    _link_telegram_for_notify_tests(user["id"])
+    _login_as(client, monkeypatch, user["id"])
+    batch_id, _job_id, segs = _batch_awaiting_selection(store, user["id"], n_segments=1)  # default preset_snapshot={} -> disabled
+    resp = client.post(f"/api/streamer/batches/{batch_id}/selection", json={"segment_ids": [s["id"] for s in segs]})
+    job_id = resp.json()["clip_jobs"][0]["job_id"]
+
+    client.post(
+        f"/api/worker/jobs/{job_id}/complete",
+        json={"s3_output_key": f"users/{user['id']}/jobs/{job_id}/streamer/output/clip.mp4", "clip_count": 1},
+        headers=AUTH_HEADER,
+    )
+
+    assert fake_sender == []
+
+
+def test_get_batch_defensive_reconcile_also_triggers_notification(client, monkeypatch, store, fake_sender):
+    """
+    GET /api/streamer/batches/{id} is the DEFENSIVE reconciliation path
+    (see prod_job_store.reconcile_streamer_batch's own docstring) -- this
+    proves the notification wiring on THAT trigger point too, not just
+    the worker/complete primary path. Simulates the "worker crashed right
+    after its own /complete call, reconcile never ran" scenario by
+    completing both underlying generation_jobs directly at the store
+    layer (bypassing the worker HTTP endpoints entirely, so their own
+    _maybe_reconcile_streamer_batch/_maybe_notify_streamer_batch never
+    fire) and then relying purely on a browser GET to catch it.
+    """
+    user = _create_user()
+    _link_telegram_for_notify_tests(user["id"])
+    _login_as(client, monkeypatch, user["id"])
+    batch_id, _job_id, segs = _batch_awaiting_selection_with_notify(store, user["id"], n_segments=1)
+    resp = client.post(f"/api/streamer/batches/{batch_id}/selection", json={"segment_ids": [s["id"] for s in segs]})
+    job_id = resp.json()["clip_jobs"][0]["job_id"]
+
+    store.complete_job(job_id=job_id, s3_output_key=f"users/{user['id']}/jobs/{job_id}/streamer/output/clip.mp4", clip_count=1)
+
+    batch_before = store.get_streamer_batch(batch_id, user["id"])
+    assert batch_before["status"] == "generating"  # not yet reconciled
+
+    get_resp = client.get(f"/api/streamer/batches/{batch_id}")
+    assert get_resp.status_code == 200
+    assert get_resp.json()["status"] == "ready"
+
+    assert len(fake_sender) == 1
+    batch_after = store.get_streamer_batch(batch_id, user["id"])
+    assert batch_after["telegram_notified_at"] is not None
+
+
 def test_reconcile_batch_stays_generating_while_a_job_is_still_pending(client, monkeypatch, store):
     user = _create_user()
     batch_id, job_ids = _selected_batch(client, monkeypatch, store, user, n=2)

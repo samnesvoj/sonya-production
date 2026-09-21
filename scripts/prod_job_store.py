@@ -80,7 +80,7 @@ import json
 import logging
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
@@ -1854,3 +1854,122 @@ def reconcile_streamer_batch(batch_id: str) -> Optional[Dict[str, Any]]:
     if completed == 0:
         return set_streamer_batch_status(batch_id, STREAMER_BATCH_STATUS_FAILED)
     return set_streamer_batch_status(batch_id, STREAMER_BATCH_STATUS_PARTIALLY_FAILED)
+
+
+# ── @sonya_group_bot completion notification delivery (migration 015) ──────────
+#
+# telegram_notified_at (migration 012) is the once-only "already sent"
+# guard; these three functions add a lease-based atomic CLAIM on top of it
+# so at most one process is ever actively attempting a send for a given
+# batch at a time -- see scripts/streamer_notify.py's notify_streamer_
+# batch_completion() for the orchestration that calls these.
+#
+# Exactly-once is NOT achievable here: Telegram's sendMessage and this
+# module's Postgres commit are two separate systems with no shared
+# transaction. If the process dies in the narrow window after Telegram
+# has accepted the message but before mark_streamer_notification_sent()
+# commits, a retry will send a duplicate. SONYA's policy is deliberately
+# at-least-once (never silently losing a notification) over a complex
+# pseudo-transactional scheme that can't actually make this exactly-once
+# anyway -- see the module docstring in scripts/streamer_notify.py.
+
+_NOTIFY_CLAIM_LEASE_SECONDS = 300
+
+_NOTIFY_ELIGIBLE_STATUSES = (STREAMER_BATCH_STATUS_READY, STREAMER_BATCH_STATUS_PARTIALLY_FAILED)
+
+
+def claim_streamer_notification(batch_id: str) -> bool:
+    """
+    Atomic conditional UPDATE, not a SELECT-then-UPDATE: succeeds only if
+    the batch is currently eligible (status ready/partially_failed),
+    hasn't already been sent (telegram_notified_at IS NULL), and has no
+    ACTIVE claim -- telegram_notify_claimed_at is NULL, or older than
+    _NOTIFY_CLAIM_LEASE_SECONDS (a stale claim from a crashed process, or
+    the backoff window after a previous failed attempt -- see this
+    column's own doc note in migration 015 for why a failure doesn't
+    clear it). Increments telegram_notify_attempts on every successful
+    claim, including retries.
+
+    Returns True if THIS call won the claim (the caller must now actually
+    attempt the send and call mark_streamer_notification_sent() or
+    mark_streamer_notification_failed()); False if ineligible, already
+    sent, or another process currently holds the claim.
+    """
+    now = _now()
+    cutoff = now - timedelta(seconds=_NOTIFY_CLAIM_LEASE_SECONDS)
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE streamer_batches
+                    SET telegram_notify_claimed_at = %s,
+                        telegram_notify_attempts = telegram_notify_attempts + 1,
+                        updated_at = %s
+                    WHERE id = %s
+                      AND status = ANY(%s)
+                      AND telegram_notified_at IS NULL
+                      AND (telegram_notify_claimed_at IS NULL OR telegram_notify_claimed_at < %s)
+                    """,
+                    (now, now, batch_id, list(_NOTIFY_ELIGIBLE_STATUSES), cutoff),
+                )
+                return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def mark_streamer_notification_sent(batch_id: str) -> None:
+    """
+    Called ONLY after a confirmed 2xx from Telegram (see telegram_bot.
+    send_message's own True/False contract) -- never before the send is
+    attempted. telegram_notified_at being non-NULL is the permanent,
+    once-only guard: claim_streamer_notification() can never succeed for
+    this batch again after this commits.
+    """
+    now = _now()
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE streamer_batches
+                    SET telegram_notified_at = %s,
+                        telegram_notify_last_error = NULL,
+                        updated_at = %s
+                    WHERE id = %s
+                    """,
+                    (now, now, batch_id),
+                )
+    finally:
+        conn.close()
+
+
+def mark_streamer_notification_failed(batch_id: str, error: str) -> None:
+    """
+    Called when send_message() returned False (or the send was never
+    attempted, e.g. the user unlinked Telegram between claim and send).
+    Deliberately does NOT clear telegram_notify_claimed_at -- the claim's
+    own lease (_NOTIFY_CLAIM_LEASE_SECONDS) is what naturally rate-limits
+    the next retry attempt, so a burst of GET/reconcile calls right after
+    a failure can't hammer the Telegram API. `error` must already be a
+    short, safe, code-controlled string (e.g. "telegram_send_failed") --
+    never str(exception) or anything that could embed a bot token or
+    webhook URL; see scripts/telegram_bot.py's own docstring for why.
+    """
+    conn = _get_conn()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE streamer_batches
+                    SET telegram_notify_last_error = %s,
+                        updated_at = %s
+                    WHERE id = %s
+                    """,
+                    (error[:500], _now(), batch_id),
+                )
+    finally:
+        conn.close()

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+from typing import Optional
 
 import requests
 
@@ -32,7 +33,12 @@ def _get_bot_token() -> str:
     return token
 
 
-def send_message(chat_id: int, text: str) -> bool:
+def send_message(
+    chat_id: int,
+    text: str,
+    button_text: Optional[str] = None,
+    button_url: Optional[str] = None,
+) -> bool:
     """
     Best-effort send. Returns True on a confirmed 2xx from Telegram, False
     otherwise — never raises past this function. The webhook handler calls
@@ -40,13 +46,22 @@ def send_message(chat_id: int, text: str) -> bool:
     already decided), so a failed reply must never undo or block the
     underlying linking decision — it only means the user doesn't see the
     confirmation text in Telegram.
+
+    button_text/button_url (both required together, otherwise ignored):
+    adds a single inline URL button below the message — used by the
+    streamer completion notification (scripts/streamer_notify.py) to link
+    straight to the finished batch. Deliberately just one optional
+    parameter pair, not a general reply_markup passthrough — this stays
+    the one Telegram client for the whole codebase (see module docstring)
+    without becoming a full Bot API wrapper.
     """
     token = _get_bot_token()
     url = f"{_API_BASE}/bot{token}/sendMessage"
+    payload = {"chat_id": chat_id, "text": text}
+    if button_text and button_url:
+        payload["reply_markup"] = {"inline_keyboard": [[{"text": button_text, "url": button_url}]]}
     try:
-        resp = requests.post(
-            url, json={"chat_id": chat_id, "text": text}, timeout=_REQUEST_TIMEOUT_SEC,
-        )
+        resp = requests.post(url, json=payload, timeout=_REQUEST_TIMEOUT_SEC)
         if not resp.ok:
             logger.warning("[telegram] send_message_failed chat_id=%s status=%s", chat_id, resp.status_code)
             return False

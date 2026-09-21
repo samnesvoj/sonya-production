@@ -42,6 +42,7 @@ falls back to _fallback_segments() -- see that module's own docstring).
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import uuid
@@ -80,6 +81,7 @@ from scripts.prod_job_store import (
 )
 from scripts.prod_s3_storage import build_input_key, delete_object, generate_presigned_get_url, upload_bytes
 from scripts.quota_guard import check_user_quota
+from scripts.streamer_notify import notify_streamer_batch_completion
 from scripts.rate_limiter import RateLimiter
 from scripts.security import get_current_user, new_trace_id, safe_error, verify_browser_origin, verify_worker_secret
 from scripts.security_audit import EVT_JOB_CREATED, EVT_UPLOAD_REJECTED, audit
@@ -162,6 +164,31 @@ def _validate_idempotency_key(raw: Optional[str], trace_id: str) -> Optional[str
     return key
 
 
+def _parse_preset_snapshot(raw: Optional[str]) -> Dict[str, Any]:
+    """
+    Narrow, allowlisted parse of the client-supplied preset snapshot --
+    only telegram_notify_enabled is persisted (streamer_batches.preset_
+    snapshot, migration 012), coerced to a real bool. This is the ONE
+    place this decision is ever read from the client -- fixed into the
+    batch row at creation time and never re-read from the frontend again
+    (see scripts/streamer_notify.py for why that matters: the completion
+    notification checks THIS stored value, not the user's current preset
+    setting, which may have changed since). Malformed/missing input
+    defaults to disabled rather than rejecting the whole batch-creation
+    request over a client preset quirk -- notification is opt-in, so
+    "off" is always the safe default.
+    """
+    if not raw:
+        return {"telegram_notify_enabled": False}
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, ValueError):
+        return {"telegram_notify_enabled": False}
+    if not isinstance(parsed, dict):
+        return {"telegram_notify_enabled": False}
+    return {"telegram_notify_enabled": bool(parsed.get("telegram_notify_enabled"))}
+
+
 # ── POST /api/streamer/batches ——————————————————————————————————————————————————
 
 @router.post("/api/streamer/batches", status_code=status.HTTP_202_ACCEPTED)
@@ -171,6 +198,7 @@ async def create_batch(
     source_type: str = Form(...),
     url: Optional[str] = Form(None),
     file: Optional[UploadFile] = File(None),
+    preset_snapshot_raw: Optional[str] = Form(None, alias="preset_snapshot"),
     idempotency_key_header: Optional[str] = Header(None, alias="Idempotency-Key"),
     user: dict = Depends(get_current_user),
     _origin: None = Depends(verify_browser_origin),
@@ -189,6 +217,7 @@ async def create_batch(
         raise HTTPException(status_code=400, detail={"error": "missing_file", "trace_id": trace_id})
 
     idempotency_key = _validate_idempotency_key(idempotency_key_header, trace_id)
+    preset_snapshot = _parse_preset_snapshot(preset_snapshot_raw)
 
     # Reserve the batch row FIRST, atomically (migration 014), before any
     # quota check or I/O -- a double-click or network retry carrying the
@@ -198,7 +227,7 @@ async def create_batch(
     # never re-running ingest. idempotency_key=None (no header) always
     # creates a fresh batch -- legacy behavior, unchanged for any client
     # that doesn't send the header yet.
-    batch = create_streamer_batch(user_id, preset_snapshot={}, idempotency_key=idempotency_key)
+    batch = create_streamer_batch(user_id, preset_snapshot=preset_snapshot, idempotency_key=idempotency_key)
     batch_id = str(batch["id"])
     if not batch["_created_now"]:
         logger.info("[streamer] batch_create_idempotent_replay batch_id=%s user_id=%s trace_id=%s",
@@ -434,6 +463,7 @@ def _run_streamer_batch_url_ingest(
 @router.get("/api/streamer/batches/{batch_id}")
 async def get_batch(
     batch_id: str,
+    background_tasks: BackgroundTasks,
     user: dict = Depends(get_current_user),
     _rl: None = Depends(_batch_api_limiter),
 ):
@@ -449,6 +479,14 @@ async def get_batch(
     reconciled = reconcile_streamer_batch(batch_id)
     if reconciled:
         batch = reconciled
+
+    # Backgrounded so a browser's GET never waits on Telegram network
+    # latency (see scripts/streamer_notify.py's own module docstring) --
+    # safe to call unconditionally on every GET, not just when reconcile
+    # just changed something: every early-return inside it (wrong status,
+    # notify disabled, not linked, already sent, active claim held
+    # elsewhere) is a normal, expected no-op.
+    background_tasks.add_task(notify_streamer_batch_completion, batch_id)
 
     segments = list_streamer_segments(batch_id)
     clip_jobs_by_segment = {cj["segment_id"]: cj for cj in list_streamer_clip_jobs(batch_id)}

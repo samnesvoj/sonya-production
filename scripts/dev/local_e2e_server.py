@@ -74,7 +74,7 @@ from fastapi import Response  # noqa: E402
 from fastapi.responses import RedirectResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 
-from scripts import auth_store, streamer_routes  # noqa: E402
+from scripts import auth_store, streamer_routes, streamer_notify  # noqa: E402
 from scripts.auth_security import generate_session_token, hash_session_token, session_expiry, set_session_cookie  # noqa: E402
 from scripts.dev import local_fake_s3  # noqa: E402
 from scripts.prod_generation_api import app  # noqa: E402
@@ -93,10 +93,34 @@ streamer_routes.delete_object = lambda key: local_fake_s3.delete(key)
 streamer_routes.generate_presigned_get_url = local_fake_s3.fake_presigned_url
 
 
+# ── 1b. Patch the Telegram sender -- NEVER make a real call to Telegram's
+#        API from this harness (no bot token needed, no real message ever
+#        sent). Appends one JSON line per attempted send to a local file
+#        under local_fake_s3.root_dir() so a developer can inspect what
+#        WOULD have been sent without needing to intercept network
+#        traffic. Always "succeeds" (matches Telegram accepting the
+#        message) unless SONYA_LOCAL_E2E_FAKE_TELEGRAM_FAIL=true is set,
+#        for exercising the failure/retry path locally too. ─────────────
+
+def _fake_telegram_send(chat_id, text, button_text=None, button_url=None) -> bool:
+    import json as _json
+    import time as _time
+    log_path = local_fake_s3.root_dir() / "_fake_telegram_outbox.jsonl"
+    with open(log_path, "a") as f:
+        f.write(_json.dumps({
+            "ts": _time.time(), "chat_id": chat_id, "text": text,
+            "button_text": button_text, "button_url": button_url,
+        }) + "\n")
+    return os.environ.get("SONYA_LOCAL_E2E_FAKE_TELEGRAM_FAIL", "").lower() != "true"
+
+
+streamer_notify.telegram_bot.send_message = _fake_telegram_send
+
+
 # ── 2. Harness-only routes (never present in scripts/prod_generation_api.py) ──
 
 @app.get("/dev/login")
-async def _dev_login():
+async def _dev_login(fresh: bool = False):
     """
     Local test harness only. Creates (or reuses) one fixed local dev
     user, mints a REAL session the same way a real login does
@@ -104,8 +128,14 @@ async def _dev_login():
     not a fake cookie value), and redirects into the app. No password —
     this route only exists on THIS script's own `app` object, in this
     process, never in production code.
+
+    ?fresh=1 creates a brand-new random-email user instead of reusing the
+    fixed DEV_USER_EMAIL one -- convenience for a manual test session that
+    would otherwise trip quota_guard's 24h job-count limit after enough
+    repeated local runs against the same dev user.
     """
-    user = auth_store.get_or_create_user(DEV_USER_EMAIL)
+    email = f"local-e2e-{uuid.uuid4()}@example.com" if fresh else DEV_USER_EMAIL
+    user = auth_store.get_or_create_user(email)
     token = generate_session_token()
     auth_store.create_session(
         user_id=user["id"], token_hash=hash_session_token(token),

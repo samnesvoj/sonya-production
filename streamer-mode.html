@@ -105,6 +105,21 @@
 						<div class="sm-field-msg" id="sm-file-msg" hidden></div>
 					</div>
 
+					<!-- Same preset drawer as Step 2's "Шаблон стримера" (see
+					     #sm-preset-drawer-overlay below) — this is just a second
+					     entry point into it, opened straight to the Telegram tab,
+					     so the notify decision can be made BEFORE the batch this
+					     decision gets baked into is even created. Not a second
+					     Telegram UI: same drawer, same #sm-telegram-notify-toggle,
+					     same state. -->
+					<div class="sm-preset-summary" id="sm-source-telegram-summary">
+						<div class="sm-preset-summary-text">
+							<span class="sm-preset-summary-title">Уведомление в Telegram</span>
+							<span class="sm-preset-summary-sub" id="sm-source-telegram-summary-sub"></span>
+						</div>
+						<button class="btn-secondary sm-btn-sm" id="sm-source-telegram-configure" type="button">Настроить</button>
+					</div>
+
 					<div class="sm-panel-footer">
 						<button class="btn-primary" id="sm-btn-1" disabled>
 							<span class="btn-label">Продолжить</span>
