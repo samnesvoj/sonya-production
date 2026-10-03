@@ -1,52 +1,150 @@
 <!doctype html>
-<html lang="ru">
+<html lang="ru" data-theme="light">
 <head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="robots" content="noindex,nofollow">
-  <title>Оплата не завершена — SONYA</title>
-  <style>
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      display: grid;
-      place-items: center;
-      padding: 24px;
-      color: #f5f5f5;
-      background:
-        radial-gradient(circle at 20% 20%, #303030 0, transparent 38%),
-        radial-gradient(circle at 80% 80%, #181818 0, transparent 42%),
-        #070707;
-      font-family: Arial, sans-serif;
-    }
-    main {
-      width: min(520px, 100%);
-      padding: 40px;
-      border: 1px solid rgba(255,255,255,.14);
-      border-radius: 24px;
-      background: rgba(255,255,255,.06);
-      backdrop-filter: blur(18px);
-      text-align: center;
-    }
-    h1 { margin: 0 0 16px; font-size: 32px; }
-    p { margin: 0 0 28px; color: #bdbdbd; line-height: 1.55; }
-    a {
-      display: inline-block;
-      padding: 14px 22px;
-      border-radius: 999px;
-      color: #080808;
-      background: #f2f2f2;
-      font-weight: 700;
-      text-decoration: none;
-    }
-  </style>
+	<meta charset="UTF-8">
+
+	<!-- Theme bootstrap — identical to index.html: must run before any CSS
+	     is parsed so the saved theme applies before first paint. -->
+	<script>
+		(function () {
+			try {
+				var t = localStorage.getItem('theme');
+				window.__sonyaTheme = t || 'light';
+			} catch (e) {
+				window.__sonyaTheme = 'light';
+			}
+			document.documentElement.setAttribute('data-theme', window.__sonyaTheme);
+		})();
+	</script>
+
+	<meta name="viewport" content="width=device-width,initial-scale=1">
+	<meta name="theme-color" content="#0B0907">
+	<meta name="robots" content="noindex,nofollow">
+	<title>Оплата не завершена — SONYA</title>
+	<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
+	<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png">
+	<link rel="icon" type="image/png" href="/favicon.png">
+	<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+
+	<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css"
+		integrity="sha512-DTOQO9RWCH3ppGqcWaEA1BIZOC6xxalwEsw9c2QQeAIftl+Vegovlnee1c9QX4TctnWMn13TZye+giMm8e2LwA=="
+		crossorigin="anonymous" referrerpolicy="no-referrer" />
+
+	<link rel="preconnect" href="https://fonts.googleapis.com">
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link
+		href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Onest:wght@300;400;500;600;700&family=Unbounded:wght@200;300;400;500;600;700&display=swap"
+		rel="stylesheet">
+
+	<!-- Same stylesheet as index.html -- reuses the real .sonya-modal /
+	     .paywall-* card exactly as-is. No .sonya-modal-overlay here (that's
+	     the fullscreen dim/backdrop meant for a modal over app content) --
+	     this is a standalone page, so the card just sits on the site's own
+	     plain background. -->
+	<link rel="stylesheet" href="https://static.sonya.group/releases/273789e/styles.css">
+
+	<style>
+		/* Only page-level layout -- same as payment/success.html. */
+		body {
+			min-height: 100vh;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			padding: 20px;
+		}
+		/* Light theme page background: same scrim-flattened-over-white
+		   technique as payment/success.html -- see the comment there. */
+		[data-theme="light"] body {
+			background:
+				linear-gradient(rgba(4, 4, 6, 0.5), rgba(4, 4, 6, 0.5)),
+				#fff;
+		}
+		/* .sonya-modal is opacity:0/scaled-down by default -- it only
+		   becomes visible via ".sonya-modal-overlay.is-open .sonya-modal"
+		   (the entrance transition normally triggered by JS opening the
+		   in-app modal). There's no overlay/JS-driven open on this
+		   standalone page, so it just needs to be visible immediately. */
+		.sonya-modal { opacity: 1; transform: none; }
+		/* Light theme: same glass recipe as .sonya-auth-card (registration
+		   card), copied verbatim -- see payment/success.html for why. */
+		[data-theme="light"] .sonya-modal {
+			background:
+				radial-gradient(140% 70% at 50% -15%, rgba(255, 255, 255, 0.85), transparent 62%),
+				rgba(255, 255, 255, 0.42);
+			box-shadow:
+				inset 0 1px 0 rgba(255, 255, 255, 0.75),
+				inset -21.48px -21.48px 10.74px -21.48px rgba(10, 10, 10, 0.16),
+				inset  21.48px  21.48px 10.74px -21.48px rgba(10, 10, 10, 0.16),
+				0 10px 40px rgba(0, 0, 0, 0.22),
+				0 30px 80px rgba(0, 0, 0, 0.26);
+		}
+	</style>
 </head>
 <body>
-  <main>
-    <h1>Оплата не завершена</h1>
-    <p>Платёж был отменён или не прошёл. Списание не подтверждено.</p>
-    <a href="/">Вернуться в SONYA</a>
-  </main>
+	<div class="sonya-modal paywall-modal" role="dialog" aria-label="Статус оплаты">
+
+		<!-- FAILED (default -- the provider's fail/return URL) -->
+		<div class="paywall-view is-active" data-paywall-view="failed">
+			<div class="paywall-icon paywall-icon--error"><i class="fa-solid fa-triangle-exclamation"></i></div>
+			<h2 class="paywall-title">Оплата не завершена</h2>
+			<p class="paywall-desc">Платёж был отменён или не прошёл. Списание не подтверждено.</p>
+			<a class="paywall-pay-btn" href="/?paywall=1"><span>Попробовать снова</span></a>
+			<a class="paywall-later-btn" href="/">Вернуться в SONYA</a>
+		</div>
+
+		<!-- PAID (real race: the provider's server-to-server confirmation can
+		     arrive slightly after it redirects the browser here -- a browser
+		     landing on the fail URL proves nothing about the actual payment outcome, so this
+		     reads the server-confirmed status once and shows success instead
+		     of a false "failed" message if the webhook already got there
+		     first). -->
+		<div class="paywall-view" data-paywall-view="paid">
+			<div class="paywall-icon paywall-icon--success"><i class="fa-solid fa-check"></i></div>
+			<h2 class="paywall-title">Подписка SONYA активна</h2>
+			<p class="paywall-desc" id="paid-until-text">Платёж всё же был подтверждён.</p>
+			<a class="paywall-pay-btn" href="/"><span>Продолжить</span></a>
+		</div>
+
+	</div>
+
+	<!-- Same runtime API-base config as the rest of the site. -->
+	<script src="/config.js"></script>
+	<script>
+		(function () {
+			var API_BASE = window.SONYA_API_BASE || '/api';
+			var params = new URLSearchParams(window.location.search);
+			// invoice_id: our order number. InvId/invId: legacy Robokassa return params.
+			var invoiceId = params.get('invoice_id') || params.get('InvId') || params.get('invId');
+			if (!invoiceId) return;
+
+			function showView(name) {
+				document.querySelectorAll('.paywall-view').forEach(function (el) {
+					el.classList.toggle('is-active', el.getAttribute('data-paywall-view') === name);
+				});
+			}
+
+			function formatDate(iso) {
+				if (!iso) return '';
+				try {
+					return new Date(iso).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
+				} catch (e) { return ''; }
+			}
+
+			fetch(API_BASE + '/billing/payment-status?invoice_id=' + encodeURIComponent(invoiceId), {
+				credentials: 'include',
+			}).then(function (res) {
+				return res.ok ? res.json() : null;
+			}).then(function (data) {
+				if (data && data.status === 'paid') {
+					var until = formatDate(data.plan_active_until);
+					document.getElementById('paid-until-text').textContent = until
+						? 'Активна до ' + until
+						: 'Платёж всё же был подтверждён.';
+					document.title = 'Оплата успешна — SONYA';
+					showView('paid');
+				}
+			}).catch(function () { /* keep showing the default failed view */ });
+		})();
+	</script>
 </body>
 </html>

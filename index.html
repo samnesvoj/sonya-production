@@ -21,7 +21,11 @@
 
 	<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 	<meta name="theme-color" content="#0B0907">
-	<title>SONYA — Cinematic AI editor</title>
+	<title>SONYA</title>
+	<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
+	<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png">
+	<link rel="icon" type="image/png" href="/favicon.png">
+	<link rel="apple-touch-icon" href="/apple-touch-icon.png">
 	<meta name="description"
 		content="SONYA — cinematic AI editor. Из длинного видео — Reels, Shorts и трейлеры.">
 	<meta name="selfwork.ru" content="D2XGUx66taTgoGleqCaoul0dLJOhQQVTn6eA5sUAzXqqNc3czV" />
@@ -37,10 +41,10 @@
 		href="https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Onest:wght@300;400;500;600;700&family=Unbounded:wght@200;300;400;500;600;700&display=swap"
 		rel="stylesheet">
 
-	<link rel="stylesheet" href="https://static.sonya.group/releases/273789e/styles.css">
+	<link rel="stylesheet" href="https://static.sonya.group/releases/537dbe6/styles.css">
 
 	<!-- SONYA backend API base. External file → CSP-friendly. -->
-	<script src="https://static.sonya.group/releases/eea16aa/config.js"></script>
+	<script src="https://static.sonya.group/releases/537dbe6/config.js"></script>
 </head>
 
 <body>
@@ -117,6 +121,18 @@
 			<span class="profile-ring" aria-hidden="true"></span>
 		</button>
 	</div>
+
+	<!-- Legal footer — small, always-reachable links (oferta/privacy/refund/contacts)
+	     without needing to open a modal first. -->
+	<footer class="site-legal-footer">
+		<a href="/legal/terms.html" target="_blank" rel="noopener">Оферта</a>
+		<span class="site-legal-footer-dot" aria-hidden="true"></span>
+		<a href="/legal/privacy.html" target="_blank" rel="noopener">Конфиденциальность</a>
+		<span class="site-legal-footer-dot" aria-hidden="true"></span>
+		<a href="/legal/refund.html" target="_blank" rel="noopener">Возврат</a>
+		<span class="site-legal-footer-dot" aria-hidden="true"></span>
+		<a href="mailto:auth@sonya.group">Контакты</a>
+	</footer>
 
 	<div class="floating-controls floating-controls--right">
 		<!-- Account button + dropdown -->
@@ -695,16 +711,8 @@
 					<div class="subscription-plan-name" id="subscription-plan-name">Free Plan</div>
 					<div class="subscription-limits" id="subscription-limits">
 						<div class="limit-item">
-							<span class="limit-label">Клипов в месяц</span>
-							<span class="limit-value">2</span>
-						</div>
-						<div class="limit-item">
-							<span class="limit-label">Длительность</span>
-							<span class="limit-value">до 30 сек</span>
-						</div>
-						<div class="limit-item">
-							<span class="limit-label">Водяной знак</span>
-							<span class="limit-value">SONYA</span>
+							<span class="limit-label">Бесплатных генераций</span>
+							<span class="limit-value">1 на аккаунт</span>
 						</div>
 					</div>
 				</div>
@@ -851,37 +859,67 @@
 	<!-- ═══════════════════════════════════════════
 	     PAYWALL MODAL
 	═══════════════════════════════════════════ -->
-	<div class="sonya-modal-overlay" id="sonya-paywall-modal" role="dialog" aria-modal="true">
+	<div class="sonya-modal-overlay" id="sonya-paywall-modal" role="dialog" aria-modal="true" aria-label="Тарифы SONYA">
 		<div class="sonya-modal paywall-modal">
 			<button class="sonya-modal-close" id="paywall-modal-close" aria-label="Закрыть">
 				<i class="fa-solid fa-xmark"></i>
 			</button>
-			<div class="paywall-icon"><i class="fa-solid fa-bolt"></i></div>
-			<h2 class="paywall-title">Free Plan использован</h2>
-			<p class="paywall-desc">Подключите SONYA Pro на 30 дней — без автопродления, генерируйте видео без ограничений.</p>
-			<div class="paywall-price">
-				<span class="paywall-price-value">500 ₽</span>
-				<span class="paywall-price-period">/ 30 дней</span>
+
+			<!-- OFFER VIEW — plan picker. Modes/plans are rendered by auth.js
+			     from SONYA_PRICING (single source of plan data). -->
+			<div class="paywall-view is-active" data-paywall-view="offer">
+				<h2 class="paywall-title plans-title" id="paywall-plans-title">Тарифы</h2>
+				<div class="sonya-auth-tabs plans-modes" id="paywall-plan-modes" role="tablist" aria-label="Режим"></div>
+				<div class="plans-grid" id="paywall-plans" role="radiogroup"></div>
+				<div class="plans-footer">
+					<label class="sonya-auth-consent paywall-consent">
+						<input type="checkbox" id="paywall-consent-checkbox" />
+						<span class="sonya-auth-check" aria-hidden="true"></span>
+						<span class="sonya-auth-consent-text">
+							Совершая оплату, я принимаю условия
+							<a href="/legal/terms.html" target="_blank" rel="noopener">Оферты</a>
+							и <a href="/legal/refund.html" target="_blank" rel="noopener">Правил возврата</a>
+						</span>
+					</label>
+					<button class="paywall-pay-btn" id="paywall-pay-btn" type="button" disabled aria-disabled="true">
+						<span>Выберите тариф</span>
+					</button>
+				</div>
 			</div>
-			<div class="paywall-features">
-				<span><i class="fa-solid fa-check"></i> Неограниченные видео</span>
-				<span><i class="fa-solid fa-check"></i> Все режимы монтажа</span>
-				<span><i class="fa-solid fa-check"></i> Приоритетная обработка</span>
+
+			<!-- LOADING VIEW -->
+			<div class="paywall-view" data-paywall-view="loading" aria-live="polite">
+				<div class="paywall-spinner" aria-hidden="true"></div>
+				<h2 class="paywall-title">Создаём платёж…</h2>
+				<p class="paywall-desc">Сейчас перенаправим вас на защищённую страницу оплаты.</p>
 			</div>
-			<button class="paywall-tg-btn" id="paywall-tg-btn" type="button">
-				<i class="fa-brands fa-telegram"></i> Оплатить в Telegram
-			</button>
-			<button class="paywall-later-btn" id="paywall-later-btn" type="button">Позже</button>
+
+			<!-- ERROR VIEW -->
+			<div class="paywall-view" data-paywall-view="error" role="alert">
+				<div class="paywall-icon paywall-icon--error"><i class="fa-solid fa-triangle-exclamation"></i></div>
+				<h2 class="paywall-title">Не удалось создать платёж</h2>
+				<p class="paywall-desc" id="paywall-error-message">Попробуйте ещё раз или повторите попытку позже.</p>
+				<button class="paywall-pay-btn" id="paywall-retry-btn" type="button">Попробовать снова</button>
+				<button class="paywall-later-btn" id="paywall-error-later-btn" type="button">Закрыть</button>
+			</div>
+
+			<!-- ALREADY-PRO VIEW -->
+			<div class="paywall-view" data-paywall-view="already-pro">
+				<div class="paywall-icon paywall-icon--success"><i class="fa-solid fa-check"></i></div>
+				<h2 class="paywall-title">Подписка SONYA активна</h2>
+				<p class="paywall-desc" id="paywall-active-until-text">Подписка активна.</p>
+				<button class="paywall-later-btn" id="paywall-already-pro-close-btn" type="button">Продолжить</button>
+			</div>
 		</div>
 	</div>
 
 	<!-- Three.js for cinematic 3D sphere on processing page -->
-	<script src="https://static.sonya.group/releases/eea16aa/app.js"></script>
+	<script src="https://static.sonya.group/releases/537dbe6/app.js"></script>
 	<script type="module" src="sphere.js?v=202607291200"></script>
 	<!-- Approved Chrome cloth backdrop for the processing page — see
 	     cloth/cloth-processing.js and #processing-cloth-host above. -->
 	<script type="module" src="cloth/cloth-processing.js?v=202608101900"></script>
-	<script src="https://static.sonya.group/releases/eea16aa/auth.js"></script>
+	<script src="https://static.sonya.group/releases/537dbe6/auth.js"></script>
 </body>
 
 </html>

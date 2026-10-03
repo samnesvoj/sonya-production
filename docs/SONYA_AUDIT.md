@@ -107,3 +107,56 @@ P2 — улучшения
 6. Убрать один из дублирующихся индексов (idx_jobs_priority_queue vs ix_jobs_dispatch_priority).
 
 ✻ Sautéed for 6m 5s
+
+---
+
+## Update: Robokassa payment integration (this change)
+
+- **P1-7 (оплата — полная заглушка) — исправлено.** Реальная интеграция с Robokassa
+  (checkout → redirect → ResultURL webhook с проверкой подписи → активация
+  подписки) в `scripts/robokassa.py`, `scripts/payment_store.py`,
+  `scripts/payment_routes.py`, миграция `010_payments.sql`. Полностью
+  архивный поиск по git history подтвердил: до этого изменения в проекте не
+  было НИ ОДНОЙ строки, связанной с Robokassa, ни в текущем дереве, ни в
+  истории, ни в dangling-объектах/стэшах.
+- Новый, ранее не задокументированный здесь баг найден и исправлен
+  попутно: backend нигде не возвращал `402 FREE_PLAN_USED` при создании
+  job (grep по всем `.py` — 0 совпадений), хотя `auth.js::checkAndCreateVideoJob`
+  уже ждал этот код. Free-план был фактически безлимитным. См.
+  `scripts/prod_generation_api.py::_is_pro_active` + gate перед созданием job
+  в обоих job-creation путях (upload и URL-ingest).
+- P2-2 (`apiGetSubscriptionStatus` не используется) — по-прежнему не
+  используется, не трогали (вне периметра этой задачи).
+- Recurring (автопродление) НЕ реализован — продуктовая модель
+  (помесячные тарифы Start/Pro/Studio по режимам — см. `scripts/robokassa.py::PLAN_CATALOG`, без автопродления) и то, что у Robokassa
+  `/Merchant/Recurring` нет тестового режима и требует отдельного
+  согласования, делают его отдельной будущей задачей.
+
+## Update: per-plan entitlements (migration 016)
+
+- **Было:** любая оплата → `users.plan_type = 'pro'` → безлимит на все режимы
+  без проверки длины исходника, хотя оферта и UI описывали тарифы с лимитами.
+- **Стало:** `scripts/entitlements.py` + таблица `user_subscriptions`: каждая
+  покупка — период с `plan_id`, режимом (cut / trailer / streamer),
+  `ops_limit` / `ops_used` и `max_source_sec`. Списание операции — атомарно с
+  созданием job в `create_job_with_quota` (под row-lock пользователя; replay
+  по Idempotency-Key и откат INSERT не списывают). Длина исходника меряется
+  `ffprobe` на сервере после upload/скачивания, до S3 и до списания.
+- **Legacy Pro (500 ₽):** не мигрирован на новые тарифы — работает как продан
+  (безлимит до `plan_active_until`), затем пользователь — обычный free.
+- **Деплой:** на API-сервере нужен `ffmpeg` (ffprobe) — проверяется
+  `prod_preflight_check.py backend`; без него платные job отклоняются (503).
+
+## Update: payment provider decoupled — Robokassa is legacy
+
+- SONYA больше не принимает оплату через Robokassa; основной провайдер —
+  Самозанятые.рф (интеграции в репозитории пока нет — нет API-контракта).
+- Тарифы не зависят от провайдера: каталог — `scripts/pricing.py`, права —
+  `scripts/entitlements.py`, провайдер — `scripts/payment_providers.py`
+  (env `PAYMENT_PROVIDER`; пусто → checkout 503 `payment_unavailable`, без
+  создания платежа). `payments.provider` фиксирует, кто может подтвердить
+  платёж; legacy ResultURL Robokassa отклоняет чужие платежи.
+- Robokassa: `scripts/robokassa.py`, `RobokassaProvider`,
+  `/api/billing/robokassa/result` — legacy, оставлены только для
+  подтверждения уже созданных Robokassa-платежей; план удаления — после
+  проверки, что в production-БД нет pending Robokassa-платежей.

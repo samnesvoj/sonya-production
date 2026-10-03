@@ -151,6 +151,17 @@ def main() -> None:
         else:
             print("[PREFLIGHT] backend S3 bucket — OK")
 
+        # Paid plans have a max source length, measured with ffprobe on the
+        # API server (scripts/entitlements.py). Without it every paid
+        # upload is refused (503) -- free uploads still work.
+        import shutil
+        if shutil.which(os.environ.get("FFPROBE_BIN", "ffprobe")):
+            print("[PREFLIGHT] backend ffprobe — OK")
+        else:
+            print("[PREFLIGHT] backend — MISSING binary: ffprobe (apt-get install -y ffmpeg); "
+                  "paid-plan jobs would be refused", file=sys.stderr)
+            ok = False
+
     sys.exit(0 if ok else 1)
 
 

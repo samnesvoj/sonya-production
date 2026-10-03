@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import os
 import uuid
 from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
+
+
+@pytest.fixture(autouse=True)
+def _no_subscriptions_without_db(monkeypatch):
+    # Unit tests run without Postgres: every user has no paid subscription
+    # unless a test sets its own (see tests/test_plan_entitlements.py).
+    # With DATABASE_URL set, the real user_subscriptions query runs.
+    if not os.environ.get("DATABASE_URL"):
+        monkeypatch.setattr("scripts.entitlements.get_user_subscriptions", lambda user_id: [])
 
 
 @pytest.fixture()

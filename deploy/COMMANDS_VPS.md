@@ -14,6 +14,10 @@
 git clone <REPO_URL> /srv/sonya
 cd /srv/sonya
 
+# System deps: ffprobe measures source length for paid plans
+# (scripts/entitlements.py) -- without it paid jobs are refused with 503.
+sudo apt-get install -y ffmpeg
+
 # Install backend deps
 python -m venv .venv
 source .venv/bin/activate

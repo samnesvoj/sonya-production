@@ -12,7 +12,7 @@ CLI uses -- so a developer gets the exact same PASS/FAIL-per-stage report
 whether they run it here (`pytest -k lifecycle`) or from the CLI.
 
 Everything is mocked at the same boundary functions the rest of the suite
-already mocks (create_job_idempotent, upload_bytes, claim_specific_job,
+already mocks (create_job_with_quota, upload_bytes, claim_specific_job,
 complete_job, generate_presigned_get_url, ...) -- no real S3, Postgres, or
 GPU worker involved anywhere.
 """
@@ -55,12 +55,13 @@ def logged_in_client(client, monkeypatch):
 
     import scripts.prod_generation_api as api
 
-    def fake_create_job_idempotent(job_id, user_id, mode, params, s3_input_key,
-                                    idempotency_key, idempotency_fingerprint, queue_priority=0):
+    def fake_create_job_with_quota(job_id, user_id, mode, params, s3_input_key,
+                                    idempotency_key, idempotency_fingerprint, queue_priority=0,
+                                    bypass_quota=False, subscription_id=None):
         row = {"id": job_id, "user_id": user_id, "mode": mode, "status": "queued",
                "created_at": datetime.now(timezone.utc), "s3_output_key": None}
         jobs[job_id] = row
-        return row
+        return {"outcome": "created", "job": row}
 
     def fake_upload_bytes(content, key, content_type=None):
         import time
@@ -69,7 +70,7 @@ def logged_in_client(client, monkeypatch):
 
     monkeypatch.setattr(api, "validate_upload", probe_async(probes, "validated_at", api.validate_upload))
     monkeypatch.setattr(api, "upload_bytes", fake_upload_bytes)
-    monkeypatch.setattr(api, "create_job_idempotent", fake_create_job_idempotent)
+    monkeypatch.setattr(api, "create_job_with_quota", fake_create_job_with_quota)
     monkeypatch.setattr(api, "get_job", lambda job_id: jobs.get(job_id))
     monkeypatch.setattr(api, "add_job_file", lambda **kw: "file-id")
     monkeypatch.setattr(api, "list_job_files", lambda job_id: [])

@@ -33,20 +33,21 @@ def _mock_pipeline(monkeypatch, tmp_path, created_jobs):
     video_path = tmp_path / "downloaded.mp4"
     video_path.write_bytes(b"\x00\x00\x00\x18ftyp" + b"\x00" * 64)
 
-    monkeypatch.setattr(url_ingest, "probe", lambda url, platform: {"duration": 42})
+    monkeypatch.setattr(url_ingest, "probe", lambda url, platform, mode=None, max_duration_sec=None: {"duration": 42})
     monkeypatch.setattr(url_ingest, "download_video",
-                         lambda url, platform, progress_cb=None: (str(video_path), ".mp4"))
+                         lambda url, platform, progress_cb=None, mode=None: (str(video_path), ".mp4"))
     monkeypatch.setattr(url_ingest, "cleanup", lambda path: None)
 
-    def fake_create_job_idempotent(job_id, user_id, mode, params, s3_input_key,
-                                    idempotency_key, idempotency_fingerprint, queue_priority=0):
+    def fake_create_job_with_quota(job_id, user_id, mode, params, s3_input_key,
+                                    idempotency_key, idempotency_fingerprint, queue_priority=0,
+                                    bypass_quota=False, subscription_id=None):
         created_jobs["job_id"] = job_id
         created_jobs["user_id"] = user_id
         created_jobs["mode"] = mode
         created_jobs["s3_input_key"] = s3_input_key
-        return {"id": job_id, "user_id": user_id, "mode": mode, "status": "queued"}
+        return {"outcome": "created", "job": {"id": job_id, "user_id": user_id, "mode": mode, "status": "queued"}}
 
-    monkeypatch.setattr("scripts.prod_generation_api.create_job_idempotent", fake_create_job_idempotent)
+    monkeypatch.setattr("scripts.prod_generation_api.create_job_with_quota", fake_create_job_with_quota)
     monkeypatch.setattr("scripts.prod_generation_api.add_job_file", lambda **kw: "file-id")
     monkeypatch.setattr("scripts.prod_generation_api.upload_bytes",
                          lambda content, key, content_type=None: None)
@@ -124,9 +125,9 @@ def test_from_url_full_success_flow(client, monkeypatch, tmp_path):
 
 def test_from_url_download_failure_reports_failed_status(client, monkeypatch):
     _login(client, monkeypatch)
-    monkeypatch.setattr(url_ingest, "probe", lambda url, platform: {"duration": 10})
+    monkeypatch.setattr(url_ingest, "probe", lambda url, platform, mode=None, max_duration_sec=None: {"duration": 10})
 
-    def _boom(url, platform, progress_cb=None):
+    def _boom(url, platform, progress_cb=None, mode=None):
         raise url_ingest.DownloadFailed("network unreachable")
     monkeypatch.setattr(url_ingest, "download_video", _boom)
 
@@ -144,7 +145,7 @@ def test_from_url_download_failure_reports_failed_status(client, monkeypatch):
 def test_from_url_duration_limit_reports_failed_status(client, monkeypatch):
     _login(client, monkeypatch)
 
-    def _too_long(url, platform):
+    def _too_long(url, platform, mode=None, max_duration_sec=None):
         raise url_ingest.DownloadLimitExceeded("Видео слишком длинное (120 мин). Максимум — 60 мин.")
     monkeypatch.setattr(url_ingest, "probe", _too_long)
 
