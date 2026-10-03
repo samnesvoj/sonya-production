@@ -275,20 +275,31 @@ def create_job_with_quota(
     idempotency_fingerprint: Optional[str],
     queue_priority: int,
     bypass_quota: bool,
+    subscription_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Atomically, in ONE transaction: check for an existing job under
-    (user_id, idempotency_key), reserve one unit of free-plan quota, and
-    insert the new job -- so a job insert failure can never leave a
-    "spent" quota unit behind, and a replayed request never spends quota
-    a second time.
+    (user_id, idempotency_key), reserve one unit of quota, and insert the
+    new job -- so a job insert failure can never leave a "spent" quota unit
+    behind, and a replayed request never spends quota a second time.
+
+    Which quota (see scripts/entitlements.py):
+      subscription_id given -> one operation of that user_subscriptions
+                               period (must belong to user_id, still be
+                               running, and have ops left); the job records
+                               it in charged_subscription_id
+      else bypass_quota     -> nothing (legacy Pro)
+      else                  -> one free-plan unit
 
     Returns one of:
-      {"outcome": "existing",       "job": {...}}  -- idempotency_key already
-                                                       had a row; quota untouched
-      {"outcome": "quota_exceeded", "job": None}     -- new request, but
-                                                       free_video_used >= free_video_limit
-      {"outcome": "created",        "job": {...}}    -- new job row inserted
+      {"outcome": "existing",           "job": {...}}  -- idempotency_key already
+                                                          had a row; quota untouched
+      {"outcome": "quota_exceeded",     "job": None}   -- new request, but
+                                                          free_video_used >= free_video_limit
+      {"outcome": "plan_limit_reached", "job": None}   -- new request, but the
+                                                          subscription period is
+                                                          exhausted or already over
+      {"outcome": "created",            "job": {...}}  -- new job row inserted
 
     Concurrency: the first statement locks the user's own row
     (SELECT ... FOR UPDATE), which serializes every job-creation attempt
@@ -325,7 +336,21 @@ def create_job_with_quota(
                     if existing is not None:
                         return {"outcome": "existing", "job": dict(existing)}
 
-                if not bypass_quota:
+                if subscription_id is not None:
+                    cur.execute(
+                        """
+                        UPDATE user_subscriptions
+                        SET ops_used = ops_used + 1
+                        WHERE id = %s AND user_id = %s
+                          AND ops_used < ops_limit
+                          AND period_start <= NOW() AND period_end > NOW()
+                        RETURNING id
+                        """,
+                        (subscription_id, user_id),
+                    )
+                    if cur.fetchone() is None:
+                        return {"outcome": "plan_limit_reached", "job": None}
+                elif not bypass_quota:
                     cur.execute(
                         """
                         UPDATE users
@@ -343,13 +368,14 @@ def create_job_with_quota(
                     INSERT INTO generation_jobs
                         (id, user_id, mode, params, s3_input_key, status,
                          queue_priority, created_at, updated_at,
-                         idempotency_key, idempotency_fingerprint)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         idempotency_key, idempotency_fingerprint,
+                         charged_subscription_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING *
                     """,
                     (job_id, user_id, mode, json.dumps(params), s3_input_key,
                      JOB_STATUS_QUEUED, queue_priority, _now(), _now(),
-                     idempotency_key, idempotency_fingerprint),
+                     idempotency_key, idempotency_fingerprint, subscription_id),
                 )
                 created = cur.fetchone()
             return {"outcome": "created", "job": dict(created)}

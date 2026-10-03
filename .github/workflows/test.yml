@@ -46,7 +46,7 @@ jobs:
           DATABASE_URL: postgresql://sonya_test:sonya_test@localhost:5432/sonya_test
 
       - name: Run PostgreSQL integration tests (real unique-index concurrency check)
-        run: pytest tests/test_job_idempotency_postgres.py -v
+        run: pytest tests/test_job_idempotency_postgres.py tests/test_plan_entitlements_postgres.py -v
         env:
           DATABASE_URL: postgresql://sonya_test:sonya_test@localhost:5432/sonya_test
 

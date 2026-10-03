@@ -1,11 +1,19 @@
 """
 payment_routes.py
 ==================
-Robokassa checkout + webhook endpoints for SONYA.
+Billing endpoints for SONYA.
 
-  POST /api/billing/checkout                  (browser, cookie auth)
-  POST /api/billing/robokassa/result           (Robokassa server-to-server, no auth)
-  GET  /api/billing/payment-status             (browser, cookie auth)
+  POST /api/billing/checkout                  (browser, cookie auth) -- provider independent
+  GET  /api/billing/payment-status             (browser, cookie auth) -- provider independent
+  POST /api/billing/robokassa/result           LEGACY Robokassa ResultURL (server-to-server)
+
+Checkout takes only a plan_id: price and terms come from the server catalog
+(scripts/pricing.py) and are snapshotted on the payments row; the active
+provider (scripts/payment_providers.py, env PAYMENT_PROVIDER) only turns
+that row into a redirect URL. A provider's webhook confirms the payment via
+payment_store.process_successful_payment(), which activates exactly the
+snapshotted plan. No provider configured -> checkout returns 503
+payment_unavailable before creating anything.
 
 Same pattern as scripts/auth_routes.py: a plain APIRouter() with no
 prefix, each path spelled out in full ("/api/...") in the decorator, and
@@ -13,10 +21,10 @@ included in the app with app.include_router(payment_router) -- no
 prefix= argument. This keeps the actual route exactly
 "/api/billing/robokassa/result", never "/billing/..." or "/api/api/...".
 
-SuccessURL/FailURL (payment/success.html, payment/fail.html) are static
-pages that only ever call GET /api/billing/payment-status -- they never
-hit an endpoint that can change payment/subscription state. ResultURL is
-the only source of truth for a completed payment; see
+The return pages (payment/success.html, payment/fail.html) are static and
+only ever call GET /api/billing/payment-status -- they never hit an endpoint
+that can change payment/subscription state. Only a provider's verified
+server-to-server notification confirms a payment; see
 scripts/payment_store.py::process_successful_payment.
 """
 from __future__ import annotations
@@ -28,15 +36,9 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
-from scripts import payment_store
-from scripts.robokassa import (
-    build_payment_url,
-    build_receipt,
-    format_out_sum,
-    get_plan,
-    is_test_mode,
-    verify_result_signature_for_either_mode,
-)
+from scripts import entitlements, payment_store
+from scripts.payment_providers import RobokassaProvider, get_checkout_provider
+from scripts.pricing import get_plan
 from scripts.security import get_current_user, new_trace_id, verify_browser_origin
 
 logger = logging.getLogger(__name__)
@@ -69,12 +71,53 @@ async def checkout(
             detail={"error": "unknown_plan", "trace_id": trace_id},
         )
 
-    is_test = is_test_mode()
+    # A running period for the same mode that still has operations left
+    # would be closed by the new purchase (see
+    # payment_store._activate_subscription) -- refuse instead of silently
+    # burning what the user already paid for. Exhausted/expired periods
+    # don't block buying the next one.
+    try:
+        current = next(
+            (s for s in entitlements.active_subscriptions(entitlements.get_user_subscriptions(str(user["id"])))
+             if s["plan_mode"] == plan.plan_mode and s["ops_used"] < s["ops_limit"]),
+            None,
+        )
+    except Exception as exc:
+        logger.error(
+            "[payment] db_error operation=get_user_subscriptions user_id=%s trace_id=%s error_type=%s",
+            user["id"], trace_id, type(exc).__name__,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "internal_error", "trace_id": trace_id},
+        )
+    if current is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"error": "subscription_active", "trace_id": trace_id,
+                    "subscription": entitlements.serialize_subscription(current)},
+        )
+
+    provider = get_checkout_provider()
+    if provider is None:
+        # No acquiring connected yet (Самозанятые.рф integration pending,
+        # Robokassa retired) -- refuse before creating a payment row the
+        # user could never pay.
+        logger.warning("[payment] checkout_unavailable no_provider user_id=%s plan_id=%s trace_id=%s",
+                       user["id"], plan.plan_id, trace_id)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"error": "payment_unavailable", "trace_id": trace_id},
+        )
+
+    is_test = provider.is_test_mode()
 
     try:
         payment = payment_store.create_pending_payment(
             user_id=str(user["id"]), plan_id=plan.plan_id, amount=plan.amount, is_test=is_test,
             plan_type=plan.plan_type, duration_days=plan.duration_days,
+            plan_mode=plan.plan_mode, ops_limit=plan.ops_limit, max_source_sec=plan.max_source_sec,
+            provider=provider.name,
         )
     except Exception as exc:
         logger.error(
@@ -86,19 +129,10 @@ async def checkout(
             detail={"error": "internal_error", "trace_id": trace_id},
         )
 
-    out_sum = format_out_sum(plan.amount)
-    receipt_json = build_receipt(plan)
-
     try:
-        redirect_url = build_payment_url(
-            out_sum=out_sum,
-            inv_id=payment["invoice_id"],
-            description=plan.description,
-            receipt_json=receipt_json,
-            is_test=is_test,
-        )
+        redirect_url = provider.create_checkout(payment, plan)
     except RuntimeError as exc:
-        # Missing/misconfigured Robokassa credentials -- never leak which
+        # Missing/misconfigured provider credentials -- never leak which
         # env var, just fail safe with a trace_id for server-side logs.
         logger.error("[payment] checkout_config_error trace_id=%s: %s", trace_id, exc)
         raise HTTPException(
@@ -107,14 +141,16 @@ async def checkout(
         )
 
     logger.info(
-        "[payment] checkout_created user_id=%s invoice_id=%s plan_id=%s is_test=%s trace_id=%s",
-        user["id"], payment["invoice_id"], plan.plan_id, is_test, trace_id,
+        "[payment] checkout_created provider=%s user_id=%s invoice_id=%s plan_id=%s is_test=%s trace_id=%s",
+        provider.name, user["id"], payment["invoice_id"], plan.plan_id, is_test, trace_id,
     )
 
     return {"invoice_id": payment["invoice_id"], "redirect_url": redirect_url}
 
 
-# ── POST /api/billing/robokassa/result (ResultURL) ───────────────────────────
+# ── POST /api/billing/robokassa/result (LEGACY Robokassa ResultURL) ─────────
+# Kept only so a payment created through Robokassa can still be confirmed.
+# It refuses any payment whose provider isn't "robokassa".
 
 @router.post("/api/billing/robokassa/result")
 async def robokassa_result(
@@ -140,6 +176,10 @@ async def robokassa_result(
     """
     trace_id = new_trace_id()
 
+    # Imported here, not at module level: only this legacy route needs
+    # Robokassa -- checkout and the tariff system never import it.
+    from scripts.robokassa import verify_result_signature_for_either_mode
+
     matched_is_test = verify_result_signature_for_either_mode(OutSum, InvId, SignatureValue)
     if matched_is_test is None:
         logger.warning("[payment] result_bad_signature invoice_id=%s trace_id=%s", InvId, trace_id)
@@ -163,6 +203,13 @@ async def robokassa_result(
 
     if payment is None:
         logger.warning("[payment] result_unknown_invoice invoice_id=%s trace_id=%s", InvId, trace_id)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown invoice")
+
+    if (payment.get("provider") or RobokassaProvider.name) != RobokassaProvider.name:
+        # invoice_id is a shared order number -- a Robokassa-signed callback
+        # must never confirm another provider's payment.
+        logger.warning("[payment] result_wrong_provider invoice_id=%s provider=%s trace_id=%s",
+                       InvId, payment.get("provider"), trace_id)
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="unknown invoice")
 
     if payment["is_test"] != matched_is_test:
@@ -209,8 +256,25 @@ async def payment_status(
         # confirm/deny existence of another user's payment.
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"error": "not_found", "trace_id": trace_id})
 
+    # The subscription this payment opened (if paid and it's a new-style
+    # plan) -- lets success.html show what was actually activated.
+    subscription = None
+    if payment["status"] == "paid" and payment.get("plan_mode"):
+        try:
+            subscription = next(
+                (entitlements.serialize_subscription(s)
+                 for s in entitlements.get_user_subscriptions(str(user["id"]))
+                 if str(s.get("payment_id")) == str(payment["id"])),
+                None,
+            )
+        except Exception as exc:
+            logger.warning("[payment] payment_status_subscription_lookup_failed trace_id=%s error_type=%s",
+                           trace_id, type(exc).__name__)
+
     return {
         "status": payment["status"],
+        "plan_id": payment["plan_id"],
         "plan_type": user["plan_type"],
-        "plan_active_until": _iso(user.get("plan_active_until")),
+        "plan_active_until": subscription["period_end"] if subscription else _iso(user.get("plan_active_until")),
+        "subscription": subscription,
     }

@@ -1,5 +1,7 @@
 """
-Pure signature-logic tests for scripts/robokassa.py -- no DB, no FastAPI.
+LEGACY PROVIDER TESTS. Pure signature-logic tests for scripts/robokassa.py -- no DB,
+no FastAPI. Robokassa is no longer SONYA's provider; nothing here is evidence for
+the production payment flow or for pricing (tests/test_pricing_catalog.py).
 Verified formulas (see scripts/robokassa.py docstring / the payment plan
 notes): MerchantLogin:OutSum:InvId[:Receipt]:Password#1 for the outgoing
 payment signature, OutSum:InvId:Password#2 for ResultURL.
@@ -10,7 +12,7 @@ import hashlib
 
 import pytest
 
-from scripts import robokassa
+from scripts import pricing, robokassa
 
 
 @pytest.fixture(autouse=True)
@@ -114,14 +116,14 @@ def test_verify_result_signature_case_insensitive_hex():
 
 def test_build_receipt_disabled_by_default(monkeypatch):
     monkeypatch.delenv("ROBOKASSA_RECEIPT_ENABLED", raising=False)
-    plan = robokassa.PLAN_CATALOG["pro_30d"]
+    plan = pricing.PLAN_CATALOG["cut_pro"]
     assert robokassa.build_receipt(plan) is None
 
 
 def test_build_receipt_enabled_requires_tax(monkeypatch):
     monkeypatch.setenv("ROBOKASSA_RECEIPT_ENABLED", "true")
     monkeypatch.delenv("ROBOKASSA_RECEIPT_TAX", raising=False)
-    plan = robokassa.PLAN_CATALOG["pro_30d"]
+    plan = pricing.PLAN_CATALOG["cut_pro"]
     with pytest.raises(RuntimeError):
         robokassa.build_receipt(plan)
 
@@ -129,7 +131,7 @@ def test_build_receipt_enabled_requires_tax(monkeypatch):
 def test_build_receipt_enabled_builds_json_matching_out_sum(monkeypatch):
     monkeypatch.setenv("ROBOKASSA_RECEIPT_ENABLED", "true")
     monkeypatch.setenv("ROBOKASSA_RECEIPT_TAX", "vat0")
-    plan = robokassa.PLAN_CATALOG["pro_30d"]
+    plan = pricing.PLAN_CATALOG["cut_pro"]
     receipt_json = robokassa.build_receipt(plan)
     assert receipt_json is not None
     import json

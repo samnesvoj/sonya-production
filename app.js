@@ -24,7 +24,8 @@ const ADMINS = {
 };
 
 // Subscription plans
-// NOTE: single paid tier for now — SONYA Pro, 500 ₽ / 30 дней, без автопродления.
+// NOTE: names/prices/limits of paid plans live in auth.js (SONYA_PRICING);
+// here `pro` is only the generic "paid subscription active" status.
 const SUBSCRIPTION_PLANS = {
         free: {
                 name: 'Free Plan',
@@ -34,14 +35,10 @@ const SUBSCRIPTION_PLANS = {
                 ]
         },
         pro: {
-                name: 'SONYA Pro',
+                name: 'Подписка SONYA',
                 icon: '⚡',
-                price: 500,
-                period: '30 дней',
                 limits: [
-                        { label: 'Клипов', value: 'без ограничений' },
-                        { label: 'Длительность', value: 'без ограничений' },
-                        { label: 'Субтитры + озвучка', value: '✓' },
+                        { label: 'Лимиты', value: 'по выбранному тарифу' },
                         { label: 'Приоритетная обработка', value: '✓' },
                         { label: 'Автопродление', value: 'нет' }
                 ]

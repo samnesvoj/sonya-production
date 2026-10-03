@@ -104,11 +104,7 @@
 		<!-- PAID (terminal, backend-confirmed) -->
 		<div class="paywall-view" data-paywall-view="paid">
 			<div class="paywall-icon paywall-icon--success"><i class="fa-solid fa-check"></i></div>
-			<h2 class="paywall-title">Подписка SONYA Pro активна</h2>
-			<div class="paywall-price">
-				<span class="paywall-price-value">500 ₽</span>
-				<span class="paywall-price-period">/ 30 дней</span>
-			</div>
+			<h2 class="paywall-title">Подписка SONYA активна</h2>
 			<p class="paywall-desc" id="paid-until-text">Подписка активна.</p>
 			<a class="paywall-pay-btn" href="/"><span>Продолжить</span></a>
 		</div>
@@ -147,7 +143,8 @@
 		(function () {
 			var API_BASE = window.SONYA_API_BASE || '/api';
 			var params = new URLSearchParams(window.location.search);
-			var invoiceId = params.get('InvId') || params.get('invId') || params.get('invoice_id');
+			// invoice_id: our order number. InvId/invId: legacy Robokassa return params.
+			var invoiceId = params.get('invoice_id') || params.get('InvId') || params.get('invId');
 
 			function showView(name) {
 				document.querySelectorAll('.paywall-view').forEach(function (el) {
@@ -168,7 +165,7 @@
 			var POLL_INTERVAL_MS = 2000;
 
 			// Never activates or confirms anything itself -- only reads
-			// server-confirmed state. The webhook (ResultURL) is the sole
+			// server-confirmed state. The provider's verified webhook is the sole
 			// source of truth for a completed payment; this page just polls
 			// it. Polling always stops on a terminal outcome (paid / failed /
 			// cancelled / refunded / an unrecognized status / a fetch error) --

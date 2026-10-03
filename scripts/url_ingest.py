@@ -233,11 +233,19 @@ _YTDLP_FORMAT = (
 )
 
 
-def probe(url: str, platform: str, mode: Optional[str] = None) -> dict:
+def probe(url: str, platform: str, mode: Optional[str] = None,
+          max_duration_sec: Optional[int] = None) -> dict:
     """Metadata-only lookup (no download). Raises DownloadLimitExceeded if
     the video is already known to exceed the duration cap; raises
-    DownloadFailed if the video can't be resolved at all."""
+    DownloadFailed if the video can't be resolved at all.
+
+    max_duration_sec: the caller's paid-plan cap (scripts/entitlements.py),
+    which replaces the generic per-mode default -- e.g. a 2-hour plan must
+    not be cut off by the 60-minute free default. It is only an early,
+    platform-reported check; the authoritative one is ffprobe on the
+    downloaded file."""
     assert_safe_url(url)
+    duration_cap = max_duration_sec or _max_duration_sec(mode)
 
     if platform not in ("youtube", "vk", "twitch"):
         # 'direct' is probed via a lightweight HEAD/range request instead —
@@ -264,10 +272,10 @@ def probe(url: str, platform: str, mode: Optional[str] = None) -> dict:
         raise DownloadFailed(f"probe failed: {exc}") from exc
 
     duration = info.get("duration")
-    if duration and duration > _max_duration_sec(mode):
+    if duration and duration > duration_cap:
         raise DownloadLimitExceeded(
             f"Видео слишком длинное ({int(duration // 60)} мин). "
-            f"Максимум — {_max_duration_sec(mode) // 60} мин."
+            f"Максимум — {duration_cap // 60} мин."
         )
 
     filesize = info.get("filesize") or info.get("filesize_approx")

@@ -858,46 +858,39 @@
 	<!-- ═══════════════════════════════════════════
 	     PAYWALL MODAL
 	═══════════════════════════════════════════ -->
-	<div class="sonya-modal-overlay" id="sonya-paywall-modal" role="dialog" aria-modal="true" aria-label="Оформление подписки SONYA Pro">
+	<div class="sonya-modal-overlay" id="sonya-paywall-modal" role="dialog" aria-modal="true" aria-label="Тарифы SONYA">
 		<div class="sonya-modal paywall-modal">
 			<button class="sonya-modal-close" id="paywall-modal-close" aria-label="Закрыть">
 				<i class="fa-solid fa-xmark"></i>
 			</button>
 
-			<!-- OFFER VIEW -->
+			<!-- OFFER VIEW — plan picker. Modes/plans are rendered by auth.js
+			     from SONYA_PRICING (single source of plan data). -->
 			<div class="paywall-view is-active" data-paywall-view="offer">
-				<div class="paywall-icon"><i class="fa-solid fa-bolt"></i></div>
-				<h2 class="paywall-title">SONYA Pro</h2>
-				<p class="paywall-desc">Безлимитные генерации на 30 дней — без автопродления.</p>
-				<div class="paywall-price">
-					<span class="paywall-price-value">500 ₽</span>
-					<span class="paywall-price-period">/ 30 дней</span>
+				<h2 class="paywall-title plans-title" id="paywall-plans-title">Тарифы</h2>
+				<div class="sonya-auth-tabs plans-modes" id="paywall-plan-modes" role="tablist" aria-label="Режим"></div>
+				<div class="plans-grid" id="paywall-plans" role="radiogroup"></div>
+				<div class="plans-footer">
+					<label class="sonya-auth-consent paywall-consent">
+						<input type="checkbox" id="paywall-consent-checkbox" />
+						<span class="sonya-auth-check" aria-hidden="true"></span>
+						<span class="sonya-auth-consent-text">
+							Совершая оплату, я принимаю условия
+							<a href="/legal/terms.html" target="_blank" rel="noopener">Оферты</a>
+							и <a href="/legal/refund.html" target="_blank" rel="noopener">Правил возврата</a>
+						</span>
+					</label>
+					<button class="paywall-pay-btn" id="paywall-pay-btn" type="button" disabled aria-disabled="true">
+						<span>Выберите тариф</span>
+					</button>
 				</div>
-				<div class="paywall-features">
-					<span><i class="fa-solid fa-check"></i> Неограниченные видео</span>
-					<span><i class="fa-solid fa-check"></i> Все режимы монтажа</span>
-					<span><i class="fa-solid fa-check"></i> Приоритетная обработка</span>
-				</div>
-				<label class="sonya-auth-consent paywall-consent">
-					<input type="checkbox" id="paywall-consent-checkbox" />
-					<span class="sonya-auth-check" aria-hidden="true"></span>
-					<span class="sonya-auth-consent-text">
-						Совершая оплату, я принимаю условия
-						<a href="/legal/terms.html" target="_blank" rel="noopener">Оферты</a>
-						и <a href="/legal/refund.html" target="_blank" rel="noopener">Правил возврата</a>
-					</span>
-				</label>
-				<button class="paywall-pay-btn" id="paywall-pay-btn" type="button" disabled aria-disabled="true">
-					<span>Оплатить 500 ₽</span>
-				</button>
-				<button class="paywall-later-btn" id="paywall-later-btn" type="button">Позже</button>
 			</div>
 
 			<!-- LOADING VIEW -->
 			<div class="paywall-view" data-paywall-view="loading" aria-live="polite">
 				<div class="paywall-spinner" aria-hidden="true"></div>
 				<h2 class="paywall-title">Создаём платёж…</h2>
-				<p class="paywall-desc">Сейчас перенаправим вас на защищённую страницу оплаты Robokassa.</p>
+				<p class="paywall-desc">Сейчас перенаправим вас на защищённую страницу оплаты.</p>
 			</div>
 
 			<!-- ERROR VIEW -->
@@ -912,7 +905,7 @@
 			<!-- ALREADY-PRO VIEW -->
 			<div class="paywall-view" data-paywall-view="already-pro">
 				<div class="paywall-icon paywall-icon--success"><i class="fa-solid fa-check"></i></div>
-				<h2 class="paywall-title">SONYA Pro активен</h2>
+				<h2 class="paywall-title">Подписка SONYA активна</h2>
 				<p class="paywall-desc" id="paywall-active-until-text">Подписка активна.</p>
 				<button class="paywall-later-btn" id="paywall-already-pro-close-btn" type="button">Продолжить</button>
 			</div>

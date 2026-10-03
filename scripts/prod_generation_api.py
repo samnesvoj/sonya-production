@@ -23,9 +23,9 @@ Auth + billing endpoints (see scripts/auth_routes.py):
   POST /api/auth/logout
   GET  /api/billing/subscription-status
 
-Robokassa payment endpoints (see scripts/payment_routes.py):
-  POST /api/billing/checkout                 (browser, creates a pending payment + redirect_url)
-  POST /api/billing/robokassa/result         (Robokassa server-to-server, ResultURL -- source of truth)
+Billing endpoints (see scripts/payment_routes.py; provider = env PAYMENT_PROVIDER):
+  POST /api/billing/checkout                 (browser, plan_id -> pending payment + provider redirect_url)
+  POST /api/billing/robokassa/result         (LEGACY Robokassa ResultURL -- confirms old Robokassa payments only)
   GET  /api/billing/payment-status           (browser, polled from payment/success.html + fail.html)
 
 @sonya_group_bot account-linking endpoints (see scripts/telegram_routes.py):
@@ -65,6 +65,7 @@ import json
 import logging
 import os
 import re
+import tempfile
 import threading
 import time
 import uuid
@@ -147,16 +148,59 @@ def _resolve_priority(user: dict) -> tuple[int, str]:
 
 def _is_pro_active(user: dict) -> bool:
     """
-    Whether the user's Pro plan is currently in effect -- not just whether
-    plan_type happens to say "pro". A payment that expired without renewal
-    leaves plan_type="pro" on the row (nothing resets it), so free-plan
-    quota enforcement must check plan_active_until too, or an expired Pro
-    user would get unlimited free generations.
+    Whether a LEGACY (pre-016, 500 ₽) Pro plan is currently in effect -- not
+    just whether plan_type happens to say "pro". A payment that expired
+    without renewal leaves plan_type="pro" on the row (nothing resets it),
+    so plan_active_until must be checked too. New public plans never set
+    plan_type; their rights are resolved by scripts/entitlements.py.
     """
-    if user.get("plan_type") != "pro" or user.get("plan_status") != "active":
-        return False
-    until = user.get("plan_active_until")
-    return bool(until) and until > datetime.now(timezone.utc)
+    return entitlements.legacy_pro_active(user)
+
+
+def _resolve_entitlement(user: dict, mode: str, trace_id: str) -> "entitlements.Entitlement":
+    """Pre-I/O access decision for one operation (no debit). Raises the
+    402 payment-required flow with a concrete `code` (see entitlements.py);
+    the atomic debit is create_job_with_quota()."""
+    try:
+        subscriptions = entitlements.get_user_subscriptions(str(user["id"]))
+    except Exception as exc:
+        logger.error("[api] subscriptions_lookup_failed user_id=%s trace_id=%s error_type=%s",
+                     user["id"], trace_id, type(exc).__name__)
+        raise safe_error("db_error", 500, trace_id)
+    try:
+        return entitlements.resolve_entitlement(user, mode, subscriptions)
+    except entitlements.EntitlementDenied as denied:
+        raise HTTPException(status_code=denied.status_code, detail=denied.detail(trace_id))
+
+
+def _priority_for(ent: "entitlements.Entitlement", priority: int, plan: str) -> tuple[int, str]:
+    # A paid subscription gets the same queue priority as legacy Pro.
+    if ent.kind == "subscription":
+        return _PLAN_PRIORITY["pro"], "pro"
+    return priority, plan
+
+
+def _enforce_duration_of_bytes(ent: "entitlements.Entitlement", content: bytes, ext: str,
+                               trace_id: str) -> None:
+    """Plan source-length cap for an in-memory upload (writes a temp copy
+    for ffprobe only when a cap applies). Raises before any S3/DB work."""
+    if ent.max_source_sec is None:
+        return
+    with tempfile.NamedTemporaryFile(suffix=ext or ".mp4") as tmp:
+        tmp.write(content)
+        tmp.flush()
+        try:
+            entitlements.measure_and_enforce(ent, tmp.name)
+        except entitlements.EntitlementDenied as denied:
+            raise HTTPException(status_code=denied.status_code, detail=denied.detail(trace_id))
+
+
+def _plan_limit_reached_detail(ent: "entitlements.Entitlement", trace_id: str) -> dict:
+    return entitlements.EntitlementDenied(
+        entitlements.PLAN_LIMIT_REACHED,
+        "Лимит тарифа исчерпан или период подписки закончился.",
+        plan_mode=ent.plan_mode, plan_id=ent.plan_id,
+    ).detail(trace_id)
 
 
 from scripts.security_audit import (
@@ -168,7 +212,7 @@ from scripts.security_audit import (
     audit,
 )
 from scripts.upload_security import validate_upload
-from scripts import url_ingest
+from scripts import entitlements, url_ingest
 
 logger = logging.getLogger(__name__)
 
@@ -203,7 +247,7 @@ app.add_middleware(
 # Auth + billing endpoints (see scripts/auth_routes.py)
 app.include_router(auth_router)
 
-# Robokassa checkout + webhook endpoints (see scripts/payment_routes.py)
+# Billing endpoints: checkout, payment status, legacy Robokassa ResultURL (see scripts/payment_routes.py)
 app.include_router(payment_router)
 
 # @sonya_group_bot account-linking endpoints (see scripts/telegram_routes.py)
@@ -451,19 +495,14 @@ async def create_generation_job(
     # Quota check
     check_user_quota(user_id)
 
-    # Free-plan limit -- fast-fail check only, from the user snapshot already
-    # loaded for this request. Not the enforcement point: a concurrent
-    # request could still consume the last slot before this one reaches
-    # create_job_with_quota() below, which re-checks atomically against the
-    # DB and is what actually prevents exceeding free_video_limit. This
-    # early check exists purely to skip a wasted upload for the common case
-    # of an already-exhausted user. An expired Pro plan does NOT bypass
-    # either check (see _is_pro_active).
-    if not _is_pro_active(user) and user["free_video_used"] >= user["free_video_limit"]:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail={"error": "payment_required", "code": "FREE_PLAN_USED", "trace_id": trace_id},
-        )
+    # Entitlement (plan / mode / ops left / free quota) -- fast-fail only,
+    # from the user + subscription snapshot loaded for this request. Not the
+    # enforcement point: create_job_with_quota() below re-checks atomically
+    # under the user's row lock and is what actually prevents overspending.
+    # This early check exists to skip a wasted upload for a request that is
+    # already known to be refused. Nothing is debited here.
+    ent = _resolve_entitlement(user, mode, trace_id)
+    priority, plan = _priority_for(ent, priority, plan)
 
     # Upload validation (magic bytes, size, extension) — mode-conditional
     # size cap: streamer allows long-form VODs, every other mode keeps the
@@ -476,6 +515,10 @@ async def create_generation_job(
               details={"mode": mode, "reason": str(exc.detail)},
               ip_address=request.client.host if request.client else None)
         raise
+
+    # Paid-plan source length, measured on the bytes we actually received
+    # (never a client-sent duration) -- before S3 and before any debit.
+    _enforce_duration_of_bytes(ent, content, Path(safe_name).suffix, trace_id)
 
     idempotency_fingerprint = (
         _compute_idempotency_fingerprint(mode, content, parsed_params)
@@ -517,7 +560,8 @@ async def create_generation_job(
             idempotency_key=idempotency_key,
             idempotency_fingerprint=idempotency_fingerprint,
             queue_priority=priority,  # existing column (migration 003)
-            bypass_quota=_is_pro_active(user),
+            bypass_quota=ent.kind == "legacy_pro",
+            subscription_id=ent.subscription_id,
         )
     except Exception as exc:
         logger.error("[api] create_job_failed trace_id=%s: %s", trace_id, exc)
@@ -532,8 +576,18 @@ async def create_generation_job(
         delete_object(s3_key)
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail={"error": "payment_required", "code": "FREE_PLAN_USED", "trace_id": trace_id},
+            detail={"error": "payment_required", "code": "FREE_PLAN_USED",
+                    "message": "Бесплатная генерация уже использована. Выберите тариф SONYA.",
+                    "trace_id": trace_id},
         )
+
+    if result["outcome"] == "plan_limit_reached":
+        # Same race, subscription flavor: the period's last operation (or
+        # the period itself) ran out between the fast-fail check and the
+        # atomic debit. Nothing was debited for this request.
+        delete_object(s3_key)
+        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                            detail=_plan_limit_reached_detail(ent, trace_id))
 
     if result["outcome"] == "existing":
         # Another request already holds this (user_id, idempotency_key).
@@ -599,7 +653,8 @@ async def create_generation_job(
         logger.warning("[api] add_input_file_failed job_id=%s: %s", job_id, exc)
 
     audit(EVT_JOB_CREATED, user_id=user_id, job_id=job_id, trace_id=trace_id,
-          details={"mode": mode, "size_bytes": len(content), "plan": plan, "priority": priority},
+          details={"mode": mode, "size_bytes": len(content), "plan": plan, "priority": priority,
+                   "entitlement": ent.kind, "plan_id": ent.plan_id},
           ip_address=request.client.host if request.client else None)
 
     logger.info(
@@ -738,12 +793,8 @@ async def create_generation_job_from_url(
     # Fast-fail only -- see the equivalent check in create_generation_job()
     # for why this isn't the enforcement point (create_job_with_quota() in
     # _run_url_ingest below is).
-    bypass_quota = _is_pro_active(user)
-    if not bypass_quota and user["free_video_used"] >= user["free_video_limit"]:
-        raise HTTPException(
-            status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail={"error": "payment_required", "code": "FREE_PLAN_USED", "trace_id": trace_id},
-        )
+    ent = _resolve_entitlement(user, mode, trace_id)
+    priority, plan = _priority_for(ent, priority, plan)
 
     url = body.url.strip()
     platform = url_ingest.detect_platform(url)
@@ -775,7 +826,7 @@ async def create_generation_job_from_url(
         ingest_id=ingest_id, url=url, platform=platform, mode=mode,
         parsed_params=parsed_params, user_id=user_id, trace_id=trace_id,
         idempotency_key=idempotency_key, priority=priority, plan=plan,
-        bypass_quota=bypass_quota,
+        ent=ent,
         client_ip=request.client.host if request.client else None,
     )
 
@@ -811,7 +862,7 @@ def _run_url_ingest(
     *, ingest_id: str, url: str, platform: str, mode: str,
     parsed_params: Dict[str, Any], user_id: str, trace_id: str,
     idempotency_key: Optional[str], priority: int, plan: str,
-    bypass_quota: bool,
+    ent: "entitlements.Entitlement",
     client_ip: Optional[str],
 ) -> None:
     """
@@ -822,7 +873,7 @@ def _run_url_ingest(
     local_path: Optional[str] = None
     try:
         _ingest_set(ingest_id, status="checking", message="Проверяем ссылку", percent=5.0)
-        url_ingest.probe(url, platform, mode=mode)
+        url_ingest.probe(url, platform, mode=mode, max_duration_sec=ent.max_source_sec)
 
         _ingest_set(ingest_id, status="downloading", message="Получаем видео", percent=15.0)
 
@@ -833,6 +884,14 @@ def _run_url_ingest(
                         percent=15.0 + max(0.0, min(100.0, pct)) * 0.55)
 
         local_path, _ext = url_ingest.download_video(url, platform, progress_cb=_progress, mode=mode)
+
+        # Authoritative paid-plan length check on the downloaded file
+        # (platform metadata above is only an early hint). No debit yet.
+        try:
+            entitlements.measure_and_enforce(ent, local_path)
+        except entitlements.EntitlementDenied as denied:
+            _ingest_set(ingest_id, status="failed", error=denied.code, message=denied.message)
+            return
 
         _ingest_set(ingest_id, status="uploading", message="Загружаем видео", percent=75.0)
 
@@ -863,7 +922,7 @@ def _run_url_ingest(
                 job_id=job_id, user_id=user_id, mode=mode, params=parsed_params,
                 s3_input_key=s3_key, idempotency_key=idempotency_key,
                 idempotency_fingerprint=idempotency_fingerprint, queue_priority=priority,
-                bypass_quota=bypass_quota,
+                bypass_quota=ent.kind == "legacy_pro", subscription_id=ent.subscription_id,
             )
         except Exception as exc:
             logger.error("[api] url_ingest_create_job_failed ingest_id=%s trace_id=%s: %s",
@@ -878,7 +937,13 @@ def _run_url_ingest(
             # fast-fail check in create_generation_job_from_url() and here.
             delete_object(s3_key)
             _ingest_set(ingest_id, status="failed", error="FREE_PLAN_USED",
-                        message="Бесплатная генерация уже использована. Оформите SONYA Pro.")
+                        message="Бесплатная генерация уже использована. Выберите тариф SONYA.")
+            return
+
+        if result["outcome"] == "plan_limit_reached":
+            delete_object(s3_key)
+            _ingest_set(ingest_id, status="failed", error=entitlements.PLAN_LIMIT_REACHED,
+                        message="Лимит тарифа исчерпан или период подписки закончился.")
             return
 
         if result["outcome"] == "existing":

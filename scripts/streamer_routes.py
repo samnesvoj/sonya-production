@@ -45,6 +45,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,7 +54,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, Header, HTTPException, Query, Request, UploadFile, status
 from pydantic import BaseModel, Field
 
-from scripts import url_ingest
+from scripts import entitlements, url_ingest
 from scripts.prod_job_store import (
     JOB_STATUS_COMPLETED,
     JOB_STATUS_FAILED,
@@ -110,10 +111,8 @@ def _resolve_priority(user: dict) -> tuple[int, str]:
 
 
 def _is_pro_active(user: dict) -> bool:
-    if user.get("plan_type") != "pro" or user.get("plan_status") != "active":
-        return False
-    until = user.get("plan_active_until")
-    return bool(until) and until > datetime.now(timezone.utc)
+    # Legacy (pre-016) Pro only -- new plans are resolved in entitlements.py.
+    return entitlements.legacy_pro_active(user)
 
 
 def _iso(value) -> Optional[str]:
@@ -207,7 +206,6 @@ async def create_batch(
     user_id  = str(user["id"])
     trace_id = new_trace_id()
     priority, _plan = _resolve_priority(user)
-    bypass_quota = _is_pro_active(user)
 
     if source_type not in ("url", "file"):
         raise HTTPException(status_code=400, detail={"error": "invalid_source_type", "trace_id": trace_id})
@@ -240,16 +238,27 @@ async def create_batch(
     # common already-exhausted case. Only ever reached for a genuinely NEW
     # batch (the idempotent-replay branch above already returned), so this
     # can never charge quota twice for the same logical request.
+    # Entitlement: streamer_start subscription, legacy Pro, or free quota.
+    # Nothing is debited here (create_job_with_quota below does it).
     try:
         check_user_quota(user_id)
-        if not bypass_quota and user["free_video_used"] >= user["free_video_limit"]:
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail={"error": "payment_required", "code": "FREE_PLAN_USED", "trace_id": trace_id},
-            )
-    except HTTPException:
-        set_streamer_batch_status(batch_id, "failed", error="FREE_PLAN_USED")
+        try:
+            subscriptions = entitlements.get_user_subscriptions(user_id)
+        except Exception as exc:
+            logger.error("[streamer] subscriptions_lookup_failed user_id=%s trace_id=%s error_type=%s",
+                         user_id, trace_id, type(exc).__name__)
+            raise safe_error("db_error", 500, trace_id)
+        try:
+            ent = entitlements.resolve_entitlement(user, "streamer", subscriptions)
+        except entitlements.EntitlementDenied as denied:
+            raise HTTPException(status_code=denied.status_code, detail=denied.detail(trace_id))
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        set_streamer_batch_status(batch_id, "failed",
+                                  error=detail.get("code") or detail.get("error") or "rejected")
         raise
+    if ent.kind == "subscription":
+        priority = _PLAN_PRIORITY["pro"]
 
     if source_type == "url":
         try:
@@ -280,7 +289,7 @@ async def create_batch(
         background_tasks.add_task(
             _run_streamer_batch_url_ingest,
             batch_id=batch_id, url=url.strip(), platform=platform,
-            user_id=user_id, priority=priority, bypass_quota=bypass_quota,
+            user_id=user_id, priority=priority, ent=ent,
             client_ip=request.client.host if request.client else None,
         )
         logger.info("[streamer] batch_url_ingest_started batch_id=%s user_id=%s platform=%s trace_id=%s",
@@ -298,6 +307,17 @@ async def create_batch(
               details={"mode": "streamer", "reason": str(exc.detail)},
               ip_address=request.client.host if request.client else None)
         raise
+
+    # Paid-plan source length on the received bytes -- before S3 / debit.
+    if ent.max_source_sec is not None:
+        with tempfile.NamedTemporaryFile(suffix=Path(safe_name).suffix or ".mp4") as tmp:
+            tmp.write(content)
+            tmp.flush()
+            try:
+                entitlements.measure_and_enforce(ent, tmp.name)
+            except entitlements.EntitlementDenied as denied:
+                set_streamer_batch_status(batch_id, "failed", error=denied.code)
+                raise HTTPException(status_code=denied.status_code, detail=denied.detail(trace_id))
 
     set_streamer_batch_status(batch_id, "ingesting")
 
@@ -317,7 +337,8 @@ async def create_batch(
             job_id=job_id, user_id=user_id, mode="streamer",
             params={"streamer_phase": "analyze", "streamer_batch_id": batch_id},
             s3_input_key=s3_key, idempotency_key=None, idempotency_fingerprint=None,
-            queue_priority=priority, bypass_quota=bypass_quota,
+            queue_priority=priority, bypass_quota=ent.kind == "legacy_pro",
+            subscription_id=ent.subscription_id,
         )
     except Exception as exc:
         logger.error("[streamer] batch_create_job_failed batch_id=%s trace_id=%s: %s", batch_id, trace_id, exc)
@@ -330,7 +351,18 @@ async def create_batch(
         set_streamer_batch_status(batch_id, "failed", error="FREE_PLAN_USED")
         raise HTTPException(
             status_code=status.HTTP_402_PAYMENT_REQUIRED,
-            detail={"error": "payment_required", "code": "FREE_PLAN_USED", "trace_id": trace_id},
+            detail={"error": "payment_required", "code": "FREE_PLAN_USED",
+                    "message": "Бесплатная генерация уже использована. Выберите тариф SONYA.",
+                    "trace_id": trace_id},
+        )
+    if result["outcome"] == "plan_limit_reached":
+        delete_object(s3_key)
+        set_streamer_batch_status(batch_id, "failed", error=entitlements.PLAN_LIMIT_REACHED)
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={"error": "payment_required", "code": entitlements.PLAN_LIMIT_REACHED,
+                    "message": "Лимит тарифа исчерпан или период подписки закончился.",
+                    "plan_mode": "streamer", "plan_id": ent.plan_id, "trace_id": trace_id},
         )
 
     analysis_job_id = str(result["job"]["id"])
@@ -355,7 +387,7 @@ async def create_batch(
 
 def _run_streamer_batch_url_ingest(
     *, batch_id: str, url: str, platform: str, user_id: str,
-    priority: int, bypass_quota: bool, client_ip: Optional[str],
+    priority: int, ent: "entitlements.Entitlement", client_ip: Optional[str],
 ) -> None:
     """
     Runs in Starlette's threadpool (BackgroundTasks), off the event loop --
@@ -370,9 +402,16 @@ def _run_streamer_batch_url_ingest(
     local_path: Optional[str] = None
     try:
         set_streamer_batch_status(batch_id, "ingesting")
-        url_ingest.probe(url, platform, mode="streamer")
+        url_ingest.probe(url, platform, mode="streamer", max_duration_sec=ent.max_source_sec)
 
         local_path, _ext = url_ingest.download_video(url, platform, progress_cb=lambda _pct: None, mode="streamer")
+
+        # Authoritative paid-plan length check on the downloaded file. No debit yet.
+        try:
+            entitlements.measure_and_enforce(ent, local_path)
+        except entitlements.EntitlementDenied as denied:
+            set_streamer_batch_status(batch_id, "failed", error=denied.code)
+            return
 
         content, safe_name = url_ingest.validate_downloaded_file(
             local_path, hint_name=f"{platform}_video{Path(local_path).suffix or '.mp4'}", mode="streamer"
@@ -394,7 +433,8 @@ def _run_streamer_batch_url_ingest(
                 job_id=job_id, user_id=user_id, mode="streamer",
                 params={"streamer_phase": "analyze", "streamer_batch_id": batch_id},
                 s3_input_key=s3_key, idempotency_key=None, idempotency_fingerprint=None,
-                queue_priority=priority, bypass_quota=bypass_quota,
+                queue_priority=priority, bypass_quota=ent.kind == "legacy_pro",
+                subscription_id=ent.subscription_id,
             )
         except Exception as exc:
             logger.error("[streamer] batch_url_create_job_failed batch_id=%s: %s", batch_id, exc)
@@ -405,6 +445,10 @@ def _run_streamer_batch_url_ingest(
         if result["outcome"] == "quota_exceeded":
             delete_object(s3_key)
             set_streamer_batch_status(batch_id, "failed", error="FREE_PLAN_USED")
+            return
+        if result["outcome"] == "plan_limit_reached":
+            delete_object(s3_key)
+            set_streamer_batch_status(batch_id, "failed", error=entitlements.PLAN_LIMIT_REACHED)
             return
 
         analysis_job_id = str(result["job"]["id"])

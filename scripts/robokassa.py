@@ -1,9 +1,16 @@
 """
 robokassa.py
 ============
-Pure Robokassa integration logic for SONYA -- signature building/verification,
-payment-URL construction, plan catalog. No FastAPI, no DB (mirrors
-auth_security.py's role for the auth module).
+LEGACY payment provider. SONYA no longer uses Robokassa (the production
+provider is Самозанятые.рф, not integrated yet -- see
+scripts/payment_providers.py). Kept only so that a payment already created
+through Robokassa can still be confirmed by its ResultURL; it is used for new
+checkouts only if PAYMENT_PROVIDER=robokassa is set explicitly. Plans and
+prices are NOT defined here (scripts/pricing.py).
+
+Pure Robokassa integration logic -- signature building/verification and
+payment-URL construction. No FastAPI, no DB (mirrors auth_security.py's role
+for the auth module).
 
 Verified against the current official Robokassa documentation
 (docs.robokassa.ru/ru/pay-interface, /ru/notifications-and-redirects,
@@ -27,38 +34,13 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
-from dataclasses import dataclass
 from decimal import Decimal
 from typing import Optional
 from urllib.parse import urlencode
 
+from scripts.pricing import Plan
+
 ROBOKASSA_PAYMENT_URL = "https://auth.robokassa.ru/Merchant/Index.aspx"
-
-
-# ── Plan catalog (server-side source of truth for price/duration) ───────────
-
-@dataclass(frozen=True)
-class Plan:
-    plan_id: str
-    plan_type: str
-    amount: Decimal
-    duration_days: int
-    description: str
-
-
-PLAN_CATALOG: dict[str, Plan] = {
-    "pro_30d": Plan(
-        plan_id="pro_30d",
-        plan_type="pro",
-        amount=Decimal("500.00"),
-        duration_days=30,
-        description="SONYA Pro — подписка на 30 дней",
-    ),
-}
-
-
-def get_plan(plan_id: str) -> Optional[Plan]:
-    return PLAN_CATALOG.get(plan_id)
 
 
 # ── Config ────────────────────────────────────────────────────────────────

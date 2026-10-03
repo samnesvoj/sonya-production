@@ -83,7 +83,7 @@
 <body>
 	<div class="sonya-modal paywall-modal" role="dialog" aria-label="Статус оплаты">
 
-		<!-- FAILED (default -- this is Robokassa's FailURL) -->
+		<!-- FAILED (default -- the provider's fail/return URL) -->
 		<div class="paywall-view is-active" data-paywall-view="failed">
 			<div class="paywall-icon paywall-icon--error"><i class="fa-solid fa-triangle-exclamation"></i></div>
 			<h2 class="paywall-title">Оплата не завершена</h2>
@@ -92,19 +92,15 @@
 			<a class="paywall-later-btn" href="/">Вернуться в SONYA</a>
 		</div>
 
-		<!-- PAID (real race: the ResultURL webhook can arrive slightly after
-		     Robokassa redirects the browser here -- a browser landing on
-		     FailURL proves nothing about the actual payment outcome, so this
+		<!-- PAID (real race: the provider's server-to-server confirmation can
+		     arrive slightly after it redirects the browser here -- a browser
+		     landing on the fail URL proves nothing about the actual payment outcome, so this
 		     reads the server-confirmed status once and shows success instead
 		     of a false "failed" message if the webhook already got there
 		     first). -->
 		<div class="paywall-view" data-paywall-view="paid">
 			<div class="paywall-icon paywall-icon--success"><i class="fa-solid fa-check"></i></div>
-			<h2 class="paywall-title">Подписка SONYA Pro активна</h2>
-			<div class="paywall-price">
-				<span class="paywall-price-value">500 ₽</span>
-				<span class="paywall-price-period">/ 30 дней</span>
-			</div>
+			<h2 class="paywall-title">Подписка SONYA активна</h2>
 			<p class="paywall-desc" id="paid-until-text">Платёж всё же был подтверждён.</p>
 			<a class="paywall-pay-btn" href="/"><span>Продолжить</span></a>
 		</div>
@@ -117,7 +113,8 @@
 		(function () {
 			var API_BASE = window.SONYA_API_BASE || '/api';
 			var params = new URLSearchParams(window.location.search);
-			var invoiceId = params.get('InvId') || params.get('invId') || params.get('invoice_id');
+			// invoice_id: our order number. InvId/invId: legacy Robokassa return params.
+			var invoiceId = params.get('invoice_id') || params.get('InvId') || params.get('invId');
 			if (!invoiceId) return;
 
 			function showView(name) {

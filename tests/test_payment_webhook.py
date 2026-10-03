@@ -1,5 +1,8 @@
 """
-POST /api/billing/robokassa/result -- ResultURL webhook contract.
+LEGACY PROVIDER TESTS -- POST /api/billing/robokassa/result (Robokassa
+ResultURL). SONYA no longer uses Robokassa; the route is kept only to
+confirm payments created through it. NOT evidence for the production
+payment flow (see tests/test_payment_providers.py).
 
 payment_store is monkeypatched (module-attribute style, same as
 tests/test_payment_checkout.py) so these tests never touch a real
@@ -31,7 +34,7 @@ def _robokassa_env(monkeypatch):
 def _payment(invoice_id=42, is_test=False, status="pending"):
     return {
         "id": "pay-1", "invoice_id": invoice_id, "user_id": "user-1",
-        "plan_id": "pro_30d", "amount": "500.00", "currency": "RUB",
+        "plan_id": "cut_pro", "amount": "2690.00", "currency": "RUB",
         "is_test": is_test, "status": status,
     }
 
@@ -53,7 +56,7 @@ def test_result_invalid_signature_never_touches_payment_store(client, monkeypatc
 
     resp = client.post(
         "/api/billing/robokassa/result",
-        data={"OutSum": "500.00", "InvId": "999999", "SignatureValue": "irrelevant"},
+        data={"OutSum": "2690.00", "InvId": "999999", "SignatureValue": "irrelevant"},
     )
     assert resp.status_code == 400
     assert resp.text != "OK999999"
@@ -71,10 +74,10 @@ def test_result_signature_matching_wrong_mode_is_rejected(client, monkeypatch):
         lambda *a, **kw: called.setdefault("hit", True),
     )
 
-    test_sig = _md5("500.00:42:test-pass-2")
+    test_sig = _md5("2690.00:42:test-pass-2")
     resp = client.post(
         "/api/billing/robokassa/result",
-        data={"OutSum": "500.00", "InvId": "42", "SignatureValue": test_sig},
+        data={"OutSum": "2690.00", "InvId": "42", "SignatureValue": test_sig},
     )
     assert resp.status_code == 400
     assert resp.text != "OK42"
@@ -91,7 +94,7 @@ def test_result_bad_signature_rejected_and_never_activates(client, monkeypatch):
 
     resp = client.post(
         "/api/billing/robokassa/result",
-        data={"OutSum": "500.00", "InvId": "42", "SignatureValue": "deadbeef"},
+        data={"OutSum": "2690.00", "InvId": "42", "SignatureValue": "deadbeef"},
     )
     assert resp.status_code == 400
     assert resp.text != "OK42"
@@ -105,10 +108,10 @@ def test_result_valid_signature_activates_and_returns_exact_ok(client, monkeypat
         lambda invoice_id, out_sum, raw_params: {"result": "activated", "payment": _payment(invoice_id, status="paid")},
     )
 
-    sig = _md5("500.00:42:prod-pass-2")
+    sig = _md5("2690.00:42:prod-pass-2")
     resp = client.post(
         "/api/billing/robokassa/result",
-        data={"OutSum": "500.00", "InvId": "42", "SignatureValue": sig},
+        data={"OutSum": "2690.00", "InvId": "42", "SignatureValue": sig},
     )
     assert resp.status_code == 200
     assert resp.text == "OK42"  # exact, no JSON wrapper, no extra whitespace
@@ -122,17 +125,17 @@ def test_result_test_mode_payment_uses_test_password(client, monkeypatch):
     )
 
     # Signed with the PROD password -- must fail for an is_test=True payment.
-    prod_sig = _md5("500.00:42:prod-pass-2")
+    prod_sig = _md5("2690.00:42:prod-pass-2")
     resp = client.post(
         "/api/billing/robokassa/result",
-        data={"OutSum": "500.00", "InvId": "42", "SignatureValue": prod_sig},
+        data={"OutSum": "2690.00", "InvId": "42", "SignatureValue": prod_sig},
     )
     assert resp.status_code == 400
 
-    test_sig = _md5("500.00:42:test-pass-2")
+    test_sig = _md5("2690.00:42:test-pass-2")
     resp = client.post(
         "/api/billing/robokassa/result",
-        data={"OutSum": "500.00", "InvId": "42", "SignatureValue": test_sig},
+        data={"OutSum": "2690.00", "InvId": "42", "SignatureValue": test_sig},
     )
     assert resp.status_code == 200
     assert resp.text == "OK42"
@@ -149,10 +152,10 @@ def test_result_repeated_callback_on_already_paid_is_idempotent_ok(client, monke
         lambda invoice_id, out_sum, raw_params: {"result": "already_processed", "payment": _payment(invoice_id, status="paid")},
     )
 
-    sig = _md5("500.00:42:prod-pass-2")
+    sig = _md5("2690.00:42:prod-pass-2")
     resp = client.post(
         "/api/billing/robokassa/result",
-        data={"OutSum": "500.00", "InvId": "42", "SignatureValue": sig},
+        data={"OutSum": "2690.00", "InvId": "42", "SignatureValue": sig},
     )
     assert resp.status_code == 200
     assert resp.text == "OK42"
@@ -175,3 +178,19 @@ def test_result_amount_mismatch_does_not_activate(client, monkeypatch):
     )
     assert resp.status_code == 400
     assert resp.text != "OK42"
+
+
+def test_result_never_confirms_another_providers_payment(client, monkeypatch):
+    """invoice_id is a shared order number: a valid Robokassa signature must
+    not confirm a payment created through a different provider."""
+    other = {**_payment(42, is_test=False), "provider": "selfemployed"}
+    monkeypatch.setattr(payment_store, "get_payment_by_invoice_id", lambda inv_id: other)
+    called = []
+    monkeypatch.setattr(payment_store, "process_successful_payment",
+                        lambda *a, **k: called.append(a) or {"result": "activated"})
+
+    sig = _md5("2690.00:42:prod-pass-2")
+    resp = client.post("/api/billing/robokassa/result",
+                       data={"OutSum": "2690.00", "InvId": "42", "SignatureValue": sig})
+    assert resp.status_code == 400
+    assert called == []

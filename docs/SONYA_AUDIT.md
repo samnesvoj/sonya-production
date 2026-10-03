@@ -128,6 +128,35 @@ P2 — улучшения
 - P2-2 (`apiGetSubscriptionStatus` не используется) — по-прежнему не
   используется, не трогали (вне периметра этой задачи).
 - Recurring (автопродление) НЕ реализован — продуктовая модель
-  (SONYA Pro, 500₽/30д, без автопродления) и то, что у Robokassa
+  (помесячные тарифы Start/Pro/Studio по режимам — см. `scripts/robokassa.py::PLAN_CATALOG`, без автопродления) и то, что у Robokassa
   `/Merchant/Recurring` нет тестового режима и требует отдельного
   согласования, делают его отдельной будущей задачей.
+
+## Update: per-plan entitlements (migration 016)
+
+- **Было:** любая оплата → `users.plan_type = 'pro'` → безлимит на все режимы
+  без проверки длины исходника, хотя оферта и UI описывали тарифы с лимитами.
+- **Стало:** `scripts/entitlements.py` + таблица `user_subscriptions`: каждая
+  покупка — период с `plan_id`, режимом (cut / trailer / streamer),
+  `ops_limit` / `ops_used` и `max_source_sec`. Списание операции — атомарно с
+  созданием job в `create_job_with_quota` (под row-lock пользователя; replay
+  по Idempotency-Key и откат INSERT не списывают). Длина исходника меряется
+  `ffprobe` на сервере после upload/скачивания, до S3 и до списания.
+- **Legacy Pro (500 ₽):** не мигрирован на новые тарифы — работает как продан
+  (безлимит до `plan_active_until`), затем пользователь — обычный free.
+- **Деплой:** на API-сервере нужен `ffmpeg` (ffprobe) — проверяется
+  `prod_preflight_check.py backend`; без него платные job отклоняются (503).
+
+## Update: payment provider decoupled — Robokassa is legacy
+
+- SONYA больше не принимает оплату через Robokassa; основной провайдер —
+  Самозанятые.рф (интеграции в репозитории пока нет — нет API-контракта).
+- Тарифы не зависят от провайдера: каталог — `scripts/pricing.py`, права —
+  `scripts/entitlements.py`, провайдер — `scripts/payment_providers.py`
+  (env `PAYMENT_PROVIDER`; пусто → checkout 503 `payment_unavailable`, без
+  создания платежа). `payments.provider` фиксирует, кто может подтвердить
+  платёж; legacy ResultURL Robokassa отклоняет чужие платежи.
+- Robokassa: `scripts/robokassa.py`, `RobokassaProvider`,
+  `/api/billing/robokassa/result` — legacy, оставлены только для
+  подтверждения уже созданных Robokassa-платежей; план удаления — после
+  проверки, что в production-БД нет pending Robokassa-платежей.

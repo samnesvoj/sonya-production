@@ -43,14 +43,14 @@ def test_concurrent_valid_callbacks_activate_exactly_once(stores):
     auth_store, payment_store = stores
     user = _mk_user(auth_store, "concurrent")
     payment = payment_store.create_pending_payment(
-        user_id=user["id"], plan_id="pro_30d", amount=Decimal("500.00"), is_test=True,
-        plan_type="pro", duration_days=30,
+        user_id=user["id"], plan_id="cut_pro", amount=Decimal("2690.00"), is_test=True,
+        plan_type="pro", duration_days=30, provider="robokassa",
     )
     invoice_id = payment["invoice_id"]
     n = 8
 
     def attempt(_i):
-        return payment_store.process_successful_payment(invoice_id, Decimal("500.00"), {"attempt": _i})
+        return payment_store.process_successful_payment(invoice_id, Decimal("2690.00"), {"attempt": _i})
 
     with ThreadPoolExecutor(max_workers=n) as pool:
         results = list(pool.map(attempt, range(n)))
@@ -75,8 +75,8 @@ def test_amount_mismatch_does_not_activate_or_touch_subscription(stores):
     auth_store, payment_store = stores
     user = _mk_user(auth_store, "mismatch")
     payment = payment_store.create_pending_payment(
-        user_id=user["id"], plan_id="pro_30d", amount=Decimal("500.00"), is_test=True,
-        plan_type="pro", duration_days=30,
+        user_id=user["id"], plan_id="cut_pro", amount=Decimal("2690.00"), is_test=True,
+        plan_type="pro", duration_days=30, provider="robokassa",
     )
     invoice_id = payment["invoice_id"]
 
@@ -99,18 +99,18 @@ def test_renewal_extends_from_existing_active_period_not_from_now(stores):
     user = _mk_user(auth_store, "renewal")
 
     first = payment_store.create_pending_payment(
-        user_id=user["id"], plan_id="pro_30d", amount=Decimal("500.00"), is_test=True,
-        plan_type="pro", duration_days=30,
+        user_id=user["id"], plan_id="cut_pro", amount=Decimal("2690.00"), is_test=True,
+        plan_type="pro", duration_days=30, provider="robokassa",
     )
-    payment_store.process_successful_payment(first["invoice_id"], Decimal("500.00"), {})
+    payment_store.process_successful_payment(first["invoice_id"], Decimal("2690.00"), {})
     after_first = auth_store.get_user_by_id(user["id"])
     first_until = after_first["plan_active_until"]
 
     second = payment_store.create_pending_payment(
-        user_id=user["id"], plan_id="pro_30d", amount=Decimal("500.00"), is_test=True,
-        plan_type="pro", duration_days=30,
+        user_id=user["id"], plan_id="cut_pro", amount=Decimal("2690.00"), is_test=True,
+        plan_type="pro", duration_days=30, provider="robokassa",
     )
-    payment_store.process_successful_payment(second["invoice_id"], Decimal("500.00"), {})
+    payment_store.process_successful_payment(second["invoice_id"], Decimal("2690.00"), {})
     after_second = auth_store.get_user_by_id(user["id"])
     second_until = after_second["plan_active_until"]
 
@@ -130,21 +130,21 @@ def test_activation_uses_payment_snapshot_not_live_catalog(stores):
 
     # Checkout happens while the catalog still says 30 days.
     payment = payment_store.create_pending_payment(
-        user_id=user["id"], plan_id="pro_30d", amount=Decimal("500.00"), is_test=True,
-        plan_type="pro", duration_days=30,
+        user_id=user["id"], plan_id="cut_pro", amount=Decimal("2690.00"), is_test=True,
+        plan_type="pro", duration_days=30, provider="robokassa",
     )
 
     # Catalog changes before the webhook arrives -- payment_store doesn't
     # import PLAN_CATALOG at all anymore, so this is really just documenting
     # the scenario; the assertion below is what actually proves immunity.
-    from scripts import robokassa
+    from scripts import pricing
     from dataclasses import replace
-    original_plan = robokassa.PLAN_CATALOG["pro_30d"]
-    robokassa.PLAN_CATALOG["pro_30d"] = replace(original_plan, duration_days=14)
+    original_plan = pricing.PLAN_CATALOG["cut_pro"]
+    pricing.PLAN_CATALOG["cut_pro"] = replace(original_plan, duration_days=14)
     try:
-        outcome = payment_store.process_successful_payment(payment["invoice_id"], Decimal("500.00"), {})
+        outcome = payment_store.process_successful_payment(payment["invoice_id"], Decimal("2690.00"), {})
     finally:
-        robokassa.PLAN_CATALOG["pro_30d"] = original_plan
+        pricing.PLAN_CATALOG["cut_pro"] = original_plan
 
     assert outcome["result"] == "activated"
 

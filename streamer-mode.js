@@ -16,6 +16,18 @@
 	const $ = (sel, root = document) => root.querySelector(sel);
 	const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
 
+	// streamer_batches.error codes set by the backend when a background
+	// (URL) batch is refused -- scripts/entitlements.py.
+	const STREAMER_BATCH_ERRORS = {
+		FREE_PLAN_USED: 'Бесплатная генерация уже использована. Выберите тариф SONYA.',
+		MODE_NOT_IN_PLAN: 'Ваш тариф не включает режим «Стример». Выберите тариф для этого режима.',
+		SUBSCRIPTION_EXPIRED: 'Подписка на режим «Стример» закончилась. Продлите тариф, чтобы продолжить.',
+		PLAN_LIMIT_REACHED: 'Лимит тарифа исчерпан: все стримы этого периода уже использованы.',
+		SOURCE_TOO_LONG: 'Стрим длиннее, чем позволяет ваш тариф.',
+		SOURCE_DURATION_UNKNOWN: 'Не удалось определить длительность видео. Проверьте файл и попробуйте снова.',
+		DURATION_CHECK_UNAVAILABLE: 'Проверка видео временно недоступна. Попробуйте позже.',
+	};
+
 	function escapeHtml(str) {
 		return String(str)
 			.replace(/&/g, '&amp;')
@@ -1092,8 +1104,11 @@
 			if (!resp || !resp.ok) {
 				let message = 'Не удалось запустить обработку. Проверьте источник и попробуйте снова.';
 				if (resp && resp.status === 402) {
-					message = 'Бесплатная генерация уже использована. Оформите SONYA Pro.';
-				} else if (resp) {
+					message = 'Бесплатная генерация уже использована. Выберите тариф SONYA.';
+				}
+				if (resp) {
+					// Server gives the concrete reason (other mode's plan,
+					// limit used up, video too long -- scripts/entitlements.py).
 					try {
 						const errBody = await resp.json();
 						if (errBody && errBody.detail && errBody.detail.message) message = errBody.detail.message;
@@ -1152,9 +1167,8 @@
 			}
 			if (data.status === 'failed' || data.status === 'cancelled') {
 				state.analysis.status = 'error';
-				state.analysis.error = data.error === 'FREE_PLAN_USED'
-					? 'Бесплатная генерация уже использована. Оформите SONYA Pro.'
-					: 'Не удалось скачать или распознать видео. Проверьте ссылку/файл и попробуйте снова.';
+				state.analysis.error = STREAMER_BATCH_ERRORS[data.error]
+					|| 'Не удалось скачать или распознать видео. Проверьте ссылку/файл и попробуйте снова.';
 				renderAnalysisState();
 				showToast('Анализ стрима не удался', 'error');
 				return;

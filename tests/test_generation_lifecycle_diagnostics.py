@@ -57,7 +57,7 @@ def logged_in_client(client, monkeypatch):
 
     def fake_create_job_with_quota(job_id, user_id, mode, params, s3_input_key,
                                     idempotency_key, idempotency_fingerprint, queue_priority=0,
-                                    bypass_quota=False):
+                                    bypass_quota=False, subscription_id=None):
         row = {"id": job_id, "user_id": user_id, "mode": mode, "status": "queued",
                "created_at": datetime.now(timezone.utc), "s3_output_key": None}
         jobs[job_id] = row

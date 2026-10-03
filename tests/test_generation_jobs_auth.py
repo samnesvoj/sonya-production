@@ -49,7 +49,7 @@ def test_create_job_succeeds_with_valid_session_cookie(client, monkeypatch):
 
     def fake_create_job_with_quota(job_id, user_id, mode, params, s3_input_key,
                                     idempotency_key, idempotency_fingerprint, queue_priority=0,
-                                    bypass_quota=False):
+                                    bypass_quota=False, subscription_id=None):
         created_jobs["job_id"] = job_id
         created_jobs["user_id"] = user_id
         created_jobs["mode"] = mode

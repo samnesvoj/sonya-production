@@ -91,7 +91,7 @@ def _fresh_video_file(tmp_path):
 def _mock_url_ingest(monkeypatch, tmp_path, fail: str | None = None):
     video_path = _fresh_video_file(tmp_path)
 
-    def _probe(url, platform, mode=None):
+    def _probe(url, platform, mode=None, max_duration_sec=None):
         if fail == "probe_limit":
             raise url_ingest.DownloadLimitExceeded()
         return {"duration": 42}
