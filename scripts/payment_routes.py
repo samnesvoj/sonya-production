@@ -5,6 +5,7 @@ Billing endpoints for SONYA.
 
   POST /api/billing/checkout                  (browser, cookie auth) -- provider independent
   GET  /api/billing/payment-status             (browser, cookie auth) -- provider independent
+  GET  /api/billing/checkout-availability      (public) -- is any provider configured
   POST /api/billing/robokassa/result           LEGACY Robokassa ResultURL (server-to-server)
 
 Checkout takes only a plan_id: price and terms come from the server catalog
@@ -243,6 +244,16 @@ async def robokassa_result(
 
 
 # ── GET /api/billing/payment-status ──────────────────────────────────────────
+
+# ── GET /api/billing/checkout-availability ───────────────────────────────────
+# Public (guests browse plans too). Lets the plan picker show its pay CTA as
+# "Оплата скоро будет доступна" while no provider is configured, and enable it
+# by itself once PAYMENT_PROVIDER is set -- no frontend release needed.
+
+@router.get("/api/billing/checkout-availability")
+async def checkout_availability():
+    return {"available": get_checkout_provider() is not None}
+
 
 @router.get("/api/billing/payment-status")
 async def payment_status(

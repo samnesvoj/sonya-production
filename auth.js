@@ -873,7 +873,22 @@ const SONYA_PRICING = {
   ],
 };
 
-const _paywall = { modeId: 'cut', planId: null };
+// checkoutAvailable: whether the server has a payment provider configured
+// (GET /billing/checkout-availability). Starts false and stays false on any
+// error -- the pay CTA is then "Оплата скоро будет доступна", never a live
+// payment and never an error after the click.
+const _paywall = { modeId: 'cut', planId: null, checkoutAvailable: false };
+
+async function loadCheckoutAvailability() {
+  try {
+    const res = await apiFetch('/billing/checkout-availability');
+    const data = res.ok ? await safeJson(res) : null;
+    _paywall.checkoutAvailable = Boolean(data && data.available === true);
+  } catch (_e) {
+    _paywall.checkoutAvailable = false;
+  }
+  _syncPaywallPayButton();
+}
 
 // { mode, planId, consent } a guest chose before being sent to sign in;
 // in-memory on purpose -- auth happens in-page, no reload in between.
@@ -957,8 +972,11 @@ function _syncPaywallPayButton() {
   if (!payBtn) return;
   const plan = _selectedPlan();
   const label = payBtn.querySelector('span');
-  if (label) label.textContent = plan ? `Оплатить ${_formatRub(plan.price)}` : 'Выберите тариф';
-  const enabled = Boolean(plan && consent && consent.checked);
+  if (label) {
+    label.textContent = !_paywall.checkoutAvailable ? 'Оплата скоро будет доступна'
+      : plan ? `Оплатить ${_formatRub(plan.price)}` : 'Выберите тариф';
+  }
+  const enabled = Boolean(_paywall.checkoutAvailable && plan && consent && consent.checked);
   payBtn.disabled = !enabled;
   payBtn.setAttribute('aria-disabled', String(!enabled));
 }
@@ -999,6 +1017,7 @@ function openPaywallModal(opts = {}) {
     renderPaywallPlans();
   }
   showPaywallView('offer');
+  loadCheckoutAvailability();
 }
 
 function closePaywallModal() {
@@ -1008,7 +1027,7 @@ function closePaywallModal() {
 async function startCheckout() {
   if (_checkoutInFlight) return; // double-click / double-submit guard
   const plan = _selectedPlan();
-  if (!plan) return;
+  if (!plan || !_paywall.checkoutAvailable) return;
 
   // Guest: auth is required only now, at the pay CTA. Remember the exact
   // choice so handleVerifyCode() can reopen the picker on it.

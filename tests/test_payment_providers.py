@@ -117,3 +117,17 @@ def test_provider_misconfiguration_fails_safely(client, monkeypatch):
     resp = client.post("/api/billing/checkout", json={"plan_id": "cut_start"})
     assert resp.status_code == 500
     assert "SECRET_ENV_NAME" not in resp.text
+
+
+# ── Checkout availability (drives the pay CTA) ───────────────────────────
+
+def test_checkout_availability_is_false_without_provider_and_public(client, monkeypatch):
+    monkeypatch.delenv("PAYMENT_PROVIDER", raising=False)
+    resp = client.get("/api/billing/checkout-availability")  # no session: guests see plans too
+    assert resp.status_code == 200
+    assert resp.json() == {"available": False}
+
+
+def test_checkout_availability_turns_on_with_a_provider(client, monkeypatch):
+    monkeypatch.setattr("scripts.payment_routes.get_checkout_provider", lambda: _RecordingProvider())
+    assert client.get("/api/billing/checkout-availability").json() == {"available": True}

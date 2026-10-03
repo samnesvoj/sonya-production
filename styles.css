@@ -4854,6 +4854,9 @@ body > .floating-controls--left {
    preselected, so the recommendation stays visible through selection. */
 @media (max-width: 420px) {
   .plan-card-tag { display: none; }
+  /* Longest CTA label ("Оплата скоро будет доступна") stays one line on
+     320-420px phones instead of wrapping inside the 52px pill. */
+  .plans-footer .paywall-pay-btn { font-size: clamp(11.5px, 3.6vw, 14px); letter-spacing: 0; white-space: nowrap; }
 }
 
 /* ── 6. TOAST ────────────────────────────────────────────────── */
