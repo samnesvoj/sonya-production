@@ -314,6 +314,41 @@ h1, h2, h3, h4, h5, h6, p { margin: 0; }
 .floating-controls--left  { left: 20px; }
 .floating-controls--right { right: 20px; }
 
+.site-legal-footer {
+	position: fixed;
+	left: 50%;
+	bottom: 10px;
+	transform: translateX(-50%);
+	z-index: 20;
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 4px 10px;
+	font-family: var(--font-body);
+	font-size: 10.5px;
+	line-height: 1;
+	white-space: nowrap;
+	pointer-events: none;
+}
+.site-legal-footer a {
+	pointer-events: auto;
+	color: rgba(255, 255, 255, 0.38);
+	text-decoration: none;
+}
+.site-legal-footer a:hover { color: rgba(255, 255, 255, 0.85); }
+[data-theme="light"] .site-legal-footer a { color: rgba(10, 10, 10, 0.42); }
+[data-theme="light"] .site-legal-footer a:hover { color: rgba(10, 10, 10, 0.85); }
+.site-legal-footer-dot {
+	width: 2px; height: 2px; border-radius: 999px;
+	background: rgba(255, 255, 255, 0.3);
+	flex-shrink: 0;
+}
+[data-theme="light"] .site-legal-footer-dot { background: rgba(10, 10, 10, 0.3); }
+
+@media (max-width: 480px) {
+	.site-legal-footer { font-size: 9px; gap: 6px; }
+}
+
 .profile-btn {
 	position: relative;
 	width: 44px; height: 44px;
@@ -3270,6 +3305,14 @@ body > .floating-controls--left {
 }
 .processing-cloth-host.is-interactive { pointer-events: auto; }
 .processing-cloth-host canvas { display: block; width: 100%; height: 100%; }
+/* Two child layers created by cloth-processing.js: ambient background,
+   then the cloth mesh itself on top (DOM order — no z-index needed since
+   both are absolutely positioned within the same fixed host). */
+.processing-cloth-bg,
+.processing-cloth-mesh {
+	position: absolute;
+	inset: 0;
+}
 /* Shown only if WebGL2 is unavailable — a static cover image, never a crash. */
 .processing-cloth-host .sonya-cloth-fallback {
 	width: 100%;
@@ -4503,6 +4546,315 @@ body > .floating-controls--left {
     inset  10px  10px 6px -10px rgba(10, 10, 10, 0.14);
 }
 [data-theme="light"] .paywall-later-btn:hover { color: #0a0a0a !important; background: rgba(255, 255, 255, 0.6) !important; }
+
+/* ── 4b. PAYWALL — multi-view states (offer/loading/error/already-pro) ── */
+.paywall-view { display: none; }
+.paywall-view.is-active { display: flex; flex-direction: column; align-items: center; }
+
+.paywall-consent { margin: 0 0 16px; text-align: left; }
+
+/* Same neutral glass treatment as .sonya-auth-cta (auth modal's primary
+   CTA) -- reused deliberately, not a new "premium" color: SONYA does not
+   use a gold/amber accent for Pro/paid state. */
+.paywall-pay-btn {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  width: 100%; height: 52px; padding: 0 18px; margin-bottom: 10px; border: none; border-radius: 9999px;
+  font-size: 14px; font-weight: 600; letter-spacing: 0.02em; cursor: pointer;
+  font-family: 'Unbounded', 'Sora', system-ui, sans-serif;
+  position: relative; overflow: hidden;
+  color: #fff;
+  background:
+    radial-gradient(160% 140% at 50% -50%, rgba(255, 255, 255, 0.18), transparent 60%),
+    rgba(0, 0, 0, 0.28);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.3),
+    inset -21.48px -21.48px 10.74px -21.48px rgba(179, 179, 179, 0.72),
+    inset  21.48px  21.48px 10.74px -21.48px rgba(179, 179, 179, 0.72),
+    0 10px 40px rgba(0, 0, 0, 0.35);
+  transition: transform 180ms ease, background 220ms ease, box-shadow 220ms ease, opacity .2s;
+}
+.paywall-pay-btn:hover {
+  transform: translateY(-1px);
+  background:
+    radial-gradient(160% 140% at 50% -50%, rgba(255, 255, 255, 0.3), transparent 60%),
+    rgba(20, 20, 22, 0.62);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.5),
+    inset -21.48px -21.48px 10.74px -21.48px rgba(255, 255, 255, 0.92),
+    inset  21.48px  21.48px 10.74px -21.48px rgba(255, 255, 255, 0.92),
+    0 14px 50px rgba(0, 0, 0, 0.45);
+}
+.paywall-pay-btn:active { transform: translateY(0) scale(0.98); }
+.paywall-pay-btn:disabled,
+.paywall-pay-btn[aria-disabled="true"] { opacity: 0.45; cursor: not-allowed; transform: none; }
+[data-theme="light"] .paywall-pay-btn {
+  color: #0a0a0a;
+  background:
+    radial-gradient(160% 140% at 50% -50%, rgba(255, 255, 255, 0.85), transparent 60%),
+    rgba(10, 10, 10, 0.08);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.6),
+    inset -21.48px -21.48px 10.74px -21.48px rgba(10, 10, 10, 0.18),
+    inset  21.48px  21.48px 10.74px -21.48px rgba(10, 10, 10, 0.18),
+    0 10px 40px rgba(0, 0, 0, 0.10);
+}
+[data-theme="light"] .paywall-pay-btn:hover {
+  background:
+    radial-gradient(160% 140% at 50% -50%, rgba(255, 255, 255, 0.95), transparent 60%),
+    rgba(10, 10, 10, 0.13);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.8),
+    inset -21.48px -21.48px 10.74px -21.48px rgba(10, 10, 10, 0.30),
+    inset  21.48px  21.48px 10.74px -21.48px rgba(10, 10, 10, 0.30),
+    0 14px 50px rgba(0, 0, 0, 0.14);
+}
+
+/* Same spinner as .sonya-auth-cta.is-loading::after -- neutral white/black,
+   not the dune/accent (gold) token. */
+.paywall-spinner {
+  width: 36px; height: 36px; margin: 0 auto 18px; border-radius: 999px;
+  border: 3px solid rgba(255, 255, 255, 0.28);
+  border-top-color: #fff;
+  animation: paywall-spin 720ms linear infinite;
+}
+[data-theme="light"] .paywall-spinner {
+  border-color: rgba(10, 10, 10, 0.28);
+  border-top-color: #0a0a0a;
+}
+@keyframes paywall-spin { to { transform: rotate(360deg); } }
+
+/* Same red/green already used by .sonya-toast--error / --success -- not a
+   newly invented color. */
+.paywall-icon--error i { color: #f88080 !important; }
+[data-theme="light"] .paywall-icon--error i { color: #b03040 !important; }
+.paywall-icon--success i { color: #88d4a8 !important; }
+[data-theme="light"] .paywall-icon--success i { color: #1a7a48 !important; }
+
+/* ── 4c. PAYWALL — plan picker (offer view) ─────────────────────
+   Same modal, widened only while the picker is shown. Mode switch is
+   the auth-modal tab pill (.sonya-auth-tabs) with a third column;
+   plan cards are the .paywall-features inset surface, and the selected
+   card takes the .sonya-auth-tab.is-active bevel — no new colors. ── */
+.paywall-modal.is-plans {
+  max-width: 860px;
+  padding: 36px 32px 28px;
+  max-height: calc(100dvh - 40px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+.paywall-modal.is-plans::-webkit-scrollbar { display: none; }
+
+.plans-title { margin-bottom: 18px; }
+
+.sonya-auth-tabs.plans-modes {
+  grid-template-columns: repeat(3, 1fr);
+  width: min(420px, 100%);
+  margin: 0 auto 24px;
+}
+.plans-modes .sonya-auth-tab { padding: 12px 10px; white-space: nowrap; }
+.plans-modes .sonya-auth-tab:focus-visible {
+  outline: 2px solid rgba(255, 255, 255, 0.55); outline-offset: 2px;
+}
+[data-theme="light"] .plans-modes .sonya-auth-tab:focus-visible { outline-color: rgba(10, 10, 10, 0.45); }
+/* The active slab stays dark glass in light theme (see .sonya-auth-tab
+   note) — so its label must stay white to be readable on it. */
+[data-theme="light"] .plans-modes .sonya-auth-tab.is-active { color: #fff !important; }
+
+.plans-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  width: 100%;
+  margin: 0 0 22px;
+  text-align: left;
+}
+/* One public plan (Стример): one column-width card, centered — never
+   stretched to fill the row. */
+.plans-grid.is-solo { grid-template-columns: minmax(0, calc((100% - 24px) / 3)); justify-content: center; }
+
+.plan-card {
+  position: relative;
+  display: flex; flex-direction: column;
+  padding: 18px 18px 20px;
+  border-radius: 22px;
+  cursor: pointer;
+  background: rgba(0, 0, 0, 0.20);
+  box-shadow:
+    inset -10px -10px 6px -10px rgba(179, 179, 179, 0.32),
+    inset  10px  10px 6px -10px rgba(179, 179, 179, 0.32);
+  transition: background 220ms ease, box-shadow 220ms ease, transform 160ms ease;
+}
+.plan-card:hover {
+  background: rgba(255, 255, 255, 0.05);
+  box-shadow:
+    inset -10px -10px 6px -10px rgba(179, 179, 179, 0.55),
+    inset  10px  10px 6px -10px rgba(179, 179, 179, 0.55);
+}
+.plan-card:active { transform: scale(0.985); }
+.plan-card:has(.plan-card-input:checked) {
+  background:
+    radial-gradient(160% 120% at 50% -40%, rgba(255, 255, 255, 0.14), transparent 60%),
+    rgba(20, 20, 22, 0.78);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.45),
+    inset -14px -14px 8px -14px rgba(255, 255, 255, 0.95),
+    inset  14px  14px 8px -14px rgba(255, 255, 255, 0.60),
+    0 10px 30px rgba(0, 0, 0, 0.35);
+}
+.plan-card:has(.plan-card-input:focus-visible) {
+  outline: 2px solid rgba(255, 255, 255, 0.55); outline-offset: 2px;
+}
+
+.plan-card-input { position: absolute; opacity: 0; pointer-events: none; }
+
+.plan-card-head { display: flex; align-items: center; gap: 10px; min-height: 24px; }
+.plan-card-radio {
+  width: 18px; height: 18px; flex: none; border-radius: 999px;
+  box-shadow: inset 0 0 0 1.5px rgba(255, 255, 255, 0.32);
+  transition: box-shadow 200ms ease, background 200ms ease;
+}
+.plan-card:has(.plan-card-input:checked) .plan-card-radio {
+  background: #fff;
+  box-shadow: inset 0 0 0 5px rgba(20, 20, 22, 0.9), 0 0 0 1.5px #fff;
+}
+.plan-card-name {
+  font-family: 'Unbounded', 'Sora', system-ui, sans-serif;
+  font-size: 13px; font-weight: 400; letter-spacing: 0.06em;
+  color: rgba(255, 255, 255, 0.85);
+}
+.plan-card:has(.plan-card-input:checked) .plan-card-name { color: #fff; }
+.plan-card-tag { margin-left: auto; padding: 3px 9px; font-size: 9.5px; }
+
+.plan-card-price {
+  display: flex; align-items: baseline; flex-wrap: wrap; gap: 2px 6px;
+  margin: 18px 0 16px;
+}
+.plan-card-amount {
+  font-family: 'Unbounded', 'Sora', system-ui, sans-serif;
+  font-size: clamp(22px, 2.6vw, 27px); font-weight: 400; letter-spacing: 0.01em;
+  color: #fff; white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.plan-card-period {
+  font-family: var(--font-body, 'Inter', sans-serif);
+  font-size: 12.5px; font-weight: 500; color: rgba(255, 255, 255, 0.5);
+}
+
+.plan-card-specs {
+  display: flex; flex-direction: column; gap: 9px;
+  padding-top: 14px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+.plan-card-spec {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  font-family: var(--font-body, 'Inter', sans-serif); font-size: 13px;
+}
+.plan-card-key { color: rgba(255, 255, 255, 0.55); }
+.plan-card-val { color: #fff; font-weight: 500; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Mode switch: cards settle in with a short stagger — opacity/transform
+   only, so the grid never reflows mid-animation. */
+.plan-card.is-entering { animation: plan-card-in 280ms var(--ease-out, ease) both; animation-delay: calc(var(--i, 0) * 40ms); }
+@keyframes plan-card-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .plan-card.is-entering { animation: none; }
+  .plan-card, .plan-card-radio { transition: none; }
+}
+
+.plans-footer {
+  display: flex; align-items: center; gap: 20px; width: 100%;
+}
+.plans-footer .paywall-consent { flex: 1 1 auto; margin: 0; }
+.plans-footer .paywall-pay-btn { flex: 0 0 280px; margin: 0; }
+
+/* light theme — same pattern as .paywall-features / .sonya-modal light
+   overrides (the global light wildcard forces #0a0a0a, so muted tones
+   need !important). */
+[data-theme="light"] .plan-card {
+  background: rgba(255, 255, 255, 0.40);
+  box-shadow:
+    inset -10px -10px 6px -10px rgba(10, 10, 10, 0.14),
+    inset  10px  10px 6px -10px rgba(10, 10, 10, 0.14);
+}
+[data-theme="light"] .plan-card:hover {
+  background: rgba(255, 255, 255, 0.6);
+  box-shadow:
+    inset -10px -10px 6px -10px rgba(10, 10, 10, 0.24),
+    inset  10px  10px 6px -10px rgba(10, 10, 10, 0.24);
+}
+[data-theme="light"] .plan-card:has(.plan-card-input:checked) {
+  background:
+    radial-gradient(160% 120% at 50% -40%, rgba(255, 255, 255, 0.9), transparent 60%),
+    rgba(255, 255, 255, 0.72);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.8),
+    inset 0 0 0 1.5px rgba(10, 10, 10, 0.85),
+    0 10px 30px rgba(0, 0, 0, 0.10);
+}
+[data-theme="light"] .plan-card:has(.plan-card-input:focus-visible) { outline-color: rgba(10, 10, 10, 0.45); }
+[data-theme="light"] .plan-card-radio { box-shadow: inset 0 0 0 1.5px rgba(10, 10, 10, 0.3); }
+[data-theme="light"] .plan-card:has(.plan-card-input:checked) .plan-card-radio {
+  background: #0a0a0a;
+  box-shadow: inset 0 0 0 5px #fff, 0 0 0 1.5px #0a0a0a;
+}
+[data-theme="light"] .plan-card-name { color: rgba(10, 10, 10, 0.8) !important; }
+[data-theme="light"] .plan-card:has(.plan-card-input:checked) .plan-card-name,
+[data-theme="light"] .plan-card-amount,
+[data-theme="light"] .plan-card-val { color: #0a0a0a !important; }
+[data-theme="light"] .plan-card-period,
+[data-theme="light"] .plan-card-key { color: rgba(10, 10, 10, 0.55) !important; }
+[data-theme="light"] .plan-card-specs { border-top-color: rgba(10, 10, 10, 0.10); }
+
+/* tablet: three columns get tight — keep them, trim padding */
+@media (max-width: 860px) {
+  .paywall-modal.is-plans { padding: 32px 22px 22px; }
+  .plans-grid { gap: 10px; }
+  .plan-card { padding: 16px 14px 18px; }
+}
+
+/* phone: cards become compact rows (name · price on top, specs below),
+   so all three plans and the CTA fit without a long scroll. */
+@media (max-width: 640px) {
+  .sonya-modal-overlay:has(.paywall-modal.is-plans) { padding: 12px; align-items: flex-end; }
+  .paywall-modal.is-plans { padding: 26px 16px 16px; max-height: calc(100dvh - 24px); border-radius: 26px; }
+  .plans-title { font-size: 18px; margin-bottom: 14px; }
+  .sonya-auth-tabs.plans-modes { margin-bottom: 16px; }
+  .plans-modes .sonya-auth-tab { padding: 11px 6px; font-size: 12px; letter-spacing: 0.04em; }
+
+  .plans-grid, .plans-grid.is-solo { grid-template-columns: 1fr; gap: 8px; margin-bottom: 16px; }
+  .plan-card {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas: "head price" "specs specs";
+    align-items: center;
+    row-gap: 10px;
+    padding: 14px 16px;
+    border-radius: 18px;
+  }
+  .plan-card-head { grid-area: head; min-width: 0; }
+  .plan-card-tag { margin-left: 0; }
+  .plan-card-price { grid-area: price; margin: 0; justify-content: flex-end; flex-wrap: nowrap; }
+  .plan-card-amount { font-size: 18px; }
+  .plan-card-period { font-size: 11.5px; }
+  .plan-card-specs {
+    grid-area: specs;
+    flex-direction: row; flex-wrap: wrap; gap: 4px 18px;
+    padding: 10px 0 0 28px;
+  }
+  .plan-card-spec { justify-content: flex-start; gap: 6px; font-size: 12.5px; }
+
+  .plans-footer { flex-direction: column; align-items: stretch; gap: 14px; }
+  .plans-footer .paywall-pay-btn { flex: none; width: 100%; }
+}
+/* narrow phones: the tag would collide with the price — Pro is still
+   preselected, so the recommendation stays visible through selection. */
+@media (max-width: 420px) {
+  .plan-card-tag { display: none; }
+}
 
 /* ── 6. TOAST ────────────────────────────────────────────────── */
 .sonya-toast {

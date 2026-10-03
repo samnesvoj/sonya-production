@@ -47,16 +47,17 @@ def test_create_job_succeeds_with_valid_session_cookie(client, monkeypatch):
 
     created_jobs = {}
 
-    def fake_create_job_idempotent(job_id, user_id, mode, params, s3_input_key,
-                                    idempotency_key, idempotency_fingerprint, queue_priority=0):
+    def fake_create_job_with_quota(job_id, user_id, mode, params, s3_input_key,
+                                    idempotency_key, idempotency_fingerprint, queue_priority=0,
+                                    bypass_quota=False, subscription_id=None):
         created_jobs["job_id"] = job_id
         created_jobs["user_id"] = user_id
         created_jobs["mode"] = mode
         created_jobs["queue_priority"] = queue_priority
         created_jobs["idempotency_key"] = idempotency_key
-        return {"id": job_id, "user_id": user_id, "mode": mode, "status": "queued"}
+        return {"outcome": "created", "job": {"id": job_id, "user_id": user_id, "mode": mode, "status": "queued"}}
 
-    monkeypatch.setattr("scripts.prod_generation_api.create_job_idempotent", fake_create_job_idempotent)
+    monkeypatch.setattr("scripts.prod_generation_api.create_job_with_quota", fake_create_job_with_quota)
     monkeypatch.setattr("scripts.prod_generation_api.get_job", lambda job_id: {"created_at": "2026-01-01T00:00:00Z"})
     monkeypatch.setattr("scripts.prod_generation_api.add_job_file", lambda **kw: "file-id")
     monkeypatch.setattr("scripts.prod_generation_api.upload_bytes", lambda content, key, content_type=None: None)

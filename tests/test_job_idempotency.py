@@ -3,12 +3,15 @@ Idempotency-Key tests for POST /api/generation/jobs (P0 follow-up).
 
 Pure logic (key validation, fingerprint canonicalization) is tested
 directly, no DB/HTTP involved. Endpoint-level tests use the TestClient
-with prod_job_store.create_job_idempotent/get_job_by_idempotency_key and
-prod_s3_storage.delete_object monkeypatched -- no real Postgres or S3 call.
-See tests/test_job_idempotency_postgres.py for the real-Postgres
-concurrent-insert test that this file deliberately does NOT attempt to
-fake (a mocked test cannot prove the unique index actually serializes
-concurrent requests).
+with prod_job_store.create_job_with_quota and prod_s3_storage.delete_object
+monkeypatched -- no real Postgres or S3 call. See
+tests/test_job_idempotency_postgres.py for the real-Postgres
+concurrent-insert test of the older create_job_idempotent() unique-index
+path, and tests/test_job_quota_atomicity_postgres.py for the real-Postgres
+concurrency/replay tests of create_job_with_quota() (the one actually used
+by the free-plan-gated endpoints since the payment/free-plan concurrency
+fix) -- a mocked test cannot prove either one actually serializes
+concurrent requests.
 """
 from __future__ import annotations
 
@@ -196,8 +199,8 @@ def test_new_job_returns_202_without_replay_header(client, monkeypatch):
     s3_keys = []
     _wire_common(monkeypatch, s3_keys=s3_keys)
     monkeypatch.setattr(
-        "scripts.prod_generation_api.create_job_idempotent",
-        lambda **kw: {"id": "job-new", "user_id": kw["user_id"], "mode": kw["mode"], "status": "queued"},
+        "scripts.prod_generation_api.create_job_with_quota",
+        lambda **kw: {"outcome": "created", "job": {"id": "job-new", "user_id": kw["user_id"], "mode": kw["mode"], "status": "queued"}},
     )
     delete_calls = []
     monkeypatch.setattr("scripts.prod_generation_api.delete_object", lambda key, bucket=None: delete_calls.append(key))
@@ -220,20 +223,17 @@ def test_replay_same_fingerprint_returns_existing_job_with_replayed_header(clien
     s3_keys = []
     _wire_common(monkeypatch, s3_keys=s3_keys)
 
-    # Conflict: create_job_idempotent reports "already exists"
-    monkeypatch.setattr("scripts.prod_generation_api.create_job_idempotent", lambda **kw: None)
-
     existing_job = {
         "id": "job-existing", "user_id": user["id"], "mode": "virality", "status": "queued",
         "created_at": "2026-01-01T00:00:00Z",
     }
 
-    captured_fp = {}
-
-    def fake_get_existing(user_id, key):
-        return existing_job
-
-    monkeypatch.setattr("scripts.prod_generation_api.get_job_by_idempotency_key", fake_get_existing)
+    # Conflict: create_job_with_quota reports the idempotency-key already
+    # has a row -- quota was never touched for this request.
+    monkeypatch.setattr(
+        "scripts.prod_generation_api.create_job_with_quota",
+        lambda **kw: {"outcome": "existing", "job": existing_job},
+    )
 
     # Patch the fingerprint computer to a fixed value so we can make the
     # "existing" row's stored fingerprint match it exactly (replay path).
@@ -265,12 +265,14 @@ def test_different_fingerprint_same_key_is_409_and_cleans_up_orphan(client, monk
     s3_keys = []
     _wire_common(monkeypatch, s3_keys=s3_keys)
 
-    monkeypatch.setattr("scripts.prod_generation_api.create_job_idempotent", lambda **kw: None)
     existing_job = {
         "id": "job-existing", "user_id": user["id"], "mode": "virality", "status": "queued",
         "idempotency_fingerprint": "fp-original",
     }
-    monkeypatch.setattr("scripts.prod_generation_api.get_job_by_idempotency_key", lambda user_id, key: existing_job)
+    monkeypatch.setattr(
+        "scripts.prod_generation_api.create_job_with_quota",
+        lambda **kw: {"outcome": "existing", "job": existing_job},
+    )
     monkeypatch.setattr("scripts.prod_generation_api._compute_idempotency_fingerprint", lambda *a, **kw: "fp-different")
 
     delete_calls = []
@@ -296,7 +298,7 @@ def test_db_error_after_upload_cleans_up_orphan_and_returns_500(client, monkeypa
 
     def _boom(**kw):
         raise RuntimeError("db exploded")
-    monkeypatch.setattr("scripts.prod_generation_api.create_job_idempotent", _boom)
+    monkeypatch.setattr("scripts.prod_generation_api.create_job_with_quota", _boom)
 
     delete_calls = []
     monkeypatch.setattr("scripts.prod_generation_api.delete_object", lambda key, bucket=None: delete_calls.append(key))
@@ -323,9 +325,9 @@ def test_missing_idempotency_key_is_legacy_behavior(client, monkeypatch):
 
     def fake_create(**kw):
         captured.update(kw)
-        return {"id": "job-legacy", "user_id": kw["user_id"], "mode": kw["mode"], "status": "queued"}
+        return {"outcome": "created", "job": {"id": "job-legacy", "user_id": kw["user_id"], "mode": kw["mode"], "status": "queued"}}
 
-    monkeypatch.setattr("scripts.prod_generation_api.create_job_idempotent", fake_create)
+    monkeypatch.setattr("scripts.prod_generation_api.create_job_with_quota", fake_create)
 
     resp = client.post(
         "/api/generation/jobs",
@@ -337,3 +339,31 @@ def test_missing_idempotency_key_is_legacy_behavior(client, monkeypatch):
     assert "Idempotency-Replayed" not in resp.headers
     assert captured["idempotency_key"] is None
     assert captured["idempotency_fingerprint"] is None
+
+
+def test_quota_exceeded_outcome_is_402_and_cleans_up_orphan(client, monkeypatch):
+    """create_job_with_quota() is the actual enforcement point (not just the
+    early fast-fail check in the endpoint) -- a "quota_exceeded" outcome
+    must surface as 402 FREE_PLAN_USED and clean up this request's own
+    orphaned upload, same as every other non-created outcome."""
+    _login(monkeypatch, client)
+    s3_keys = []
+    _wire_common(monkeypatch, s3_keys=s3_keys)
+
+    monkeypatch.setattr(
+        "scripts.prod_generation_api.create_job_with_quota",
+        lambda **kw: {"outcome": "quota_exceeded", "job": None},
+    )
+    delete_calls = []
+    monkeypatch.setattr("scripts.prod_generation_api.delete_object", lambda key, bucket=None: delete_calls.append(key))
+
+    resp = client.post(
+        "/api/generation/jobs",
+        data={"mode": "virality"},
+        files={"file": ("clip.mp4", io.BytesIO(_mp4_bytes()), "video/mp4")},
+    )
+
+    assert resp.status_code == 402
+    assert resp.json()["detail"]["code"] == "FREE_PLAN_USED"
+    assert len(delete_calls) == 1
+    assert delete_calls[0] == s3_keys[0]

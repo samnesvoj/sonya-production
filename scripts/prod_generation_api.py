@@ -23,10 +23,29 @@ Auth + billing endpoints (see scripts/auth_routes.py):
   POST /api/auth/logout
   GET  /api/billing/subscription-status
 
+Billing endpoints (see scripts/payment_routes.py; provider = env PAYMENT_PROVIDER):
+  POST /api/billing/checkout                 (browser, plan_id -> pending payment + provider redirect_url)
+  POST /api/billing/robokassa/result         (LEGACY Robokassa ResultURL -- confirms old Robokassa payments only)
+  GET  /api/billing/payment-status           (browser, polled from payment/success.html + fail.html)
+
+@sonya_group_bot account-linking endpoints (see scripts/telegram_routes.py):
+  POST /api/telegram/link-token              (browser, one-time deep-link token)
+  POST /api/telegram/webhook                 (Telegram servers -- X-Telegram-Bot-Api-Secret-Token, not session)
+  POST /api/telegram/unlink                  (browser)
+  GET  /api/telegram/status                  (browser)
+
+Streamer batch flow endpoints (see scripts/streamer_routes.py):
+  POST /api/streamer/batches                       (browser, URL or file source)
+  GET  /api/streamer/batches/{batch_id}             (browser, owner only)
+  GET  /api/streamer/batches                        (browser, list own batches)
+  POST /api/streamer/batches/{batch_id}/selection   (browser, confirm segments -> compose jobs)
+  POST /api/worker/streamer/batches/{batch_id}/analysis-result  (worker, WORKER_SECRET)
+
 Worker-internal endpoints (require Authorization: Bearer WORKER_SECRET --
 unchanged, never cookie/session based):
   POST /api/worker/claim
   POST /api/worker/jobs/{job_id}/status
+  POST /api/worker/jobs/{job_id}/heartbeat   (liveness only -- no status change; migration 011)
   POST /api/worker/jobs/{job_id}/complete
   POST /api/worker/jobs/{job_id}/fail
   POST /api/worker/jobs/{job_id}/files
@@ -46,9 +65,11 @@ import json
 import logging
 import os
 import re
+import tempfile
 import threading
 import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -70,12 +91,17 @@ from scripts.prod_job_store import (
     complete_job,
     create_job,
     create_job_idempotent,
+    create_job_with_quota,
     fail_job,
     get_job,
     get_job_by_idempotency_key,
     list_job_files,
     list_user_jobs,
+    reconcile_streamer_batch,
+    set_streamer_batch_status,
+    touch_job_heartbeat,
     update_job_status,
+    StreamerBatchTransitionError,
 )
 from scripts.prod_s3_storage import (
     build_input_key,
@@ -85,6 +111,10 @@ from scripts.prod_s3_storage import (
     upload_bytes,
 )
 from scripts.auth_routes import router as auth_router
+from scripts.payment_routes import router as payment_router
+from scripts.telegram_routes import router as telegram_router
+from scripts.streamer_routes import router as streamer_router
+from scripts.streamer_notify import notify_streamer_batch_completion
 from scripts.quota_guard import check_user_quota
 from scripts.rate_limiter import RateLimiter
 from scripts.security import (
@@ -114,6 +144,65 @@ def _resolve_priority(user: dict) -> tuple[int, str]:
     if plan not in _PLAN_PRIORITY:
         plan = "unknown"
     return _PLAN_PRIORITY[plan], plan
+
+
+def _is_pro_active(user: dict) -> bool:
+    """
+    Whether a LEGACY (pre-016, 500 ₽) Pro plan is currently in effect -- not
+    just whether plan_type happens to say "pro". A payment that expired
+    without renewal leaves plan_type="pro" on the row (nothing resets it),
+    so plan_active_until must be checked too. New public plans never set
+    plan_type; their rights are resolved by scripts/entitlements.py.
+    """
+    return entitlements.legacy_pro_active(user)
+
+
+def _resolve_entitlement(user: dict, mode: str, trace_id: str) -> "entitlements.Entitlement":
+    """Pre-I/O access decision for one operation (no debit). Raises the
+    402 payment-required flow with a concrete `code` (see entitlements.py);
+    the atomic debit is create_job_with_quota()."""
+    try:
+        subscriptions = entitlements.get_user_subscriptions(str(user["id"]))
+    except Exception as exc:
+        logger.error("[api] subscriptions_lookup_failed user_id=%s trace_id=%s error_type=%s",
+                     user["id"], trace_id, type(exc).__name__)
+        raise safe_error("db_error", 500, trace_id)
+    try:
+        return entitlements.resolve_entitlement(user, mode, subscriptions)
+    except entitlements.EntitlementDenied as denied:
+        raise HTTPException(status_code=denied.status_code, detail=denied.detail(trace_id))
+
+
+def _priority_for(ent: "entitlements.Entitlement", priority: int, plan: str) -> tuple[int, str]:
+    # A paid subscription gets the same queue priority as legacy Pro.
+    if ent.kind == "subscription":
+        return _PLAN_PRIORITY["pro"], "pro"
+    return priority, plan
+
+
+def _enforce_duration_of_bytes(ent: "entitlements.Entitlement", content: bytes, ext: str,
+                               trace_id: str) -> None:
+    """Plan source-length cap for an in-memory upload (writes a temp copy
+    for ffprobe only when a cap applies). Raises before any S3/DB work."""
+    if ent.max_source_sec is None:
+        return
+    with tempfile.NamedTemporaryFile(suffix=ext or ".mp4") as tmp:
+        tmp.write(content)
+        tmp.flush()
+        try:
+            entitlements.measure_and_enforce(ent, tmp.name)
+        except entitlements.EntitlementDenied as denied:
+            raise HTTPException(status_code=denied.status_code, detail=denied.detail(trace_id))
+
+
+def _plan_limit_reached_detail(ent: "entitlements.Entitlement", trace_id: str) -> dict:
+    return entitlements.EntitlementDenied(
+        entitlements.PLAN_LIMIT_REACHED,
+        "Лимит тарифа исчерпан или период подписки закончился.",
+        plan_mode=ent.plan_mode, plan_id=ent.plan_id,
+    ).detail(trace_id)
+
+
 from scripts.security_audit import (
     EVT_JOB_CREATED,
     EVT_JOB_CLAIMED,
@@ -123,7 +212,7 @@ from scripts.security_audit import (
     audit,
 )
 from scripts.upload_security import validate_upload
-from scripts import url_ingest
+from scripts import entitlements, url_ingest
 
 logger = logging.getLogger(__name__)
 
@@ -157,6 +246,15 @@ app.add_middleware(
 
 # Auth + billing endpoints (see scripts/auth_routes.py)
 app.include_router(auth_router)
+
+# Billing endpoints: checkout, payment status, legacy Robokassa ResultURL (see scripts/payment_routes.py)
+app.include_router(payment_router)
+
+# @sonya_group_bot account-linking endpoints (see scripts/telegram_routes.py)
+app.include_router(telegram_router)
+
+# Streamer batch flow endpoints (see scripts/streamer_routes.py)
+app.include_router(streamer_router)
 
 # ── Mode registry ——————————————————————————————————————————————————————————————
 
@@ -397,14 +495,30 @@ async def create_generation_job(
     # Quota check
     check_user_quota(user_id)
 
-    # Upload validation (magic bytes, size, extension)
+    # Entitlement (plan / mode / ops left / free quota) -- fast-fail only,
+    # from the user + subscription snapshot loaded for this request. Not the
+    # enforcement point: create_job_with_quota() below re-checks atomically
+    # under the user's row lock and is what actually prevents overspending.
+    # This early check exists to skip a wasted upload for a request that is
+    # already known to be refused. Nothing is debited here.
+    ent = _resolve_entitlement(user, mode, trace_id)
+    priority, plan = _priority_for(ent, priority, plan)
+
+    # Upload validation (magic bytes, size, extension) — mode-conditional
+    # size cap: streamer allows long-form VODs, every other mode keeps the
+    # original MAX_UPLOAD_SIZE_MB default (url_ingest._max_bytes is the one
+    # canonical place this is computed; see PHASE A audit).
     try:
-        content, safe_name = await validate_upload(file)
+        content, safe_name = await validate_upload(file, max_size_bytes=url_ingest._max_bytes(mode))
     except HTTPException as exc:
         audit(EVT_UPLOAD_REJECTED, user_id=user_id, trace_id=trace_id,
               details={"mode": mode, "reason": str(exc.detail)},
               ip_address=request.client.host if request.client else None)
         raise
+
+    # Paid-plan source length, measured on the bytes we actually received
+    # (never a client-sent duration) -- before S3 and before any debit.
+    _enforce_duration_of_bytes(ent, content, Path(safe_name).suffix, trace_id)
 
     idempotency_fingerprint = (
         _compute_idempotency_fingerprint(mode, content, parsed_params)
@@ -425,11 +539,19 @@ async def create_generation_job(
         logger.error("[api] s3_upload_failed job_id=%s trace_id=%s: %s", job_id, trace_id, exc)
         raise safe_error("storage_error", 500, trace_id)
 
-    # Atomic create-or-detect-conflict. GPU is never triggered here; the
+    # Atomic create-or-detect-conflict-or-quota-exceeded, all in one DB
+    # transaction (see prod_job_store.create_job_with_quota): idempotency-key
+    # lookup, free-plan quota reservation, and the job insert either all
+    # commit together or all roll back together. This is the actual
+    # enforcement point for free_video_limit -- a replay of an
+    # already-accepted Idempotency-Key never touches quota, and concurrent
+    # requests can never jointly consume more than free_video_limit units
+    # (see docs/SONYA_AUDIT.md review notes for why the previous
+    # check-then-increment approach raced). GPU is never triggered here; the
     # dispatcher service picks up queued jobs and calls the GPU orchestrator
     # asynchronously.
     try:
-        created_row = create_job_idempotent(
+        result = create_job_with_quota(
             job_id=job_id,
             user_id=user_id,
             mode=mode,
@@ -438,29 +560,42 @@ async def create_generation_job(
             idempotency_key=idempotency_key,
             idempotency_fingerprint=idempotency_fingerprint,
             queue_priority=priority,  # existing column (migration 003)
+            bypass_quota=ent.kind == "legacy_pro",
+            subscription_id=ent.subscription_id,
         )
     except Exception as exc:
         logger.error("[api] create_job_failed trace_id=%s: %s", trace_id, exc)
         delete_object(s3_key)  # best-effort -- this request's own upload, never an existing job's
         raise safe_error("db_error", 500, trace_id)
 
-    if created_row is None:
-        # ON CONFLICT DO NOTHING matched zero rows: another request already
-        # holds this (user_id, idempotency_key). This request's own upload
-        # is now orphaned -- clean it up (best-effort; never the existing
-        # job's s3_input_key).
+    if result["outcome"] == "quota_exceeded":
+        # Lost the race to the atomic quota reservation -- the early
+        # fast-fail check above didn't catch this (another concurrent
+        # request consumed the last slot in between). This request's own
+        # upload is now orphaned.
         delete_object(s3_key)
+        raise HTTPException(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            detail={"error": "payment_required", "code": "FREE_PLAN_USED",
+                    "message": "Бесплатная генерация уже использована. Выберите тариф SONYA.",
+                    "trace_id": trace_id},
+        )
 
-        existing = get_job_by_idempotency_key(user_id, idempotency_key)
-        if existing is None:
-            # Conflict reported by the unique index but the row is gone by
-            # the time we look it up (e.g. concurrent delete) -- surface as
-            # a transient server error rather than guessing.
-            logger.error(
-                "[api] idempotency_conflict_row_missing user_id=%s trace_id=%s",
-                user_id, trace_id,
-            )
-            raise safe_error("db_error", 500, trace_id)
+    if result["outcome"] == "plan_limit_reached":
+        # Same race, subscription flavor: the period's last operation (or
+        # the period itself) ran out between the fast-fail check and the
+        # atomic debit. Nothing was debited for this request.
+        delete_object(s3_key)
+        raise HTTPException(status_code=status.HTTP_402_PAYMENT_REQUIRED,
+                            detail=_plan_limit_reached_detail(ent, trace_id))
+
+    if result["outcome"] == "existing":
+        # Another request already holds this (user_id, idempotency_key).
+        # This request's own upload is now orphaned -- clean it up
+        # (best-effort; never the existing job's s3_input_key). Quota was
+        # never touched for this request (checked before reservation).
+        delete_object(s3_key)
+        existing = result["job"]
 
         if existing.get("idempotency_fingerprint") == idempotency_fingerprint:
             logger.info(
@@ -487,6 +622,7 @@ async def create_generation_job(
         )
 
     # ── New job created — same post-processing as before ────────────────────
+    created_row = result["job"]
     job_id = str(created_row["id"])
 
     # Persist migration-006 columns (priority + plan) — best-effort
@@ -517,7 +653,8 @@ async def create_generation_job(
         logger.warning("[api] add_input_file_failed job_id=%s: %s", job_id, exc)
 
     audit(EVT_JOB_CREATED, user_id=user_id, job_id=job_id, trace_id=trace_id,
-          details={"mode": mode, "size_bytes": len(content), "plan": plan, "priority": priority},
+          details={"mode": mode, "size_bytes": len(content), "plan": plan, "priority": priority,
+                   "entitlement": ent.kind, "plan_id": ent.plan_id},
           ip_address=request.client.host if request.client else None)
 
     logger.info(
@@ -653,6 +790,12 @@ async def create_generation_job_from_url(
     # file-upload endpoint.
     check_user_quota(user_id)
 
+    # Fast-fail only -- see the equivalent check in create_generation_job()
+    # for why this isn't the enforcement point (create_job_with_quota() in
+    # _run_url_ingest below is).
+    ent = _resolve_entitlement(user, mode, trace_id)
+    priority, plan = _priority_for(ent, priority, plan)
+
     url = body.url.strip()
     platform = url_ingest.detect_platform(url)
     if platform == "unsupported":
@@ -683,6 +826,7 @@ async def create_generation_job_from_url(
         ingest_id=ingest_id, url=url, platform=platform, mode=mode,
         parsed_params=parsed_params, user_id=user_id, trace_id=trace_id,
         idempotency_key=idempotency_key, priority=priority, plan=plan,
+        ent=ent,
         client_ip=request.client.host if request.client else None,
     )
 
@@ -718,6 +862,7 @@ def _run_url_ingest(
     *, ingest_id: str, url: str, platform: str, mode: str,
     parsed_params: Dict[str, Any], user_id: str, trace_id: str,
     idempotency_key: Optional[str], priority: int, plan: str,
+    ent: "entitlements.Entitlement",
     client_ip: Optional[str],
 ) -> None:
     """
@@ -728,7 +873,7 @@ def _run_url_ingest(
     local_path: Optional[str] = None
     try:
         _ingest_set(ingest_id, status="checking", message="Проверяем ссылку", percent=5.0)
-        url_ingest.probe(url, platform)
+        url_ingest.probe(url, platform, mode=mode, max_duration_sec=ent.max_source_sec)
 
         _ingest_set(ingest_id, status="downloading", message="Получаем видео", percent=15.0)
 
@@ -738,12 +883,20 @@ def _run_url_ingest(
             _ingest_set(ingest_id, status="downloading", message="Получаем видео",
                         percent=15.0 + max(0.0, min(100.0, pct)) * 0.55)
 
-        local_path, _ext = url_ingest.download_video(url, platform, progress_cb=_progress)
+        local_path, _ext = url_ingest.download_video(url, platform, progress_cb=_progress, mode=mode)
+
+        # Authoritative paid-plan length check on the downloaded file
+        # (platform metadata above is only an early hint). No debit yet.
+        try:
+            entitlements.measure_and_enforce(ent, local_path)
+        except entitlements.EntitlementDenied as denied:
+            _ingest_set(ingest_id, status="failed", error=denied.code, message=denied.message)
+            return
 
         _ingest_set(ingest_id, status="uploading", message="Загружаем видео", percent=75.0)
 
         content, safe_name = url_ingest.validate_downloaded_file(
-            local_path, hint_name=f"{platform}_video{Path(local_path).suffix or '.mp4'}"
+            local_path, hint_name=f"{platform}_video{Path(local_path).suffix or '.mp4'}", mode=mode
         )
 
         idempotency_fingerprint = (
@@ -765,10 +918,11 @@ def _run_url_ingest(
             return
 
         try:
-            created_row = create_job_idempotent(
+            result = create_job_with_quota(
                 job_id=job_id, user_id=user_id, mode=mode, params=parsed_params,
                 s3_input_key=s3_key, idempotency_key=idempotency_key,
                 idempotency_fingerprint=idempotency_fingerprint, queue_priority=priority,
+                bypass_quota=ent.kind == "legacy_pro", subscription_id=ent.subscription_id,
             )
         except Exception as exc:
             logger.error("[api] url_ingest_create_job_failed ingest_id=%s trace_id=%s: %s",
@@ -778,11 +932,26 @@ def _run_url_ingest(
                         message="Ошибка создания задачи. Попробуйте позже.")
             return
 
-        if created_row is None:
-            # Same idempotency-conflict handling as the file-upload path.
+        if result["outcome"] == "quota_exceeded":
+            # Lost the race to the atomic quota reservation between the
+            # fast-fail check in create_generation_job_from_url() and here.
             delete_object(s3_key)
-            existing = get_job_by_idempotency_key(user_id, idempotency_key)
-            if existing is not None and existing.get("idempotency_fingerprint") == idempotency_fingerprint:
+            _ingest_set(ingest_id, status="failed", error="FREE_PLAN_USED",
+                        message="Бесплатная генерация уже использована. Выберите тариф SONYA.")
+            return
+
+        if result["outcome"] == "plan_limit_reached":
+            delete_object(s3_key)
+            _ingest_set(ingest_id, status="failed", error=entitlements.PLAN_LIMIT_REACHED,
+                        message="Лимит тарифа исчерпан или период подписки закончился.")
+            return
+
+        if result["outcome"] == "existing":
+            # Same idempotency-conflict handling as the file-upload path.
+            # Quota was never touched for this request.
+            delete_object(s3_key)
+            existing = result["job"]
+            if existing.get("idempotency_fingerprint") == idempotency_fingerprint:
                 _ingest_set(ingest_id, status="queued", message="Видео в очереди",
                             percent=100.0, job_id=str(existing.get("id")))
                 return
@@ -790,7 +959,7 @@ def _run_url_ingest(
                         message="Эта задача уже была отправлена.")
             return
 
-        job_id = str(created_row["id"])
+        job_id = str(result["job"]["id"])
 
         try:
             from scripts.prod_job_store import _get_conn  # type: ignore
@@ -900,6 +1069,86 @@ async def worker_update_status(
     return {"ok": True, "job_id": job_id, "status": body.status}
 
 
+@app.post("/api/worker/jobs/{job_id}/heartbeat")
+async def worker_heartbeat(
+    job_id: str,
+    _auth: None = Depends(verify_worker_secret),
+):
+    """
+    Liveness only — refreshes heartbeat_at (migration 011), no status
+    change. Called periodically by a worker during a long-running mode
+    step so requeue_stale_jobs() never mistakes a slow-but-alive job for a
+    stuck one. See scripts/prod_job_store.py::touch_job_heartbeat().
+    """
+    touch_job_heartbeat(job_id)
+    return {"ok": True, "job_id": job_id}
+
+
+def _maybe_reconcile_streamer_batch(job: Optional[Dict[str, Any]]) -> None:
+    """
+    Called after a job reaches a terminal state via worker/complete or
+    worker/fail below -- the primary trigger for batch-status
+    reconciliation (GET /api/streamer/batches/{id} in
+    scripts/streamer_routes.py is the defensive backstop for the rare
+    case this is ever missed). No-op for any job that isn't part of a
+    streamer batch (params carries no streamer_batch_id -- true for every
+    non-streamer job, and for a plain streamer job with no batch behind
+    it).
+
+    A compose-phase job's own completion/failure is reconciled against
+    every OTHER compose job in the same batch (reconcile_streamer_batch()
+    reads them all) -- see that function's docstring for the ready /
+    partially_failed / failed decision. An analyze-phase job failing
+    permanently (status actually "failed", not requeued for retry) fails
+    the whole batch directly instead -- there's nothing to "reconcile"
+    against other jobs at that point, since no compose jobs can exist yet
+    (they're only created after awaiting_selection, which an analyze
+    failure never reaches).
+    """
+    if not job:
+        return
+    params = job.get("params") or {}
+    batch_id = params.get("streamer_batch_id")
+    if not batch_id:
+        return
+
+    phase = params.get("streamer_phase")
+    try:
+        if phase == "compose":
+            reconcile_streamer_batch(batch_id)
+        elif phase == "analyze" and job.get("status") == JOB_STATUS_FAILED:
+            set_streamer_batch_status(
+                batch_id, "failed",
+                error=job.get("last_error") or job.get("error") or "analyze_failed",
+            )
+    except StreamerBatchTransitionError:
+        pass  # batch already terminal (e.g. cancelled) -- nothing to do
+    except Exception as exc:
+        logger.warning("[api] streamer_batch_reconcile_failed batch_id=%s job_id=%s: %s",
+                        batch_id, job.get("id"), exc)
+
+
+def _maybe_notify_streamer_batch(job: Optional[Dict[str, Any]]) -> None:
+    """
+    Runs as a FastAPI background task, scheduled AFTER _maybe_reconcile_
+    streamer_batch(job) has already run synchronously above -- so by the
+    time this actually executes, the batch's terminal status (if this
+    job's completion/failure caused one) is already committed. This is
+    exactly why it's backgrounded: Telegram network latency (or an outage)
+    must never delay this endpoint's own response to the GPU worker, and
+    notify_streamer_batch_completion() itself never raises (see its own
+    docstring) so it can never turn this into a failed background task
+    either. No-op for any job that isn't part of a streamer batch, same
+    guard as _maybe_reconcile_streamer_batch above.
+    """
+    if not job:
+        return
+    batch_id = (job.get("params") or {}).get("streamer_batch_id")
+    if not batch_id:
+        return
+    notify_streamer_batch_completion(batch_id)
+
+
 def _cleanup_ephemeral_instance(job: Optional[Dict[str, Any]]) -> None:
     """
     Best-effort destroy of the vast.ai instance backing a job that just
@@ -944,6 +1193,8 @@ async def worker_complete_job(
           job_id=job_id, trace_id=trace_id,
           details={"clip_count": body.clip_count, "processing_ms": body.processing_ms})
     logger.info("[api] job_completed job_id=%s clips=%s ms=%s", job_id, body.clip_count, body.processing_ms)
+    _maybe_reconcile_streamer_batch(job)
+    background_tasks.add_task(_maybe_notify_streamer_batch, job)
     background_tasks.add_task(_cleanup_ephemeral_instance, job)
     return {"ok": True, "job_id": job_id}
 
@@ -967,6 +1218,8 @@ async def worker_fail_job(
           job_id=job_id, trace_id=trace_id,
           details={"error_code": body.error_code, "retry": body.retry})
     logger.warning("[api] job_failed job_id=%s code=%s retry=%s", job_id, body.error_code, body.retry)
+    _maybe_reconcile_streamer_batch(job)
+    background_tasks.add_task(_maybe_notify_streamer_batch, job)
     background_tasks.add_task(_cleanup_ephemeral_instance, job)
     return {"ok": True, "job_id": job_id}
 

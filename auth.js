@@ -215,9 +215,13 @@ const URL_INGEST_STATUS_TEXT = {
   uploading: 'Загружаем видео…',
 };
 
-function _errorResponse(status, message) {
-  return { ok: false, status, json: async () => ({ detail: { message } }) };
+function _errorResponse(status, message, code) {
+  return { ok: false, status, json: async () => ({ detail: code ? { message, code } : { message } }) };
 }
+
+// Server entitlement refusals that are solved by picking a plan
+// (scripts/entitlements.py) -- they open the plan picker on the right mode.
+const PAYWALL_CODES = ['FREE_PLAN_USED', 'MODE_NOT_IN_PLAN', 'SUBSCRIPTION_EXPIRED', 'PLAN_LIMIT_REACHED'];
 
 async function apiCreateVideoJobFromUrl(formData) {
   const sourceUrl = String(formData?.source?.url || '').trim();
@@ -269,6 +273,8 @@ async function apiCreateVideoJobFromUrl(formData) {
         return { ok: true, status: 202, json: async () => ({ job_id: data.job_id, status: 'queued', mode }) };
       }
       if (st === 'failed') {
+        if (PAYWALL_CODES.includes(data.error)) return _errorResponse(402, data.message, data.error);
+        if (data.error === 'SOURCE_TOO_LONG') return _errorResponse(413, data.message, data.error);
         return _errorResponse(502, data.message || 'Не удалось скачать видео по ссылке.');
       }
       // checking / downloading / uploading — keep polling.
@@ -384,6 +390,14 @@ function renderAccountButton() {
 /* ─────────────────────────────────────────────
    ACCOUNT DROPDOWN
 ───────────────────────────────────────────── */
+// "Нарезка · Pro — осталось 12 из 20 · до 03.11.2026"
+function _subscriptionLine(sub) {
+  const mode = SONYA_PRICING.modes.find(m => m.id === sub.mode);
+  const plan = mode && mode.plans.find(p => p.id === sub.plan_id);
+  const name = `${mode ? mode.label : sub.mode} · ${plan ? plan.name : sub.plan_id}`;
+  const until = sub.period_end ? new Date(sub.period_end).toLocaleDateString('ru-RU') : '';
+  return escHtml(`${name} — осталось ${sub.ops_remaining} из ${sub.ops_limit}${until ? ` · до ${until}` : ''}`);
+}
 function openAccountDropdown() {
   const drop = document.getElementById('sonya-account-drop');
   if (!drop) return;
@@ -396,42 +410,75 @@ function openAccountDropdown() {
       </button>
       <button class="acct-drop-item" id="acct-drop-register">
         <i class="fa-solid fa-user-plus"></i> Зарегистрироваться
+      </button>
+      <div class="acct-drop-divider"></div>
+      <button class="acct-drop-item" id="acct-drop-plans">
+        <i class="fa-solid fa-bolt"></i> Тарифы
       </button>`;
     drop.querySelector('#acct-drop-login').onclick = () => { closeAccountDropdown(); openAuthModal('login'); };
     drop.querySelector('#acct-drop-register').onclick = () => { closeAccountDropdown(); openAuthModal('registration'); };
+    // Prices are public: guests browse the picker freely, auth is only
+    // asked for at the pay CTA (see startCheckout).
+    drop.querySelector('#acct-drop-plans').onclick = () => { closeAccountDropdown(); openPaywallModal(); };
   } else {
     const emailLower = String(user.email || '').toLowerCase();
+    // Active per-mode plans from /api/auth/me (server entitlements).
+    const subscriptions = Array.isArray(user.subscriptions) ? user.subscriptions : [];
     const planLabel =
       emailLower === 'elcuevimran@gmail.com' && user.plan_type === 'admin' ? 'CEO' :
       emailLower === 'mironowism@gmail.com' && user.plan_type === 'admin' ? 'Admin' :
       user.plan_type === 'admin' ? 'Admin' :
-      user.plan_type === 'pro' ? 'Pro Plan ✦' :
+      user.plan_type === 'pro' || subscriptions.length ? 'Подписка ✦' :
       'Free Plan';
     const freeLeft = user.free_video_limit - user.free_video_used;
     const until = user.plan_active_until
       ? new Date(user.plan_active_until).toLocaleDateString('ru-RU')
       : null;
 
+    // A plan_type of 'pro' with a plan_active_until in the past is a real,
+    // common state (nothing demotes plan_type back to 'free' when a
+    // subscription lapses) -- must not be shown identically to an active
+    // subscription (stale "до <past date>" with no way to renew).
+    const isProActive = _isProActive(user);
+    const isExpiredPro = user.plan_type === 'pro' && !isProActive;
+
+    const statusLine =
+      isProActive ? (until ? `Активна до ${until}` : 'Активна') :
+      subscriptions.length ? subscriptions.map(_subscriptionLine).join('<br>') :
+      isExpiredPro ? 'Подписка закончилась' :
+      user.plan_type === 'free' ? 'Подписка не активна' :
+      null;
+
+    // Buying and renewing both just open the same paywall modal (plan
+    // picker) -- there is only ever one checkout UI.
+    const showBuyCta = user.plan_type === 'free';
+    const showRenewCta = isExpiredPro;
+
     drop.innerHTML = `
       <div class="acct-drop-user">
         <span class="acct-drop-email">${escHtml(user.email)}</span>
-        <span class="acct-drop-plan ${user.plan_type === 'pro' || user.plan_type === 'admin' ? 'is-pro' : ''}">${planLabel}</span>
-        ${until ? `<span class="acct-drop-until">до ${until}</span>` : ''}
+        <span class="acct-drop-plan ${user.plan_type === 'pro' || user.plan_type === 'admin' || subscriptions.length ? 'is-pro' : ''}">${planLabel}</span>
+        ${statusLine ? `<span class="acct-drop-until">${statusLine}</span>` : ''}
         ${user.plan_type === 'free'
           ? `<span class="acct-drop-free">Бесплатных видео: ${freeLeft} / ${user.free_video_limit}</span>`
           : ''}
       </div>
       <div class="acct-drop-divider"></div>
-      ${user.plan_type === 'free'
+      ${showBuyCta
         ? `<button class="acct-drop-item acct-drop-upgrade" id="acct-drop-upgrade">
-             <i class="fa-solid fa-bolt"></i> Перейти на Pro
+             <i class="fa-solid fa-bolt"></i> Выбрать тариф
+           </button>`
+        : ''}
+      ${showRenewCta
+        ? `<button class="acct-drop-item acct-drop-upgrade" id="acct-drop-upgrade">
+             <i class="fa-solid fa-bolt"></i> Продлить подписку
            </button>`
         : ''}
       <button class="acct-drop-item acct-drop-logout" id="acct-drop-logout">
         <i class="fa-solid fa-right-from-bracket"></i> Выйти
       </button>`;
 
-    if (user.plan_type === 'free') {
+    if (showBuyCta || showRenewCta) {
       drop.querySelector('#acct-drop-upgrade').onclick = () => { closeAccountDropdown(); openPaywallModal(); };
     }
     drop.querySelector('#acct-drop-logout').onclick = handleLogout;
@@ -515,9 +562,14 @@ function setCtaLoading(btn, loading) {
 }
 
 /* ── open / close ── */
-function openAuthModal(mode = 'login', message = '') {
+function openAuthModal(mode = 'login', message = '', { resumeCheckout = null } = {}) {
   const overlay = document.getElementById('sonya-auth-overlay');
   if (!overlay) return;
+
+  // Only the paywall's guest CTA passes a checkout to resume; any other
+  // way into the auth modal drops a stale one (e.g. guest dismissed the
+  // login, then signed in later from the account menu).
+  _pendingCheckout = resumeCheckout;
 
   // Normalize mode: callers may use 'registration' (legacy) or 'register'.
   const view = (mode === 'registration' || mode === 'register') ? 'register' : 'login';
@@ -757,25 +809,258 @@ async function handleVerifyCode() {
       : `С возвращением, ${user.email}!`,
       'success');
   }
+
+  // Guest picked a plan before signing in -- bring them straight back to
+  // it (same mode, plan and consent), one click away from paying.
+  const resume = _pendingCheckout;
+  _pendingCheckout = null;
+  if (user && resume) openPaywallModal(resume);
 }
 
 /* ─────────────────────────────────────────────
    PAYWALL MODAL
+   Views: offer -> loading -> (redirect away) | error | already-pro
+   Source of truth for "is Pro active" is always the server
+   (authState.user, refreshed from /api/auth/me) -- this mirrors that
+   check for UI purposes only, it never gates the actual purchase.
 ───────────────────────────────────────────── */
-function openPaywallModal() {
-  document.getElementById('sonya-paywall-modal').classList.add('is-open');
+function _isProActive(user) {
+  if (!user || user.plan_type !== 'pro' || user.plan_status !== 'active') return false;
+  if (!user.plan_active_until) return false;
+  return new Date(user.plan_active_until).getTime() > Date.now();
 }
+
+function _formatPlanUntil(iso) {
+  if (!iso) return '';
+  try {
+    return new Date(iso).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
+  } catch (_e) {
+    return '';
+  }
+}
+
+/* Public plan catalog -- the ONLY place plan names, prices and limits live
+   on the frontend. Only user-facing facts belong here (no GPU budgets,
+   margins, fees). `id` is what POST /billing/checkout receives; the
+   backend PLAN_CATALOG (scripts/pricing.py) must know the same ids --
+   tests/test_pricing_catalog.py fails if prices/limits drift apart.
+   `recommended` marks the plan preselected when a mode is opened. */
+const SONYA_PRICING = {
+  period: 'месяц',
+  modes: [
+    {
+      id: 'cut', label: 'Нарезка', quotaLabel: 'Обработки',
+      plans: [
+        { id: 'cut_start',  name: 'Start',  price: 1090, quota: 10, source: 'до 60 минут' },
+        { id: 'cut_pro',    name: 'Pro',    price: 2690, quota: 20, source: 'до 2 часов', recommended: true },
+        { id: 'cut_studio', name: 'Studio', price: 4990, quota: 30, source: 'до 3 часов' },
+      ],
+    },
+    {
+      id: 'trailer', label: 'Трейлер', quotaLabel: 'Генерации',
+      plans: [
+        { id: 'trailer_start',  name: 'Start',  price: 1190, quota: 8,  source: 'до 90 минут' },
+        { id: 'trailer_pro',    name: 'Pro',    price: 2190, quota: 12, source: 'до 2 часов', recommended: true },
+        { id: 'trailer_studio', name: 'Studio', price: 4990, quota: 24, source: 'до 3 часов' },
+      ],
+    },
+    {
+      id: 'streamer', label: 'Стример', quotaLabel: 'Стримы',
+      plans: [
+        { id: 'streamer_start', name: 'Start', price: 1990, quota: 10, source: 'до 4 часов' },
+      ],
+    },
+  ],
+};
+
+const _paywall = { modeId: 'cut', planId: null };
+
+// { mode, planId, consent } a guest chose before being sent to sign in;
+// in-memory on purpose -- auth happens in-page, no reload in between.
+let _pendingCheckout = null;
+
+function _pricingMode(modeId) {
+  return SONYA_PRICING.modes.find(m => m.id === modeId) || SONYA_PRICING.modes[0];
+}
+
+function _defaultPlanId(mode) {
+  return (mode.plans.find(p => p.recommended) || mode.plans[0]).id;
+}
+
+function _selectedPlan() {
+  return _pricingMode(_paywall.modeId).plans.find(p => p.id === _paywall.planId) || null;
+}
+
+function _formatRub(amount) {
+  return `${Number(amount).toLocaleString('ru-RU')} ₽`;
+}
+
+// Generation clipType -> pricing mode, so a 402 from the trailer or
+// streamer flow opens the picker on the plans that actually apply.
+function _pricingModeForClipType(clipType) {
+  const t = String(clipType || '').toLowerCase();
+  if (t.includes('trailer')) return 'trailer';
+  if (t.includes('streamer')) return 'streamer';
+  return 'cut';
+}
+
+function renderPaywallModes() {
+  const wrap = document.getElementById('paywall-plan-modes');
+  if (!wrap) return;
+  wrap.innerHTML = SONYA_PRICING.modes.map(m => `
+    <button class="sonya-auth-tab${m.id === _paywall.modeId ? ' is-active' : ''}" type="button"
+            role="tab" aria-selected="${m.id === _paywall.modeId}" aria-controls="paywall-plans"
+            tabindex="${m.id === _paywall.modeId ? '0' : '-1'}" data-plan-mode="${m.id}">${m.label}</button>`
+  ).join('');
+}
+
+function renderPaywallPlans({ animate = false } = {}) {
+  const grid = document.getElementById('paywall-plans');
+  if (!grid) return;
+  const mode = _pricingMode(_paywall.modeId);
+  grid.classList.toggle('is-solo', mode.plans.length === 1);
+  grid.setAttribute('aria-label', `Тарифы · ${mode.label}`);
+  grid.innerHTML = mode.plans.map((p, i) => `
+    <label class="plan-card${animate ? ' is-entering' : ''}" style="--i:${i}">
+      <input class="plan-card-input" type="radio" name="paywall-plan" value="${p.id}"${p.id === _paywall.planId ? ' checked' : ''}>
+      <span class="plan-card-head">
+        <span class="plan-card-radio" aria-hidden="true"></span>
+        <span class="plan-card-name">${p.name}</span>
+        ${p.recommended && mode.plans.length > 1 ? '<span class="acct-drop-plan plan-card-tag">Рекомендуем</span>' : ''}
+      </span>
+      <span class="plan-card-price">
+        <span class="plan-card-amount">${_formatRub(p.price)}</span>
+        <span class="plan-card-period">/ ${SONYA_PRICING.period}</span>
+      </span>
+      <span class="plan-card-specs">
+        <span class="plan-card-spec"><span class="plan-card-key">${mode.quotaLabel}</span><span class="plan-card-val">${p.quota}</span></span>
+        <span class="plan-card-spec"><span class="plan-card-key">Исходник</span><span class="plan-card-val">${p.source}</span></span>
+      </span>
+    </label>`
+  ).join('');
+  _syncPaywallPayButton();
+}
+
+function setPaywallMode(modeId, { animate = true } = {}) {
+  const mode = _pricingMode(modeId);
+  if (mode.id === _paywall.modeId && _paywall.planId) return;
+  _paywall.modeId = mode.id;
+  _paywall.planId = _defaultPlanId(mode);
+  renderPaywallModes();
+  renderPaywallPlans({ animate });
+}
+
+// Pay button reflects both the consent checkbox and the selected plan.
+function _syncPaywallPayButton() {
+  const consent = document.getElementById('paywall-consent-checkbox');
+  const payBtn = document.getElementById('paywall-pay-btn');
+  if (!payBtn) return;
+  const plan = _selectedPlan();
+  const label = payBtn.querySelector('span');
+  if (label) label.textContent = plan ? `Оплатить ${_formatRub(plan.price)}` : 'Выберите тариф';
+  const enabled = Boolean(plan && consent && consent.checked);
+  payBtn.disabled = !enabled;
+  payBtn.setAttribute('aria-disabled', String(!enabled));
+}
+
+function showPaywallView(viewName) {
+  document.querySelectorAll('#sonya-paywall-modal [data-paywall-view]').forEach(el => {
+    el.classList.toggle('is-active', el.getAttribute('data-paywall-view') === viewName);
+  });
+  // Only the plan picker needs the wide sheet; loading/error/already-pro
+  // keep the compact single-column modal.
+  document.querySelector('#sonya-paywall-modal .paywall-modal')
+    ?.classList.toggle('is-plans', viewName === 'offer');
+}
+
+let _checkoutInFlight = false;
+
+function openPaywallModal(opts = {}) {
+  document.getElementById('sonya-paywall-modal').classList.add('is-open');
+
+  if (_isProActive(authState.user)) {
+    const untilText = document.getElementById('paywall-active-until-text');
+    if (untilText) {
+      const until = _formatPlanUntil(authState.user.plan_active_until);
+      untilText.textContent = until ? `Действует до ${until}` : 'Подписка активна.';
+    }
+    showPaywallView('already-pro');
+    return;
+  }
+
+  // Reset the offer form every time it's (re)opened; keep the last mode
+  // unless the caller knows which flow the user came from.
+  const consent = document.getElementById('paywall-consent-checkbox');
+  if (consent) consent.checked = Boolean(opts.consent);
+  _paywall.planId = null;
+  setPaywallMode(opts.mode || _paywall.modeId, { animate: false });
+  if (opts.planId && _pricingMode(_paywall.modeId).plans.some(p => p.id === opts.planId)) {
+    _paywall.planId = opts.planId;
+    renderPaywallPlans();
+  }
+  showPaywallView('offer');
+}
+
 function closePaywallModal() {
   document.getElementById('sonya-paywall-modal').classList.remove('is-open');
 }
 
-function openTelegramPayment() {
-  // Stub — real flow: POST /api/billing/create-telegram-payment → open bot
-  const botUsername = window.SONYA_BOT_USERNAME || 'sonyaaibot';
-  const url = `https://t.me/${botUsername}`;
-  window.open(url, '_blank', 'noopener');
-  closePaywallModal();
-  showToast('Откройте Telegram Bot SONYA для оплаты Pro Plan');
+async function startCheckout() {
+  if (_checkoutInFlight) return; // double-click / double-submit guard
+  const plan = _selectedPlan();
+  if (!plan) return;
+
+  // Guest: auth is required only now, at the pay CTA. Remember the exact
+  // choice so handleVerifyCode() can reopen the picker on it.
+  if (!authState.user) {
+    const mode = _pricingMode(_paywall.modeId);
+    closePaywallModal();
+    openAuthModal('login',
+      `Войдите или зарегистрируйтесь, чтобы оформить «${mode.label} · ${plan.name}» — ${_formatRub(plan.price)} / ${SONYA_PRICING.period}`,
+      { resumeCheckout: { mode: mode.id, planId: plan.id, consent: true } });
+    return;
+  }
+
+  _checkoutInFlight = true;
+
+  const payBtn = document.getElementById('paywall-pay-btn');
+  if (payBtn) { payBtn.disabled = true; payBtn.setAttribute('aria-disabled', 'true'); }
+  showPaywallView('loading');
+
+  try {
+    const res = await apiFetch('/billing/checkout', {
+      method: 'POST',
+      body: JSON.stringify({ plan_id: plan.id }),
+    });
+    const data = await safeJson(res);
+
+    if (res._networkError) {
+      _showPaywallError('Сервер недоступен. Проверьте соединение и попробуйте снова.');
+      return;
+    }
+    if (!res.ok || !data || !data.redirect_url) {
+      const err = data?.detail?.error;
+      _showPaywallError(
+        err === 'unknown_plan' ? 'Этот тариф недоступен. Обновите страницу и попробуйте снова.' :
+        err === 'subscription_active' ? 'У вас уже есть тариф для этого режима, и в нём ещё остались операции. Новый можно оформить, когда они закончатся.' :
+        err === 'payment_unavailable' ? 'Оплата временно недоступна. Попробуйте позже.' :
+        'Не удалось создать платёж. Попробуйте ещё раз.');
+      return;
+    }
+
+    // Leaving the page for the payment provider -- no need to reset _checkoutInFlight,
+    // a fresh page load resets all state anyway.
+    window.location.href = data.redirect_url;
+  } catch (_e) {
+    _showPaywallError('Не удалось создать платёж. Попробуйте ещё раз.');
+  }
+}
+
+function _showPaywallError(message) {
+  _checkoutInFlight = false;
+  const el = document.getElementById('paywall-error-message');
+  if (el) el.textContent = message;
+  showPaywallView('error');
 }
 
 /* ─────────────────────────────────────────────
@@ -834,8 +1119,9 @@ async function checkAndCreateVideoJob(formData) {
 
   if (jobRes.status === 402) {
     const code = jobData?.detail?.code;
-    if (code === 'FREE_PLAN_USED') {
-      openPaywallModal();
+    if (PAYWALL_CODES.includes(code)) {
+      if (code !== 'FREE_PLAN_USED' && jobData?.detail?.message) showToast(jobData.detail.message, 'error');
+      openPaywallModal({ mode: jobData?.detail?.plan_mode || _pricingModeForClipType(formData?.clipType) });
       return 'paywall';
     }
   }
@@ -968,11 +1254,60 @@ function initAuth() {
   document.getElementById('sonya-paywall-modal')?.addEventListener('click', e => {
     if (e.target === e.currentTarget) closePaywallModal();
   });
-  document.getElementById('paywall-tg-btn')?.addEventListener('click', openTelegramPayment);
   document.getElementById('paywall-later-btn')?.addEventListener('click', closePaywallModal);
+  document.getElementById('paywall-error-later-btn')?.addEventListener('click', closePaywallModal);
+  document.getElementById('paywall-already-pro-close-btn')?.addEventListener('click', closePaywallModal);
 
-  // Initial state fetch (non-blocking)
-  refreshAuthState();
+  // Plan picker: mode tabs (click + arrow keys) and plan radios.
+  const planModes = document.getElementById('paywall-plan-modes');
+  planModes?.addEventListener('click', e => {
+    const tab = e.target.closest('[data-plan-mode]');
+    if (tab) setPaywallMode(tab.dataset.planMode);
+  });
+  planModes?.addEventListener('keydown', e => {
+    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+    const ids = SONYA_PRICING.modes.map(m => m.id);
+    const step = e.key === 'ArrowRight' ? 1 : -1;
+    const next = ids[(ids.indexOf(_paywall.modeId) + step + ids.length) % ids.length];
+    setPaywallMode(next);
+    planModes.querySelector(`[data-plan-mode="${next}"]`)?.focus();
+    e.preventDefault();
+  });
+  document.getElementById('paywall-plans')?.addEventListener('change', e => {
+    if (e.target.name !== 'paywall-plan') return;
+    _paywall.planId = e.target.value;
+    _syncPaywallPayButton();
+  });
+
+  document.getElementById('paywall-consent-checkbox')?.addEventListener('change', _syncPaywallPayButton);
+  document.getElementById('paywall-pay-btn')?.addEventListener('click', startCheckout);
+  document.getElementById('paywall-retry-btn')?.addEventListener('click', () => {
+    showPaywallView('offer');
+    _checkoutInFlight = false;
+    // startCheckout() disables the pay button unconditionally
+    // before the request; re-sync it with the (still-checked) consent
+    // checkbox and selected plan instead of leaving it stuck disabled.
+    _syncPaywallPayButton();
+  });
+
+  // Initial state fetch (non-blocking). If we were sent back here from
+  // payment/fail.html's "Попробовать снова" link (?paywall=1), reopen the
+  // paywall once we know the current auth/plan state, then drop the
+  // query param so a page refresh doesn't reopen it again. The session
+  // could have expired between the failed payment and this click (or the
+  // link could be opened signed-out in another browser) -- purchase must
+  // never start before auth, so a signed-out visitor gets the login modal
+  // instead of the paywall.
+  refreshAuthState().then(function () {
+    var params = new URLSearchParams(window.location.search);
+    if (params.get('paywall') === '1') {
+      if (authState.user) openPaywallModal();
+      else openAuthModal('login');
+      params.delete('paywall');
+      var qs = params.toString();
+      history.replaceState(null, '', window.location.pathname + (qs ? '?' + qs : ''));
+    }
+  });
 }
 
 // Auto-init when DOM is ready

@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
-from scripts import auth_store
+from scripts import auth_store, entitlements
 from scripts.auth_security import (
     AUTH_CODE_MAX_ATTEMPTS,
     VALID_PURPOSES,
@@ -95,6 +95,19 @@ def _user_response(user: dict) -> dict:
     }
 
 
+def _subscriptions_view(user: dict) -> list | None:
+    """Active plan periods (scripts/entitlements.py) for the frontend: plan
+    id, mode, ops used/left/limit, max source length, period end. None when
+    the lookup failed -- "unknown", never "no plan"."""
+    try:
+        subs = entitlements.get_user_subscriptions(str(user["id"]))
+    except Exception as exc:
+        logger.warning("[auth] subscriptions_lookup_failed user_id=%s error_type=%s",
+                       user["id"], type(exc).__name__)
+        return None
+    return [entitlements.serialize_subscription(s) for s in entitlements.active_subscriptions(subs)]
+
+
 def _iso(value) -> str | None:
     if value is None:
         return None
@@ -107,7 +120,7 @@ def _iso(value) -> str | None:
 
 @router.get("/api/auth/me")
 async def auth_me(user: dict = Depends(get_current_user)):
-    return _user_response(user)
+    return {**_user_response(user), "subscriptions": _subscriptions_view(user)}
 
 
 # ── POST /api/auth/request-code ——————————————————————————————————————————————
@@ -342,4 +355,5 @@ async def subscription_status(user: dict = Depends(get_current_user)):
         "plan_active_until": _iso(user.get("plan_active_until")),
         "free_video_limit": user["free_video_limit"],
         "free_video_used": user["free_video_used"],
+        "subscriptions": _subscriptions_view(user),
     }
